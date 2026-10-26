@@ -21,14 +21,15 @@ final class FiledYearGate: ObservableObject {
     /// actor) with the result. A question: `pending`; its answer saves with what the question
     /// found when nothing was written since (else it's checked again), then `done`. Cancel writes
     /// nothing and calls nothing. While one runs or waits on its question, another is ignored.
-    func run<T>(_ dbQueue: DatabaseQueue, edit: @escaping (Database) throws -> String,
+    /// `area`: what the edit changes (it runs as the signed-in user, only with Edit there; step 6).
+    func run<T>(_ dbQueue: DatabaseQueue, area: AccessArea, origin: WriteOrigin = .edit, edit: @escaping (Database) throws -> String,
                 scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                 _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
         guard !isRunning, pending == nil else { return }
-        start(dbQueue, edit: edit, scope: scope, resolution: nil, answering: nil, apply, done: done)
+        start(dbQueue, area: area, origin: origin, edit: edit, scope: scope, resolution: nil, answering: nil, apply, done: done)
     }
 
-    private func start<T>(_ dbQueue: DatabaseQueue, edit: @escaping (Database) throws -> String,
+    private func start<T>(_ dbQueue: DatabaseQueue, area: AccessArea, origin: WriteOrigin, edit: @escaping (Database) throws -> String,
                           scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                           resolution: FiledYearEditCheck.Resolution?, answering: FiledYearEditCheck.Question?,
                           _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
@@ -36,7 +37,7 @@ final class FiledYearGate: ObservableObject {
         let now = AppClock.now
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
-                try dbQueue.write { db in
+                try dbQueue.write(area, origin: origin) { db in
                     try FiledYearEditCheck.save(db: db, edit: try edit(db), scope: try scope(db), resolution: resolution,
                                                 answering: answering, now: now) { try apply(db) }
                 }
@@ -48,7 +49,7 @@ final class FiledYearGate: ObservableObject {
                     done(.success(value))
                 case .success(.asks(let question)):
                     self.pending = FiledYearPending(question: question) { [weak self] answer in
-                        self?.start(dbQueue, edit: edit, scope: scope, resolution: answer, answering: question, apply, done: done)
+                        self?.start(dbQueue, area: area, origin: origin, edit: edit, scope: scope, resolution: answer, answering: question, apply, done: done)
                     }
                 case .failure(let error):
                     done(.failure(error))
@@ -58,15 +59,15 @@ final class FiledYearGate: ObservableObject {
     }
 
     /// `run` with the edit's name known up front.
-    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
+    func run<T>(_ dbQueue: DatabaseQueue, area: AccessArea, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                 _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
-        run(dbQueue, edit: { _ in edit }, scope: scope, apply, done: done)
+        run(dbQueue, area: area, edit: { _ in edit }, scope: scope, apply, done: done)
     }
 
     /// `run` with the name and the scope known up front.
-    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: FiledYearEditCheck.Scope,
+    func run<T>(_ dbQueue: DatabaseQueue, area: AccessArea, origin: WriteOrigin = .edit, edit: String, scope: FiledYearEditCheck.Scope,
                 _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
-        run(dbQueue, edit: { _ in edit }, scope: { _ in scope }, apply, done: done)
+        run(dbQueue, area: area, origin: origin, edit: { _ in edit }, scope: { _ in scope }, apply, done: done)
     }
 
     #if SNAPSHOTS

@@ -169,7 +169,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         load()
         return category
     }
@@ -182,7 +182,7 @@ final class SearchViewModel: ObservableObject {
         guard !ids.isEmpty else { return }
         errorMessage = nil
         let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
-        filedYearGate.run(dbQueue, edit: edit, scope: .categorising(ids, as: categoryId), { db in
+        filedYearGate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: .categorising(ids, as: categoryId), { db in
             try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember)
         }, done: { [weak self] outcome in
             guard let self else { return }
@@ -231,7 +231,7 @@ final class SearchViewModel: ObservableObject {
 
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
@@ -242,7 +242,7 @@ final class SearchViewModel: ObservableObject {
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
     private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }

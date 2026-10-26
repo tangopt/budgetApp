@@ -790,7 +790,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     private func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.forecast) { db in try write(db) }
         } catch {
             return .failed(PlanFormat.errorMessage(for: error))
         }

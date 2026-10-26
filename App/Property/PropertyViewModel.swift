@@ -355,11 +355,11 @@ final class PropertyViewModel: ObservableObject {
 
     // MARK: Editing
 
-    /// Runs a write; the error's text when it fails (the sheets show it).
+    /// Runs a write (as the signed-in user, in Property); the error's text when it fails (the sheets show it).
     @discardableResult
     func write(_ body: (Database) throws -> Void) -> String? {
         do {
-            try dbQueue.write { db in try body(db) }
+            try dbQueue.write(.property) { db in try body(db) }
             return nil
         } catch {
             return PropertyMessages.text(for: error)
@@ -375,7 +375,7 @@ final class PropertyViewModel: ObservableObject {
     /// screen's). `done` gets the result; Cancel calls nothing. The observation shows what changed.
     func checked<T>(_ edit: String, scope: FiledYearEditCheck.Scope = .everyYear, gate: FiledYearGate? = nil,
                     _ body: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
-        (gate ?? filedYearGate).run(dbQueue, edit: edit, scope: scope, body, done: done)
+        (gate ?? filedYearGate).run(dbQueue, area: .property, edit: edit, scope: scope, body, done: done)
     }
 
     /// Stores (or clears) the map location of property `propertyId`: the id is passed in, so a lookup that
@@ -429,7 +429,7 @@ final class PropertyViewModel: ObservableObject {
 
     func savePerson(_ person: Person) -> Result<Person, Error> {
         Result {
-            try dbQueue.write { db in
+            try dbQueue.write(.householdSettings) { db in
                 var person = person
                 try People.save(db: db, &person)
                 return person
@@ -557,7 +557,7 @@ final class PropertyViewModel: ObservableObject {
     func seedEvidenceRules() {
         guard let propertyId else { return }
         do {
-            let added = try dbQueue.write { db in try PropertyEvidence.seedRules(db: db, propertyId: propertyId) }
+            let added = try dbQueue.write(.property) { db in try PropertyEvidence.seedRules(db: db, propertyId: propertyId) }
             infoMessage = added.isEmpty ? "The property's evidence rules are already there."
                 : "Added \(added.count) evidence rule\(added.count == 1 ? "" : "s"): one PDF per rent receipt, one contract per tenancy."
         } catch {
@@ -570,7 +570,7 @@ final class PropertyViewModel: ObservableObject {
     func unlinkDocument(_ document: EvidenceDocument, from entity: EvidenceEntity) {
         guard let id = document.id else { return }
         do {
-            _ = try library.unlink(id, from: entity)
+            _ = try library.unlink(id, from: entity, actor: try dbQueue.signedInActor())
         } catch {
             errorMessage = error.localizedDescription
         }

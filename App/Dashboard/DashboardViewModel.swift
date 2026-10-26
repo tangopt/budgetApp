@@ -90,7 +90,7 @@ final class DashboardViewModel: ObservableObject {
     func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
         closeErrorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: todayProvider()) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.close(db: db, month: month, on: date, today: todayProvider()) }
         } catch PayCalendarError.invalidCloseDate {
             closeErrorMessage = payCalendar.map { PayMonthFormat.invalidCloseDateMessage(month, calendar: $0) } ?? "Pick a date inside \(PayMonthFormat.name(month))."
             return false

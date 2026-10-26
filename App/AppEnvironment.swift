@@ -3,11 +3,55 @@ import Foundation
 import BudgetCore
 import GRDB
 import OSLog
+import os
 
 struct LaunchBackupError: LocalizedError {
     let underlying: Error
     var errorDescription: String? {
         "Mango couldn't back up your data before updating it, so it didn't update anything. \(underlying.localizedDescription)"
+    }
+}
+
+/// Who the app's data writes are made as (step 6 Task 9): the user signed in now, kept by the session (`SessionModel`)
+/// where any thread can read it.
+enum SignedInActor {
+    private static let current = OSAllocatedUnfairLock<Int64?>(initialState: nil)
+
+    /// The signed-in app user's id; nil while locked or before sign-in is set up.
+    static var appUserId: Int64? {
+        get { current.withLock { $0 } }
+        set { current.withLock { $0 = newValue } }
+    }
+
+    /// Their actor; nil with nobody signed in (`ActorWrite.perform(orAdmin:)` then writes as the admin, as hub jobs do).
+    static func actor(db: Database) throws -> AccessActor? {
+        try ActorWrite.actor(appUserId: appUserId, db: db)
+    }
+}
+
+/// Every data write the app makes goes through these (`scripts/check-actor-writes.sh` keeps it so): it runs as the
+/// signed-in user, only with Edit on `area` (else `AccessDenied` and nothing written), stamping them as the writer
+/// and `origin` on what it changes (`ActorWrite.perform`).
+extension DatabaseWriter {
+    func write<T>(_ area: AccessArea, origin: WriteOrigin = .edit, _ body: (Database) throws -> T) throws -> T {
+        try write { db in
+            try ActorWrite.perform(orAdmin: try SignedInActor.actor(db: db), area: area, origin: origin, db: db) { try body(db) }
+        }
+    }
+
+    func write<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit,
+                            _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        let appUserId = SignedInActor.appUserId
+        return try await write { db in
+            try ActorWrite.perform(orAdmin: try ActorWrite.actor(appUserId: appUserId, db: db), area: area, origin: origin, db: db) {
+                try body(db)
+            }
+        }
+    }
+
+    /// The signed-in user's actor, for BudgetCore entry points that write by themselves (`EvidenceLibrary.link`).
+    func signedInActor() throws -> AccessActor? {
+        try write { db in try SignedInActor.actor(db: db) }
     }
 }
 
@@ -111,8 +155,9 @@ final class AppEnvironment: ObservableObject {
             } catch {
                 throw LaunchBackupError(underlying: error)
             }
+            // Launch upkeep is a hub job: the admin's (nothing to check before sign-in is set up).
             try manager.dbQueue.write { db in
-                try CategorySeeder.seedDefaults(db)
+                try ActorWrite.perform(orAdmin: nil, area: .rulesAndCategories, origin: .system, db: db) { try CategorySeeder.seedDefaults(db) }
             }
             // Gives every account its transfer category (spec 2026-10-14 §4), then links
             // transfers between accounts already imported, filing their legs under those
@@ -120,8 +165,10 @@ final class AppEnvironment: ObservableObject {
             // import or launch — never blocks launch.
             do {
                 _ = try manager.dbQueue.write { db in
-                    try TransferCategories.ensure(db: db)
-                    return try TransferMatcher.match(db: db, today: AppClock.now)
+                    try ActorWrite.perform(orAdmin: nil, area: .budgetAndAccounts, origin: .system, db: db) {
+                        try TransferCategories.ensure(db: db)
+                        return try TransferMatcher.match(db: db, today: AppClock.now)
+                    }
                 }
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
@@ -159,6 +206,12 @@ final class AppEnvironment: ObservableObject {
             guard let person = try Person.order(Column("id")).fetchOne(db), let personId = person.id else { return nil }
             return AppUser(personId: personId, displayName: person.name, isAdmin: true, createdAt: AppClock.now)
         }
+    }
+
+    /// A data write as the signed-in user (`DatabaseWriter.write(_:origin:_:)`).
+    func write<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit,
+                            _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await dbQueue.write(area, origin: origin, body)
     }
 
     /// Sync runs in this window's database (only a DEBUG `--sync-demo` launch on the demo database).
@@ -203,9 +256,12 @@ final class AppEnvironment: ObservableObject {
             let newRate = ExchangeRateSetting(eurToGbpRate: fetchedRate, updatedAt: AppClock.now)
             let impact = ExchangeRateFetcher.netWorthImpact(accounts: accounts, snapshots: snapshots, transactions: transactions, oldRate: previousRate, newRate: newRate)
 
+            // A hub job (no one asked for it): the admin's, whoever is signed in.
             try await dbQueue.write { db in
-                var setting = newRate
-                try setting.insert(db)
+                try ActorWrite.perform(orAdmin: nil, area: .householdSettings, origin: .system, db: db) {
+                    var setting = newRate
+                    try setting.insert(db)
+                }
             }
 
             let sign = impact >= 0 ? "+" : ""

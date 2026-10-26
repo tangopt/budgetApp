@@ -101,7 +101,7 @@ final class CategoriesViewModel: ObservableObject {
     /// Through the filed-year check: moving a property's categories out of its group moves rental figures.
     func createGroup(name: String, type: CategoryType, moving categoryIds: [Int64], gate: FiledYearGate,
                      done: @escaping (Result<CategoryGroup, Error>) -> Void) {
-        gate.run(dbQueue, edit: "Categories moved to a new group \(name)", scope: { db in try .categories(db: db, ids: categoryIds) }, { db in
+        gate.run(dbQueue, area: .rulesAndCategories, edit: "Categories moved to a new group \(name)", scope: { db in try .categories(db: db, ids: categoryIds) }, { db in
             try CategoryGroups.create(db: db, name: name, type: type, moving: categoryIds)
         }, done: { [weak self] result in
             if case .success = result {
@@ -115,7 +115,7 @@ final class CategoriesViewModel: ObservableObject {
     /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message.
     func renameGroup(id: Int64, to name: String) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try CategoryGroups.rename(db: db, id: id, name: name) }
+            try dbQueue.write(.rulesAndCategories) { db in try CategoryGroups.rename(db: db, id: id, name: name) }
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -139,7 +139,7 @@ final class CategoriesViewModel: ObservableObject {
 
     /// The New category sheet's save.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         load()
         return category
     }
@@ -156,7 +156,7 @@ final class CategoriesViewModel: ObservableObject {
             return .saved
         }
         do {
-            try dbQueue.write { db in try Categories.rename(db: db, id: id, name: name) }
+            try dbQueue.write(.rulesAndCategories) { db in try Categories.rename(db: db, id: id, name: name) }
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -328,7 +328,7 @@ final class CategoriesViewModel: ObservableObject {
 
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
@@ -339,7 +339,7 @@ final class CategoriesViewModel: ObservableObject {
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
     private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }
@@ -376,7 +376,7 @@ final class CategoriesViewModel: ObservableObject {
     private func checked<T>(_ prefix: String, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                             _ change: @escaping (Database) throws -> T, done: ((T) -> Void)? = nil) {
         errorMessage = nil
-        filedYearGate.run(dbQueue, edit: edit, scope: scope, change) { [weak self] result in
+        filedYearGate.run(dbQueue, area: .rulesAndCategories, edit: edit, scope: scope, change) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let value):
@@ -395,7 +395,7 @@ final class CategoriesViewModel: ObservableObject {
     private func write(_ prefix: String, _ change: (Database) throws -> Void) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try change(db) }
+            try dbQueue.write(.rulesAndCategories) { db in try change(db) }
         } catch let error as LocalizedError where error.errorDescription != nil {
             errorMessage = error.errorDescription
             return false

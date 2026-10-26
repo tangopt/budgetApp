@@ -336,17 +336,17 @@ final class DocumentsViewModel: ObservableObject {
     func link(transactionId: Int64, role: String?) {
         guard let id = selected?.id else { return }
         let library = library
-        write { _ = try library.link(id, to: .transaction(transactionId), role: role) }
+        write { _ = try library.link(id, to: .transaction(transactionId), role: role, actor: try library.database.signedInActor()) }
     }
 
     func unlink(_ row: LinkRow) {
         let library = library, documentId = row.link.documentId, entity = row.link.entity
-        write { _ = try library.unlink(documentId, from: entity) }
+        write { _ = try library.unlink(documentId, from: entity, actor: try library.database.signedInActor()) }
     }
 
     func setRole(_ role: String?, for row: LinkRow) {
         let library = library, documentId = row.link.documentId, entity = row.link.entity
-        write { _ = try library.setRole(role, documentId: documentId, entity: entity) }
+        write { _ = try library.setRole(role, documentId: documentId, entity: entity, actor: try library.database.signedInActor()) }
     }
 
     /// Deletes the document and its copy (and its links), off the main thread (its links are checked).
@@ -392,7 +392,7 @@ final class DocumentsViewModel: ObservableObject {
     func saveKinds(_ edits: [KindEdit]) async -> Result<KindSaveResult, Error> {
         let dbQueue = dbQueue, now = AppClock.now
         let result = await Task.detached(priority: .userInitiated) {
-            Result { try dbQueue.write { db in try CustomDocumentKinds.save(db: db, edits: edits, now: now) } }
+            Result { try dbQueue.write(.documents) { db in try CustomDocumentKinds.save(db: db, edits: edits, now: now) } }
         }.value
         if case .success = result {
             // A kind merged away can't stay the filter.

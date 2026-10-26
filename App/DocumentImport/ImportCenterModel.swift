@@ -349,7 +349,7 @@ final class ImportCenterModel: ObservableObject {
         guard let run = runs.first(where: { $0.entryPoint == "Demo samples" && $0.undoneAt == nil }), let runId = run.id else {
             throw SnapshotMissing("The demo samples' import run")
         }
-        let changed = try await dbQueue.write { db -> Bool in
+        let changed = try await dbQueue.write(.documents) { db -> Bool in
             guard let documentId = try Int64.fetchOne(db, sql: """
                 SELECT rowId FROM \(ImportChange.databaseTableName) WHERE runId = ? AND tableName = ? AND operation = ? ORDER BY seq LIMIT 1
                 """, arguments: [runId, EvidenceDocument.databaseTableName, ImportChangeOperation.insert.rawValue]) else { return false }
@@ -450,7 +450,8 @@ final class ImportCenterModel: ObservableObject {
     /// Undoes a confirmed run. Returns why it can't be undone now (nothing was changed), or
     /// nothing when it was undone; throws when the run is gone or already undone.
     func undo(_ runId: Int64) async throws -> [ImportUndoConflict] {
-        try await session.undo(runId)
+        // As the signed-in user (step 6: Edit on Import).
+        try await session.undo(runId, undoneBy: currentAppUserId())
     }
 }
 

@@ -149,11 +149,17 @@ final class TaxYearsViewModel: ObservableObject {
 
     // MARK: Editing
 
-    /// Runs a write; the error's text when it fails.
+    /// The tax of the person on show (their years, splits and items; step 6 permissions).
+    var selectedTaxArea: AccessArea {
+        let area = selection.flatMap { selection in try? dbQueue.read { db in try AccessArea.tax(ofPerson: selection.personId, db: db) } }
+        return area ?? .tax(personUuid: "")
+    }
+
+    /// Runs a write (as the signed-in user, in `area`; nil: the selected person's tax); the error's text when it fails.
     @discardableResult
-    func write(_ body: (Database) throws -> Void) -> String? {
+    func write(_ area: AccessArea? = nil, _ body: (Database) throws -> Void) -> String? {
         do {
-            try dbQueue.write { db in try body(db) }
+            try dbQueue.write(area ?? selectedTaxArea) { db in try body(db) }
             return nil
         } catch {
             return TaxMessages.text(for: error)
@@ -170,7 +176,7 @@ final class TaxYearsViewModel: ObservableObject {
             try TaxOverview.setStatus(db: db, startYear: selection.startYear, personId: selection.personId, status: status)
         }
         guard current == .filed || current == .paid else {
-            errorMessage = self.write(write)
+            errorMessage = self.write(selectedTaxArea, write)
             return
         }
         let label = UKTaxYear(startYear: selection.startYear).label
@@ -183,7 +189,7 @@ final class TaxYearsViewModel: ObservableObject {
         guard let selection else { return done(nil) }
         guard unitsPerPound > 0 else { return done("Enter a rate above zero.") }
         let label = UKTaxYear(startYear: selection.startYear).label
-        checked(edit: "\(currencyCode) rate for \(label) entered by hand", scope: .from(year: selection.startYear), gate: gate, { db in
+        checked(edit: "\(currencyCode) rate for \(label) entered by hand", scope: .from(year: selection.startYear), area: .householdSettings, gate: gate, { db in
             try HMRCRates.set(db: db, startYear: selection.startYear, currencyCode: currencyCode, gbpPerUnit: 1 / unitsPerPound,
                               unitsPerPound: unitsPerPound, source: .manual, notes: "Entered by hand")
         }, done: done)
@@ -192,7 +198,7 @@ final class TaxYearsViewModel: ObservableObject {
     func removeRate(currencyCode: String) {
         guard let selection else { return }
         let label = UKTaxYear(startYear: selection.startYear).label
-        checked(edit: "\(currencyCode) rate for \(label) removed", scope: .from(year: selection.startYear)) { db in
+        checked(edit: "\(currencyCode) rate for \(label) removed", scope: .from(year: selection.startYear), area: .householdSettings) { db in
             _ = try HMRCRates.remove(db: db, startYear: selection.startYear, currencyCode: currencyCode)
         }
     }
@@ -226,7 +232,7 @@ final class TaxYearsViewModel: ObservableObject {
                 return
             }
             var stored: [HMRCRate] = []
-            errorMessage = write { db in
+            errorMessage = write(.householdSettings) { db in
                 stored = try HMRCRates.storePublished(db: db, startYear: selection.startYear, rates: rates, codes: ["EUR"], replaceAll: replace)
             }
             if errorMessage == nil {
@@ -258,7 +264,7 @@ final class TaxYearsViewModel: ObservableObject {
         let scope: FiledYearEditCheck.Scope = thisYearOnly ? .from(year: selection.startYear) : .everyYear
         let edit = "Rule for \(type.displayName) " + (rule.map { "set to \($0.displayName)" } ?? "removed")
             + (thisYearOnly ? " for \(UKTaxYear(startYear: selection.startYear).label)" : " for every year")
-        checked(edit: edit, scope: scope, gate: gate, { db in
+        checked(edit: edit, scope: scope, area: .householdSettings, gate: gate, { db in
             if let rule {
                 try TaxAttributionRules.set(db: db, expenseType: type, startYear: year, rule: rule, defaultCoverMonths: coverMonths)
                 if !thisYearOnly { _ = try TaxAttributionRules.remove(db: db, expenseType: type, startYear: selection.startYear) }
@@ -270,14 +276,14 @@ final class TaxYearsViewModel: ObservableObject {
 
     func setCategoryType(categoryId: Int64, _ type: TaxExpenseType?) {
         let name = page?.categoryTypes.first { $0.category.id == categoryId }?.category.name ?? "a category"
-        checked(edit: "Tax line of \(name) set to \(type?.displayName ?? "its suggestion")", scope: .everyYear) { db in
+        checked(edit: "Tax line of \(name) set to \(type?.displayName ?? "its suggestion")", scope: .everyYear, area: .rulesAndCategories) { db in
             try TaxExpenseTypeMap.set(db: db, categoryId: categoryId, expenseType: type)
         }
     }
 
     func confirmSuggestedTypes() {
         guard let propertyId = page?.property?.id else { return }
-        checked(edit: "Suggested tax lines confirmed", scope: .everyYear) { db in _ = try TaxExpenseTypeMap.seed(db: db, propertyId: propertyId) }
+        checked(edit: "Suggested tax lines confirmed", scope: .everyYear, area: .rulesAndCategories) { db in _ = try TaxExpenseTypeMap.seed(db: db, propertyId: propertyId) }
     }
 
     /// Saves a manual item through the filed-year check (`gate`: the sheet's).
@@ -303,10 +309,11 @@ final class TaxYearsViewModel: ObservableObject {
     /// A write through the filed-year check, off the main thread: `done` gets the error's text, or
     /// nil once saved (default: the screen's banner); Cancel calls nothing. The screen's
     /// observation shows what was written.
-    func checked(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate? = nil,
+    /// `area`: what the edit changes (nil: the selected person's tax).
+    func checked(edit: String, scope: FiledYearEditCheck.Scope, area: AccessArea? = nil, gate: FiledYearGate? = nil,
                  _ body: @escaping (Database) throws -> Void, done: ((String?) -> Void)? = nil) {
         let done = done ?? { [weak self] message in self?.errorMessage = message }
-        (gate ?? filedYearGate).run(dbQueue, edit: edit, scope: scope, body) { result in
+        (gate ?? filedYearGate).run(dbQueue, area: area ?? selectedTaxArea, edit: edit, scope: scope, body) { result in
             done(result.failure.map(TaxMessages.text(for:)))
         }
     }

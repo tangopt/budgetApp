@@ -188,7 +188,7 @@ final class RechargeStatementModel: ObservableObject {
     func apply() throws -> Int64 {
         if let statement, statement.status != .draft { return statement.id! }
         let lines = lines
-        let id = try dbQueue.write { [tenancy, month] db -> Int64 in
+        let id = try dbQueue.write(.property) { [tenancy, month] db -> Int64 in
             let statement = try Recharges.draftStatement(db: db, tenancyId: tenancy.id!, month: month, addPending: false)
             let id = statement.id!
             for line in lines {
@@ -224,7 +224,7 @@ final class RechargeStatementModel: ObservableObject {
 
     func saveTemplate() {
         do {
-            try dbQueue.write { [propertyId, language, subject, bodyText] db in
+            try dbQueue.write(.property) { [propertyId, language, subject, bodyText] db in
                 var template = try RechargeEmail.template(db: db, propertyId: propertyId, language: language)
                 template.subject = subject
                 template.body = bodyText
@@ -237,7 +237,7 @@ final class RechargeStatementModel: ObservableObject {
     }
 
     func resetTemplate() {
-        try? dbQueue.write { [propertyId, language] db in try RechargeEmail.resetTemplate(db: db, propertyId: propertyId, language: language) }
+        try? dbQueue.write(.property) { [propertyId, language] db in try RechargeEmail.resetTemplate(db: db, propertyId: propertyId, language: language) }
         loadTemplate()
     }
 
@@ -293,7 +293,7 @@ final class RechargeStatementModel: ObservableObject {
     func markSent() -> Bool {
         do {
             let id = try apply()
-            try dbQueue.write { [sentDate] db in _ = try Recharges.markSent(db: db, statementId: id, at: sentDate) }
+            try dbQueue.write(.property) { [sentDate] db in _ = try Recharges.markSent(db: db, statementId: id, at: sentDate) }
             return true
         } catch {
             errorMessage = RechargeMessages.text(for: error)
@@ -853,7 +853,7 @@ struct UtilityProvidersSheet: View {
 
     private func delete(_ provider: UtilityProvider) {
         do {
-            _ = try dbQueue.write { db in try Recharges.deleteProvider(db: db, id: provider.id!) }
+            _ = try dbQueue.write(.property) { db in try Recharges.deleteProvider(db: db, id: provider.id!) }
             error = nil
             load()
         } catch {
@@ -1042,7 +1042,7 @@ struct UtilityProviderFormSheet: View {
         do {
             var provider = provider
             provider.invoiceRules = rules
-            try dbQueue.write { db in try Recharges.saveProvider(db: db, &provider) }
+            try dbQueue.write(.property) { db in try Recharges.saveProvider(db: db, &provider) }
             dismiss()
         } catch {
             self.error = RechargeMessages.text(for: error)

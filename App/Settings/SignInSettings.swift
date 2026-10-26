@@ -141,25 +141,25 @@ final class SignInSettingsModel: ObservableObject {
 
     func changePassword(_ password: String) async throws {
         guard let id = me?.id else { throw AppUserStoreError.noSuchUser }
-        try await session.dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+        try await session.bookkeeping { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
     }
 
     func regenerateRecoveryKey() async {
         guard let id = me?.id else { return }
         await run {
-            let key = try await self.session.dbQueue.write { try AppUserStore.regenerateRecoveryKey($0, appUserId: id) }
+            let key = try await self.session.bookkeeping { try AppUserStore.regenerateRecoveryKey($0, appUserId: id) }
             self.sheet = .recoveryKey(key: key, owner: nil)
         }
     }
 
     func resetPassword(of user: AppUser, to password: String) async throws {
         guard let id = me?.id, let target = user.id else { throw AppUserStoreError.noSuchUser }
-        try await session.dbQueue.write { try AppUserStore.resetPassword($0, of: target, by: id, newPassword: password) }
+        try await session.dbQueue.write(.householdSettings) { try AppUserStore.resetPassword($0, of: target, by: id, newPassword: password) }
     }
 
     func add(_ person: Person, password: String) async throws {
         guard isAdmin, let personId = person.id else { throw AppUserStoreError.notAdmin }
-        let key = try await session.dbQueue.write { db in
+        let key = try await session.dbQueue.write(.householdSettings) { db in
             try AppUserStore.create(db, personId: personId, displayName: person.name, password: password, isAdmin: false, now: Date()).recoveryKey
         }
         await refresh()
@@ -169,7 +169,7 @@ final class SignInSettingsModel: ObservableObject {
     func makeAdmin(_ user: AppUser) async {
         guard let id = me?.id, let target = user.id else { return }
         await run {
-            try await self.session.dbQueue.write { try AppUserStore.setAdmin($0, target, true, by: id) }
+            try await self.session.dbQueue.write(.householdSettings) { try AppUserStore.setAdmin($0, target, true, by: id) }
             await self.refresh()
         }
     }
@@ -178,7 +178,7 @@ final class SignInSettingsModel: ObservableObject {
     func remove(_ user: AppUser) async {
         guard let id = me?.id, let target = user.id else { return }
         await run {
-            try await self.session.dbQueue.write { try AppUserStore.remove($0, target, by: id) }
+            try await self.session.dbQueue.write(.householdSettings) { try AppUserStore.remove($0, target, by: id) }
             self.session.removeBiometricEnrolment(appUserId: target)
             await self.refresh()
         }

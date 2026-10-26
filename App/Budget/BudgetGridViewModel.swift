@@ -299,7 +299,7 @@ final class BudgetGridViewModel: ObservableObject {
     func moveAccounts(fromOffsets: IndexSet, toOffset: Int) {
         let ids = accounts.compactMap(\.id)
         do {
-            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+            try dbQueue.write(.budgetAndAccounts) { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
             accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
         } catch {
             errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
@@ -607,7 +607,7 @@ final class BudgetGridViewModel: ObservableObject {
     func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: AppClock.now) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.close(db: db, month: month, on: date, today: AppClock.now) }
         } catch PayCalendarError.invalidCloseDate {
             errorMessage = PayMonthFormat.invalidCloseDateMessage(month, calendar: payCalendar)
             return false
@@ -623,7 +623,7 @@ final class BudgetGridViewModel: ObservableObject {
     func reopenMonth(_ month: PayMonth) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.reopen(db: db, month: month) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.reopen(db: db, month: month) }
         } catch {
             errorMessage = "Couldn't reopen \(PayMonthFormat.name(month)): \(error.localizedDescription)"
             return false
@@ -922,7 +922,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// instead of inviting a retry that would save twice.
     private func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.forecast) { db in try write(db) }
         } catch {
             return .failed(PlanFormat.errorMessage(for: error))
         }
@@ -967,7 +967,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// A transaction write: readable refusals, then the reload and `onTransactionEdited`.
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
@@ -978,7 +978,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
     private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }
@@ -998,7 +998,7 @@ final class BudgetGridViewModel: ObservableObject {
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         // Re-read rather than append, so the list keeps `load()`'s order; a failed re-read
         // falls back to appending (the category was created either way).
         if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {

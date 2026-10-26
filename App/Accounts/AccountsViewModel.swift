@@ -126,7 +126,7 @@ final class AccountsViewModel: ObservableObject {
     /// shows in the banner.
     func moveAccounts(ids: [Int64], fromOffsets: IndexSet, toOffset: Int) {
         do {
-            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+            try dbQueue.write(.budgetAndAccounts) { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
         } catch {
             errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
             return
@@ -182,7 +182,7 @@ final class AccountsViewModel: ObservableObject {
     private func perform<T>(_ write: (Database) throws -> T, onSuccess: ((T) -> Void)? = nil) -> SaveOutcome {
         let result: T
         do {
-            result = try dbQueue.write { db in try write(db) }
+            result = try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(Self.message(for: error))
         }
@@ -210,7 +210,7 @@ final class AccountsViewModel: ObservableObject {
 
     /// The picker's "New category…": creates the category and re-reads the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {
             categories = reloaded
         } else {
@@ -224,7 +224,7 @@ final class AccountsViewModel: ObservableObject {
     /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
     func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
-        gate.run(dbQueue, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }, done: { [weak self] result in

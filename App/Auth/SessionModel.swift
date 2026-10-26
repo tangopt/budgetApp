@@ -77,7 +77,10 @@ final class SessionModel: ObservableObject {
     }
 
     @Published private(set) var state: State {
-        didSet { if state == .locked && oldValue != .locked { autoPrompt.lockBegan() } }
+        didSet {
+            SignedInActor.appUserId = currentAppUserId
+            if state == .locked && oldValue != .locked { autoPrompt.lockBegan() }
+        }
     }
     /// Touch ID by itself on the lock screen, once per lock; shared by every window's lock screen.
     private(set) var autoPrompt = TouchIDAutoPrompt()
@@ -152,9 +155,11 @@ final class SessionModel: ObservableObject {
         self.gate = SignInGate(dbQueue: dbQueue)
         if SnapshotMode.isActive, let snapshotUser {
             state = .signedIn(snapshotUser)
+            SignedInActor.appUserId = snapshotUser.id
             return
         }
         state = isSetUp ? .locked : .notSetUp
+        SignedInActor.appUserId = nil
         observeSystemLocks()
         SheetCovers.shared.trackTransients()
         Task { await refreshCandidates() }
@@ -190,6 +195,12 @@ final class SessionModel: ObservableObject {
         guard case .signedIn(let user) = state, let id = user.id else { throw AppUserStoreError.noSuchUser }
         try await dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
         afterSignIn = thenOfferTouchID ? .offerTouchID : nil
+    }
+
+    /// Sign-in bookkeeping on the signed-in user's own credentials (their password, their recovery key): not data,
+    /// so no permission is checked (step 6 `scripts/check-actor-writes.sh` leaves App/Auth to it).
+    func bookkeeping<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await dbQueue.write(body)
     }
 
     /// The Touch ID offer answered (turned on or not now).
