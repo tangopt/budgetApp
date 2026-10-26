@@ -153,6 +153,11 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// over the record's old copy so nothing readable stays behind. Receivers that sync that zone ignore it; the
     /// others drop their row (no tombstone: a later move back applies).
     public var movedTo: String?
+    /// Step 7a: the iCloud user record name the server says saved this version (`SyncServerRecord.lastModifiedBy`),
+    /// never the sender's claim. Never on the wire (`SyncWireRecord.init(_:)` clears it): the receiving engine sets
+    /// it on every record it takes from the server (staging keeps it). Nil: the server named no one (judged by the
+    /// clocks, as in step 6).
+    public var serverWriter: String?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,

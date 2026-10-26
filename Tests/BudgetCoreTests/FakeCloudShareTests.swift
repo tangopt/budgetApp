@@ -88,7 +88,18 @@ final class FakeCloudShareTests: XCTestCase {
         XCTAssertEqual(currentUser, member)
         let feed = try await session.changes(since: nil, zone: zone)
         XCTAssertEqual(feed.records.map(\.wire.recordName), ["by-owner"])
-        try await session.createZone(zone)  // already there: nothing happens
+        do {
+            try await session.createZone(zone)
+            XCTFail("a participant saved the owner's zone")
+        } catch {
+            XCTAssertEqual(error as? FakeCloudError, .permissionFailure)
+        }
+        do {
+            try await session.deleteZone(zone)
+            XCTFail("a participant deleted the owner's zone")
+        } catch {
+            XCTAssertEqual(error as? FakeCloudError, .permissionFailure)
+        }
         let results = try await session.save([wire("by-member")], ifUnchanged: [:], atomic: true)
         guard case .saved = results.first?.outcome else { return XCTFail("not saved: \(results)") }
         let names = await cloud.storedRecords().map(\.recordName)
@@ -140,6 +151,22 @@ final class FakeCloudShareTests: XCTestCase {
         XCTAssertEqual(share?.participants, [])
     }
 
+    /// Only the owner edits the share: she leaves by deleting it from her shared database, as in CloudKit.
+    func testParticipantLeavesByDeletingTheShare() async throws {
+        let cloud = try await sharedCloud()
+        let session = cloud.session(as: member)
+        do {
+            try await session.removeParticipant(userRecordName: member, zone: zone)
+            XCTFail("a participant edited the share")
+        } catch {
+            XCTAssertEqual(error as? FakeCloudError, .permissionFailure)
+        }
+        try await session.delete([FakeCloud.zoneShareRecordName], zone: zone)
+        await assertZoneNotFound { _ = try await session.changes(since: nil, zone: self.zone) }
+        let share = try await cloud.zoneShare(zone)
+        XCTAssertEqual(share?.participants, [], "the owner's zone and share stay")
+    }
+
     func testMakeZoneShareIsIdempotent() async throws {
         let cloud = FakeCloud()
         try await cloud.createZone(zone)
@@ -163,8 +190,10 @@ final class FakeCloudShareTests: XCTestCase {
         let own = FakeCloud(limits: SyncOperationLimits(maxRecords: 100, maxBytes: 5_000_000), ownerRecordName: member)
         let split = SyncZoneSplitTransport(household: cloud.session(as: member), others: own)
         let mine = "private-member"
-        try await split.createZone(zone)
+        try await split.createZone(zone)  // the admin's: nothing is made through her shared database
         try await split.createZone(mine)
+        let made = await cloud.calls.filter { if case .createZone = $0 { return true } else { return false } }
+        XCTAssertEqual(made, [.createZone(zone)], "only the owner's own creation in the setup")
         let results = try await split.save([wire("h1"), wire("p1", zone: mine), wire("h2")], ifUnchanged: [:], atomic: false)
         XCTAssertEqual(results.map(\.recordName), ["h1", "p1", "h2"])
         let shared = await cloud.storedRecords().map(\.recordName)

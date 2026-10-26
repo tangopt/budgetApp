@@ -473,16 +473,25 @@ public enum SyncTranslator {
         var judgedLocal: [String: SyncValue]?
         if AccessRevalidation.isOn(db: db), !redirected {
             selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
-            if !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser) {
+            // Step 7a: who wrote it is the server's word, when it gives one.
+            let attribution = try AccessRevalidation.attributedWriter(payload, selfUser: selfUser, db: db)
+            var writer: String?
+            if case .appUser(let user)? = attribution { writer = user }
+            if attribution == .selfUser || (attribution == nil && !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser)) {
                 // Only the Mac's own user wrote it: nothing to judge.
             } else if let localId = existing {
                 let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields ?? [:]
                 judgedLocal = local
+                if let writer {
+                    payload = try AccessRevalidation.attributing(payload, to: writer, local: local, localId: localId, db: db)
+                }
                 reverts = try AccessRevalidation.reverts(for: payload, local: local, selfUser: selfUser, db: db)
                 for field in reverts.flatMap(\.fields) { values[field] = nil }
             } else if let revert = try AccessRevalidation.reverts(for: payload, local: nil, selfUser: selfUser, db: db).first {
                 try AccessRevalidation.remove(revert, payload: payload, selfUser: selfUser, db: db, now: now)
                 return .discarded("no permission")
+            } else if let writer {
+                payload = try AccessRevalidation.attributing(payload, to: writer, local: nil, localId: nil, db: db)
             }
         }
         // One payload's failure (a constraint this device's data refuses) mustn't undo the others: it is
@@ -940,6 +949,8 @@ public enum SyncTranslator {
         var systemFields: Data
         var changeTag: String
         var modifiedAt: Date
+        /// Who the server says saved it (step 7a; nil in rows kept by older builds).
+        var lastModifiedBy: String?
 
         init(_ record: SyncServerRecord) {
             recordType = record.wire.recordType
@@ -950,12 +961,14 @@ public enum SyncTranslator {
             systemFields = record.stamp.systemFields
             changeTag = record.stamp.changeTag
             modifiedAt = record.stamp.modifiedAt
+            lastModifiedBy = record.lastModifiedBy
         }
 
         var server: SyncServerRecord {
             SyncServerRecord(wire: SyncWireRecord(recordType: recordType, recordName: recordName, zone: zone,
                                                   encryptedFields: encryptedFields, assets: assets),
-                             stamp: SyncServerStamp(systemFields: systemFields, changeTag: changeTag, modifiedAt: modifiedAt))
+                             stamp: SyncServerStamp(systemFields: systemFields, changeTag: changeTag, modifiedAt: modifiedAt),
+                             lastModifiedBy: lastModifiedBy)
         }
     }
 
@@ -983,7 +996,7 @@ public enum SyncTranslator {
             }
             let server = sealed.server
             do {
-                let payload = try SyncLargePayload.payload(from: server.wire, keys: keys)
+                let payload = try SyncLargePayload.payload(from: server, keys: keys)
                 try db.execute(sql: "DELETE FROM syncStaging WHERE id = ?", arguments: [row.id])
                 opened.append((payload, server.stamp))
             } catch FieldSealing.SealingError.keyMissing {

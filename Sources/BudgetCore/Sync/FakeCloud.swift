@@ -25,7 +25,9 @@ public enum FakeCloudError: Error, Equatable {
 /// - a call log, and the names of any field a record carried outside its encrypted fields;
 /// - iCloud users (step 7a): the cloud itself acts as `ownerRecordName`; `session(as:)` acts as another user. A
 ///   zone is owned by the user who created it; another user reaches it only as an accepted participant of its
-///   zone-wide share (`invite`, `accept`, `removeParticipant`): reads, plus writes when the share lets them.
+///   zone-wide share (`invite`, `accept`, `removeParticipant`): reads, plus writes when the share lets them. Only the
+///   owner creates or deletes the zone and edits its share; a participant leaves by deleting the share record
+///   (`zoneShareRecordName`).
 ///   Anyone else gets `zoneNotFound`, as a zone missing from their databases; a read-only participant's saves fail
 ///   with `permissionFailure`. Every saved version and deletion is stamped with the acting user
 ///   (`SyncServerRecord.lastModifiedBy`, `deletedBy`).
@@ -276,10 +278,21 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
         return share(zone)!
     }
 
-    /// The owner removes a participant, or a participant leaves.
+    /// The owner removes a participant (only the owner edits the share: a participant leaves by deleting the share,
+    /// `zoneShareRecordName`, from their shared database).
     func removeParticipant(userRecordName: String, zone: String, as user: String) throws {
-        guard try reachable(zone, by: user) == .owner || userRecordName == user else { throw FakeCloudError.permissionFailure }
+        guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
         sharing.withLock { sharing in sharing.shares[zone]?.removeAll { $0.userRecordName == userRecordName } }
+    }
+
+    /// The zone-wide share's record name (CloudKit `CKRecordNameZoneWideShare`): a participant deleting it leaves the
+    /// share; the owner deleting it stops sharing the zone.
+    public static let zoneShareRecordName = "cloudkit.zoneshare"
+
+    /// The zone deleted by `user`: only its owner can (a participant's shared database can't delete it).
+    func deleteZone(_ name: String, as user: String) throws {
+        guard try reachable(name, by: user) == .owner else { throw FakeCloudError.permissionFailure }
+        deleteZone(name)
     }
 
     // MARK: Operations as a user
@@ -287,7 +300,8 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     func createZone(_ zone: String, as user: String) throws {
         calls.append(.createZone(zone))
         if zones[zone] != nil {
-            _ = try reachable(zone, by: user)
+            // Already there: nothing to do for its owner; a participant can't save zones in their shared database.
+            guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
             return
         }
         // A zone reserved for its owner by an invite made before it existed is theirs to create.
@@ -384,8 +398,16 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
         calls.append(.delete(recordNames))
         guard var zone = zones[name] else { return }
         guard let access = access(name, by: user) else { throw SyncTransportError.zoneNotFound(name) }
+        if recordNames.contains(Self.zoneShareRecordName) {
+            // Deleting the share: a participant leaves it; its owner stops sharing.
+            sharing.withLock { sharing in
+                if access == .owner { sharing.shares[name] = nil } else { sharing.shares[name]?.removeAll { $0.userRecordName == user } }
+            }
+        }
+        let records = recordNames.filter { $0 != Self.zoneShareRecordName }
+        guard !records.isEmpty else { return }
         guard access != .read else { throw FakeCloudError.permissionFailure }
-        for recordName in recordNames {
+        for recordName in records {
             guard let existing = zone.records.removeValue(forKey: recordName) else { continue }
             tick()
             zone.tombstones[recordName] = (existing.wire.recordType, sequence, user)
@@ -437,6 +459,8 @@ public struct FakeCloudSession: SyncTransport, SyncShareTransport {
         try await cloud.fetch(recordName, zone: zone, as: userRecordName)
     }
     public func serverTime() async throws -> Date? { try await cloud.serverTime() }
+    /// Deletes the zone: its owner only (`FakeCloudError.permissionFailure` for a participant).
+    public func deleteZone(_ zone: String) async throws { try await cloud.deleteZone(zone, as: userRecordName) }
 
     public func currentUserRecordName() async throws -> String { userRecordName }
     public func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await cloud.zoneShare(zone, as: userRecordName) }

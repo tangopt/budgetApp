@@ -360,7 +360,7 @@ public actor SyncEngineCore {
                         continue
                     }
                     do {
-                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record.wire, keys: keys), record.stamp))
+                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record, keys: keys), record.stamp))
                     } catch FieldSealing.SealingError.keyMissing {
                         entries[name] = (position, .waiting(record))
                     } catch {
@@ -401,7 +401,8 @@ public actor SyncEngineCore {
             // Records that waited for their key and now open (ruling R15) go first, as received then, with their
             // stamps, through the same checked apply; a newer version in this pull replaces one.
             let arriving = Set(ordered.map(\.0))
-            for (payload, stamp) in try SyncTranslator.takeWaitingForKey(keys: keys, db: db, now: now) where !arriving.contains(payload.recordName) {
+            for (opened, stamp) in try SyncTranslator.takeWaitingForKey(keys: keys, db: db, now: now) where !arriving.contains(opened.recordName) {
+                let payload = try Self.serverDated(opened, stamp: stamp, deviceUser: user, db: db)
                 incoming.append(.save(payload))
                 stamps[payload.recordName] = stamp
                 if payload.movedTo != nil, payload.mergedInto == nil { markers[payload.recordName] = payload }
@@ -409,7 +410,8 @@ public actor SyncEngineCore {
             }
             for (name, entry) in ordered {
                 switch entry {
-                case .save(let payload, let stamp):
+                case .save(let received, let stamp):
+                    let payload = try Self.serverDated(received, stamp: stamp, deviceUser: user, db: db)
                     incoming.append(.save(payload))
                     stamps[name] = stamp
                     if payload.movedTo != nil, payload.mergedInto == nil { markers[name] = payload }
@@ -940,7 +942,7 @@ public actor SyncEngineCore {
         var servers: [ZonedName: (SyncPayload?, SyncServerRecord)] = [:]
         for (name, result) in results {
             if case .changed(let server) = result.outcome {
-                servers[name] = (try? SyncLargePayload.payload(from: server.wire, keys: try keyStore.allKeys(zone: name.zone)), server)
+                servers[name] = (try? SyncLargePayload.payload(from: server, keys: try keyStore.allKeys(zone: name.zone)), server)
             }
         }
         let now = clock()
@@ -1040,7 +1042,7 @@ public actor SyncEngineCore {
                             }
                             delta.saved += 1
                         } else {
-                            merges.append(payload)
+                            merges.append(try Self.serverDated(payload, stamp: server.stamp, deviceUser: user, db: db))
                             mergeStamps[name.name] = server.stamp
                         }
                         continue
@@ -1056,7 +1058,7 @@ public actor SyncEngineCore {
                         delta.refused += 1
                         continue
                     }
-                    merges.append(payload)
+                    merges.append(try Self.serverDated(payload, stamp: server.stamp, deviceUser: user, db: db))
                     mergeStamps[name.name] = server.stamp
                 case .deleted:
                     if try SyncTombstoneRow.fetchOne(db, key: name.name)?.mergedInto != nil {
@@ -1630,6 +1632,16 @@ public actor SyncEngineCore {
         return try AccessRevalidation.revalidating(db: db, body)
     }
 
+    /// Step 7a: a version another iCloud user saved (the server's writer, `SyncPayload.serverWriter`) has its clocks
+    /// clamped to the server's time of the save (`SyncMerge.clamped`) before any merge, on every device, so all agree.
+    /// Versions of this device's own user are taken as they are, as is one the server names no writer for.
+    static func serverDated(_ payload: SyncPayload, stamp: SyncServerStamp, deviceUser: String?, db: Database) throws -> SyncPayload {
+        guard payload.serverWriter != nil, stamp.modifiedAt > .distantPast else { return payload }
+        let selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
+        guard try AccessRevalidation.attributedWriter(payload, selfUser: selfUser, db: db) != .selfUser else { return payload }
+        return SyncMerge.clamped(payload, to: stamp.modifiedAt)
+    }
+
     static func deviceUser(db: Database) throws -> String? {
         try String.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter WHERE id = 1")
     }
@@ -1653,7 +1665,9 @@ enum SyncLargePayload {
         var stub = SyncPayload(recordType: payload.recordType, recordName: payload.recordName, zone: payload.zone, fields: [:])
         stub.largePayload = SyncLargePayloadReference(assetField: assetField)
         var inner = try SyncWireRecord(stub)
-        inner.assets[assetField] = try encoder.encode(payload)
+        var packed = payload
+        packed.serverWriter = nil
+        inner.assets[assetField] = try encoder.encode(packed)
         return (try FieldSealing.seal(inner, key: key), true)
     }
 
@@ -1669,6 +1683,14 @@ enum SyncLargePayload {
             throw SyncTransportError.unreadableRecord(wire.recordName)
         }
         payload.zone = wire.zone
+        return payload
+    }
+
+    /// The payload a server record holds, with the server's writer (step 7a): whatever the sender put in
+    /// `serverWriter` is overwritten by who the server says saved it.
+    static func payload(from server: SyncServerRecord, keys: [String: SymmetricKey]) throws -> SyncPayload {
+        var payload = try payload(from: server.wire, keys: keys)
+        payload.serverWriter = server.lastModifiedBy
         return payload
     }
 }

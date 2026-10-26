@@ -75,7 +75,11 @@ public final class TwoPersonHousehold {
         try adminKeys.store(householdKey, zone: SyncZones.household)
         try memberKeys.store(householdKey, zone: SyncZones.household)
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: adminKeys)
-        let memberAudit = ZoneAuditingTransport(wrapping: cloud.session(as: memberICloudUser), keyStore: memberKeys)
+        // Her device's transport: the household through her shared database, her own zone in her private one (both
+        // her session here: one fake cloud holds every database).
+        let memberSession = cloud.session(as: memberICloudUser)
+        let memberAudit = ZoneAuditingTransport(wrapping: SyncZoneSplitTransport(household: memberSession, others: memberSession),
+                                                keyStore: memberKeys)
 
         let mac = try TestDatabase.migrated()
         let (fixture, adminUser, memberUser, personB) = try mac.write { db -> (SharingFixture, String, String, String) in

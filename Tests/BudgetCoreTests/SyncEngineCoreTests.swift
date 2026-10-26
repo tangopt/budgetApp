@@ -1197,13 +1197,17 @@ final class FakeCloudTests: XCTestCase {
         original.omittedFields = ["note"]
         original.origin = "edit"
         original.movedTo = "private-p"
+        // Step 7a: set only by the receiving engine (the server's word), never carried.
+        original.serverWriter = "someone"
         // Every property is set: a property added later without a value here fails this.
         for child in Mirror(reflecting: original).children {
             XCTAssertNotEqual(String(describing: child.value), "nil", "\(child.label ?? "?") is set in this test")
         }
         let wire = try SyncWireRecord(original)
         XCTAssertEqual(Set(wire.encryptedFields.keys), ["f_value", "f_note", "meta"])
-        XCTAssertEqual(try wire.payload(), original)
+        var carried = original
+        carried.serverWriter = nil
+        XCTAssertEqual(try wire.payload(), carried)
     }
 }
 

@@ -22,7 +22,12 @@ public struct SyncZoneSplitTransport: SyncTransport {
         return SyncOperationLimits(maxRecords: min(first.maxRecords, second.maxRecords), maxBytes: min(first.maxBytes, second.maxBytes))
     }
 
-    public func createZone(_ zone: String) async throws { try await side(zone).createZone(zone) }
+    /// Her own zones are made in her private database. `household` is the admin's, reached through her shared
+    /// database where no zone can be made: nothing is done (a household she can't reach shows as `zoneNotFound`).
+    public func createZone(_ zone: String) async throws {
+        guard zone != SyncZones.household else { return }
+        try await others.createZone(zone)
+    }
 
     /// A save naming both sides is split into one per side (each keeps `atomic` within itself); results come back in
     /// the order of `records`.
