@@ -280,11 +280,12 @@ struct SyncPrivateDetails {
     private static let digitRuns = try! NSRegularExpression(pattern: "[0-9]+(?:[ .\\-][0-9]+)*")
     private static let freeTextExemptions: Set<String> = ["rawDescription", "note"]
 
-    init(db: Database) throws {
+    /// `levels`: account levels to use in place of the stored ones (a level change worked out before it is written).
+    init(db: Database, levels: [Int64: SharingLevel] = [:]) throws {
         var shared: Set<String> = []
         for row in try Row.fetchAll(db, sql: "SELECT id, sharingLevel, sortCode, accountNumber, iban FROM account ORDER BY id") {
             let id: Int64 = row["id"]
-            let level = (row["sharingLevel"] as String?).flatMap(SharingLevel.init(rawValue:)) ?? .hidden
+            let level = levels[id] ?? (row["sharingLevel"] as String?).flatMap(SharingLevel.init(rawValue:)) ?? .hidden
             let sortCode = Self.compact(row["sortCode"] as String? ?? "")
             let number = Self.compact(row["accountNumber"] as String? ?? "")
             let iban = Self.compact(row["iban"] as String? ?? "")

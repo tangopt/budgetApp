@@ -586,7 +586,6 @@ final class AccountSummaryBuilderTests: XCTestCase {
 
             // Raised to Everything on the Mac: its summaries are deleted everywhere.
             try write(h.adminMac.db) { db in try SharingLevels.set(.everything, accountId: f.totals, actor: f.admin, db: db) }
-            try h.requeueEverythingOnTheMac()
             try await h.adminMac.engine.pushPending()
             try await h.adminMac2.engine.syncNow()
             try await h.memberDevice.engine.pull()
@@ -608,7 +607,6 @@ final class AccountSummaryBuilderTests: XCTestCase {
                         try SharingLevels.set(.categoryTotals, accountId: try XCTUnwrap(SyncRecordStore.localId(table: "account", uuid: totalsUuid, db: db)),
                                               actor: try AccessActor.admin(db: db), db: db)
                     }
-                    try h.requeueEverything(on: device)
                 }
                 try await h.adminMac.engine.pushPending()
                 try await h.adminMac2.engine.pushPending()
@@ -616,7 +614,6 @@ final class AccountSummaryBuilderTests: XCTestCase {
             } else {
                 // On the Mac; the second Mac pulls first (its tombstones discard the records), then rebuilds.
                 try write(h.adminMac.db) { db in try SharingLevels.set(.categoryTotals, accountId: f.totals, actor: f.admin, db: db) }
-                try h.requeueEverythingOnTheMac()
                 try await h.adminMac.engine.pushPending()
                 try await h.adminMac2.engine.syncNow()
             }

@@ -132,24 +132,6 @@ public final class TwoPersonHousehold {
         }
     }
 
-    /// Queues every record on the admin's Mac to be sent again (no data written): what a level change does for the
-    /// records it moves (step 6 Task 8), so the next push places each one again.
-    public func requeueEverythingOnTheMac() throws {
-        try requeueEverything(on: adminMac)
-    }
-
-    /// `requeueEverythingOnTheMac` on any writer device.
-    public func requeueEverything(on device: Device) throws {
-        try device.db.write { db in
-            let base = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(revision), 0) FROM syncPending") ?? 0
-            try db.execute(sql: """
-                INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
-                SELECT uuid, tableName, localId, 'update', ? + rowid FROM syncRecord ORDER BY rowid
-                ON CONFLICT(uuid) DO NOTHING
-                """, arguments: [base])
-        }
-    }
-
     /// The record's UUID on the admin's Mac.
     public func uuid(_ table: String, _ id: Int64) throws -> String {
         try adminMac.db.write { db in try SyncRecordStore.uuid(for: table, localId: id, db: db) }

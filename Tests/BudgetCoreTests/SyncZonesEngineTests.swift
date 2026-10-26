@@ -162,7 +162,6 @@ final class SyncZonesEngineTests: XCTestCase {
             XCTAssertNotNil(try h.localId("transaction_", uuid: moved, on: h.memberDevice))
 
             try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
             try await h.adminMac.engine.pushPending()
             let storedMarker = try await stored(h, moved, in: SyncZones.household)
             let marker = try XCTUnwrap(storedMarker)
@@ -192,7 +191,6 @@ final class SyncZonesEngineTests: XCTestCase {
 
             // Back to Everything: the record comes back to the member.
             try write(h.adminMac) { db in _ = try SharingLevels.set(.everything, accountId: f.shared, actor: f.admin, db: db) }
-            try h.requeueEverythingOnTheMac()
             try await h.syncAll()
             XCTAssertNotNil(try h.localId("transaction_", uuid: moved, on: h.memberDevice), "a move back applies")
             XCTAssertNotNil(try h.localId("transaction_", uuid: moved, on: phone))
@@ -349,7 +347,6 @@ final class SyncZonesEngineTests: XCTestCase {
         XCTAssertEqual(privateBefore, [])
 
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         try await h.syncAll()
         let storedRecord = try await stored(h, uuid, in: f.privateZone)
         let record = try XCTUnwrap(storedRecord)
@@ -579,7 +576,6 @@ final class SyncZonesEngineTests: XCTestCase {
         XCTAssertEqual(first.count, 1)
 
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         await h.cloud.failSaves(of: [uuid], times: 4)
         _ = try await h.adminMac.engine.pushPending()
         let stillThere = await files(h, of: uuid, in: SyncZones.household)
@@ -609,10 +605,9 @@ final class SyncZonesEngineTests: XCTestCase {
         let uuid = try h.uuid("document", document)
         let reference = try read(h.adminMac) { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
-        // A router bug sends Private's transaction to the household: the guard stops the push.
-        let privateTransaction = f.privateTransaction
-        await h.adminMac.engine.setAssignmentOverride { table, id in table == "transaction_" && id == privateTransaction ? .household : nil }
+        // A router bug keeps one of Shared's moving transactions in the household: the guard stops the push.
+        let movingTransaction = f.sharedTransaction
+        await h.adminMac.engine.setAssignmentOverride { table, id in table == "transaction_" && id == movingTransaction ? .household : nil }
         do {
             _ = try await h.adminMac.engine.pushPending()
             XCTFail("the push must stop")
@@ -639,7 +634,6 @@ final class SyncZonesEngineTests: XCTestCase {
         try await h.syncAll()
         let moved = try h.uuid("transaction_", f.transferOut)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         // The record saves (A's zone, then the household) go; the markers don't.
         await h.cloud.failSaveOperations(after: 2)
         do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
@@ -757,7 +751,6 @@ final class SyncZonesEngineTests: XCTestCase {
         try await h.syncAll()
         let moved = try h.uuid("transaction_", f.transferOut)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.loseReply(to: moved, in: f.privateZone)
         do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...3 { _ = try await h.adminMac.engine.syncNow() }
@@ -777,7 +770,6 @@ final class SyncZonesEngineTests: XCTestCase {
         try await h.syncAll()
         let uuid = try h.uuid("document", document)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.loseReply(to: uuid, in: f.privateZone)
         do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...3 { _ = try await h.adminMac.engine.syncNow() }
@@ -804,11 +796,9 @@ final class SyncZonesEngineTests: XCTestCase {
         try await h.syncAll()
         let uuid = try h.uuid("document", document)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.failSaves(of: uuid, in: SyncZones.household)
         _ = try await h.adminMac.engine.pushPending()
         try write(h.adminMac) { db in _ = try SharingLevels.set(.everything, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.restore()
         _ = try await h.adminMac.engine.pull()
         _ = try await h.adminMac.engine.pushPending()
@@ -836,7 +826,6 @@ final class SyncZonesEngineTests: XCTestCase {
         try await h.syncAll()
         let moved = try h.uuid("transaction_", f.transferOut)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.loseReply(to: moved, in: SyncZones.household)
         do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...2 { _ = try await h.adminMac.engine.syncNow() }
@@ -858,7 +847,6 @@ final class SyncZonesEngineTests: XCTestCase {
         }
         let moved = try h.uuid("transaction_", f.transferOut)
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         _ = try await h.adminMac.engine.pushPending()
         let left = try await stored(h, moved, in: SyncZones.household)
         XCTAssertEqual(left?.movedTo, f.privateZone, "the move's marker was accepted")
@@ -923,12 +911,10 @@ final class SyncZonesEngineTests: XCTestCase {
 
         // The first Mac lowers Shared; the reply of the private save is lost.
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        try h.requeueEverythingOnTheMac()
         h.macTransport.loseReply(to: moved, in: f.privateZone)
         do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         // The second Mac hears of it and moves its own copies too (its marker's reply is lost).
         _ = try await h.adminMac2.engine.pull()
-        try h.requeueEverything(on: h.adminMac2)
         h.mac2Transport.loseReply(to: moved, in: SyncZones.household)
         do { _ = try await h.adminMac2.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...2 {
@@ -941,9 +927,8 @@ final class SyncZonesEngineTests: XCTestCase {
         // The second Mac raises it back; the household save's reply is lost.
         try write(h.adminMac2) { db in
             let id = try XCTUnwrap(try SyncRecordStore.localId(table: "account", uuid: account, db: db))
-            try db.execute(sql: "UPDATE account SET sharingLevel = ? WHERE id = ?", arguments: [SharingLevel.everything.rawValue, id])
+            _ = try SharingLevels.set(.everything, accountId: id, actor: try AccessActor.admin(db: db), db: db)
         }
-        try h.requeueEverything(on: h.adminMac2)
         h.mac2Transport.loseReply(to: moved, in: SyncZones.household)
         do { _ = try await h.adminMac2.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...3 {

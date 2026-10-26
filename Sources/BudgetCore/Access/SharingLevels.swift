@@ -44,8 +44,9 @@ public enum SharingDefaults {
 }
 
 /// Changing a level after set-up: only the account's owner, never a joint account, and Hidden only once
-/// nothing shared still points at the account. Moving the account's records between zones is the push's
-/// job; this writes the level only.
+/// nothing shared still points at the account. `set` writes the level only (no other data row, no field
+/// clock) and queues every record whose placement it changes; the push then moves them between zones, with
+/// markers over the old copies (`SyncZoneMoves`).
 public enum SharingLevels {
     public struct Change: Equatable, Sendable {
         public var from: SharingLevel
@@ -100,10 +101,23 @@ public enum SharingLevels {
                                               changedFields: ["sharingLevel"],
                                               row: ["ownerPersonId": .int(owner), "sharingLevel": .string(level.rawValue)], db: db)
         guard try AccessPolicy.allows(actor, decision, db: db) else { throw SharingError.notOwner }
+        // Worked out before the write, from the same facts the push will route with afterwards.
+        let moves = try SyncZoneMoves.placementChanges(levels: [accountId: level], db: db)
         try ActorWrite.stamped(actor, origin: .edit, db: db) {
             try db.execute(sql: "UPDATE account SET sharingLevel = ? WHERE id = ?", arguments: [level.rawValue, accountId])
         }
+        // The level is the only data written; the account's write marks its summaries dirty (`summaryDirtyTriggers`).
+        try SyncZoneMoves.queue(moves, db: db)
         return change
+    }
+
+    /// How many records changing the account to `level` places differently, in another zone or form (the warning's
+    /// "Moves 1,204 records"): exactly the records `set` queues for that, beside the level write itself. Reads only.
+    /// 0 for the level it has, for a joint account (always shared in full) and before ownership is confirmed.
+    public static func affectedCount(accountId: Int64, to level: SharingLevel, db: Database) throws -> Int {
+        guard let account = try Account.fetchOne(db, key: accountId) else { throw SharingError.accountNotFound }
+        guard level != account.sharingLevel, account.ownerPersonId != nil, try SharingSetup.isConfirmed(db: db) else { return 0 }
+        return try SyncZoneMoves.placementChanges(levels: [accountId: level], db: db).count
     }
 
     /// What stops the account going to `level`: only Hidden has blockers.

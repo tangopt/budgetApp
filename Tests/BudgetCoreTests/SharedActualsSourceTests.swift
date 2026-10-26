@@ -237,8 +237,8 @@ final class SharedActualsSourceTests: XCTestCase {
         }
     }
 
-    /// Lowering a level leaves the member's old copies of the account's rows until the move lands (Task 8); the
-    /// summaries arrive at once. Each transaction still counts once.
+    /// Lowering a level leaves the member's old copy of a row until its move lands (Task 8: here one marker keeps
+    /// failing); the summaries arrive at once. Each transaction still counts once.
     func testRowsLeftFromBeforeALowerCountOnce() async throws {
         let h = try TwoPersonHousehold.make()
         let f = h.fixture
@@ -258,11 +258,18 @@ final class SharedActualsSourceTests: XCTestCase {
         XCTAssertEqual(held, 4)
 
         try await h.adminMac.db.write { db in _ = try SharingLevels.set(.categoryTotals, accountId: f.totals, actor: f.admin, db: db) }
+        let lagging = try await h.adminMac.db.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT s.uuid FROM transaction_ t JOIN syncRecord s ON s.tableName = 'transaction_' AND s.localId = t.id
+                WHERE t.accountId = ? ORDER BY t.id LIMIT 1
+                """, arguments: [f.totals])
+        }
+        h.macTransport.failSaves(of: try XCTUnwrap(lagging), in: SyncZones.household)
         try await h.syncAll()
         let member = try Self.viewer(h.memberDevice, admin: false)
         let admin = try Self.viewer(h.adminMac, admin: true)
         let stillHeld = try await memberHoldsTotalsRows()
-        XCTAssertEqual(stillHeld, 4, "the old copies are still on the member's device")
+        XCTAssertEqual(stillHeld, 1, "the old copy whose marker hasn't landed is still on the member's device")
         let owner = try await h.adminMac.db.read { db -> [String: [String: Int]] in
             let router = try SyncZoneRouter(db: db)
             let balanceOnlyPrivate = try Set(Int64.fetchAll(db, sql: "SELECT id FROM transaction_ WHERE accountId = ?", arguments: [f.privateAccount])

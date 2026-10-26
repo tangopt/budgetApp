@@ -141,6 +141,51 @@ public enum SyncZoneMoves {
         try db.execute(sql: "UPDATE syncZoneMove SET pending = 0, systemFields = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
     }
 
+    /// A record a level change places differently: its zone, what it leaves out there or its companion.
+    struct PlacementChange: Equatable {
+        var uuid: String
+        var tableName: String
+        var localId: Int64
+    }
+
+    /// Every record this device tracks whose placement with `levels` (account id to level) in place of the stored
+    /// ones differs from its placement now (sharing spec 2026-10-25 §3 goal 4): what a level change sends again, so
+    /// the push moves it (or resends it without the fields it now leaves out). Reads only. A record the router can't
+    /// place counts when the reason changes (it may become placeable, or stop being); a gone row never counts. Summaries
+    /// never count: the owner's device rebuilds them before the push (`AccountSummaryBuilder`), deleting those the
+    /// new level doesn't allow, and they never leave the household.
+    static func placementChanges(levels: [Int64: SharingLevel], db: Database) throws -> [PlacementChange] {
+        let now = try SyncZoneRouter(db: db)
+        let then = try SyncZoneRouter(db: db, levels: levels)
+        func place(_ router: SyncZoneRouter, _ table: String, _ id: Int64) throws -> Result<ZoneAssignment, SyncZoneRouterError> {
+            do { return .success(try router.assignment(table: table, localId: id)) } catch let error as SyncZoneRouterError { return .failure(error) }
+        }
+        var changes: [PlacementChange] = []
+        for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId FROM syncRecord WHERE zone <> ? ORDER BY rowid",
+                                    arguments: [SyncZoneSet.deviceOnlyZone]) {
+            let table: String = row["tableName"]
+            let id: Int64 = row["localId"]
+            guard SyncZoneRouter.rules[table] != nil, !AccessAreaMap.summaryTables.contains(table) else { continue }
+            if try place(now, table, id) != place(then, table, id) {
+                changes.append(PlacementChange(uuid: row["uuid"], tableName: table, localId: id))
+            }
+        }
+        return changes
+    }
+
+    /// Queues the records to be sent again as updates (`syncPending`; a queued insert stays an insert), with a fresh
+    /// revision, so an upload already under way doesn't clear them. No data row and no field clock is touched.
+    static func queue(_ changes: [PlacementChange], db: Database) throws {
+        let statement = try db.cachedStatement(sql: """
+            INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
+            VALUES (?, ?, ?, 'update', (SELECT COALESCE(MAX(revision), 0) + 1 FROM syncPending))
+            ON CONFLICT(uuid) DO UPDATE SET revision = excluded.revision
+            """)
+        for change in changes {
+            try statement.execute(arguments: [change.uuid, change.tableName, change.localId])
+        }
+    }
+
     /// The marker saved over a moved record's old copy: no fields, sealed like any record of `zone`.
     static func marker(uuid: String, tableName: String, zone: String, movedTo: String) -> SyncPayload {
         var payload = SyncPayload(recordType: tableName, recordName: uuid, zone: zone, fields: [:])
