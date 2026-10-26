@@ -14,6 +14,8 @@ public enum AppUserStoreError: Error, Equatable, Sendable {
     case emptyName
     case unknownPerson
     case noSuchUser
+    /// The household already has its member (step 7a: one member besides the admin).
+    case householdHasMember
 }
 
 /// Everything that creates, checks or changes app users and their local credentials. The "at least one
@@ -72,6 +74,45 @@ public enum AppUserStore {
             return .commit
         }
         return (user, recoveryKey)
+    }
+
+    /// The household's member (step 7a): a person's app user with no password and no local credential on this Mac, not
+    /// an admin, who joins on her own device. `personId` nil makes the person too (`People.save`, named `name`). Admin
+    /// only, written as the admin (`ActorWrite`, household settings), with her default permissions; refuses a second
+    /// member.
+    public static func addMember(_ db: Database, personId: Int64?, name: String, by actorId: Int64, now: Date) throws -> AppUser {
+        try requireAdmin(db, actorId)
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw AppUserStoreError.emptyName }
+        guard try AppUser.filter(Column("isAdmin") == false).fetchCount(db) == 0 else { throw AppUserStoreError.householdHasMember }
+        if let personId {
+            guard try Person.fetchOne(db, key: personId) != nil else { throw AppUserStoreError.unknownPerson }
+            guard try AppUser.filter(Column("personId") == personId).fetchCount(db) == 0 else {
+                throw AppUserStoreError.personAlreadyHasUser
+            }
+        }
+        let admin = try AccessActor.load(appUserId: actorId, db: db)
+        return try ActorWrite.perform(admin, area: .householdSettings, db: db) {
+            var user: AppUser?
+            try db.inSavepoint {
+                let id: Int64
+                if let personId {
+                    id = personId
+                } else {
+                    var person = Person(name: name)
+                    try People.save(db: db, &person)
+                    id = person.id!
+                }
+                var member = AppUser(personId: id, displayName: name, isAdmin: false, createdAt: now)
+                try member.insert(db)
+                // Her step 6 defaults (Edit for Documents, Import and Property; View elsewhere), as the ownership sheet
+                // writes them for a member it finds.
+                try MemberPermissions.ensureDefaults(appUserId: member.id!, db: db)
+                user = member
+                return .commit
+            }
+            return user!
+        }
     }
 
     // MARK: Checking

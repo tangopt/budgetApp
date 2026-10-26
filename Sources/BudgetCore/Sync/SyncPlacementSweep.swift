@@ -82,6 +82,18 @@ public enum SyncPlacementSweep {
         try scan(lastForms: nil, db: db).changes
     }
 
+    /// The invite's gate (step 7a Task 7): every record placed in one of `zones` that isn't where it goes now, judged
+    /// as the next sweep would (a reduced form counts only when it differs from the last sweep's, or none is stored yet).
+    /// Empty once the sweep has moved everything and its moves are done.
+    static func unsettled(zones: Set<String>, db: Database) throws -> [SyncZoneMoves.PlacementChange] {
+        let lastForms = try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [reducedFormsKey])
+            .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+        return try scan(lastForms: lastForms, db: db).changes.filter { change in
+            guard case .success(let placed) = change.after else { return true }
+            return zones.contains(placed.zone)
+        }
+    }
+
     /// `misplaced`, telling a reduced form from the one `lastForms` holds (when it holds the forms of a previous sweep):
     /// a record goes again only when its zone changed, or its reduced form (or lack of one) differs from that sweep's;
     /// a reduced record that sweep didn't see goes again too. Also returns every reduced form placed now.

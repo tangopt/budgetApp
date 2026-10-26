@@ -51,3 +51,8 @@ public protocol SyncShareTransport: Sendable {
     /// Takes the participant off the zone's share: the zone stops being reachable for them.
     func removeParticipant(userRecordName: String, zone: String) async throws
 }
+
+/// A wrapping transport (`ZoneAuditingTransport`, a test's lossy one) was asked to share, but what it wraps can't.
+public struct SyncShareNotSupported: Error, Equatable {
+    public init() {}
+}

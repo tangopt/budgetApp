@@ -62,14 +62,18 @@ public final class TwoPersonHousehold {
     /// The household, with `SharingFixture` on the admin's Mac; `levels` (account id to level) replace the
     /// fixture's, written as they are (no blockers checked). `macDocuments` / `phoneDocuments`: where those devices
     /// keep files, when a test syncs files. `revalidatesAccess`: the admin's Mac re-validates what it pulls (step 6
-    /// Task 9), as the app's Mac does.
+    /// Task 9), as the app's Mac does. `memberInvited` false (step 7a Task 7): the household isn't shared yet, so her
+    /// iCloud user isn't on its share and her appUser has no record name.
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
-                            phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false) throws -> TwoPersonHousehold {
+                            phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false,
+                            memberInvited: Bool = true) throws -> TwoPersonHousehold {
         // The admin made the household zone before inviting her (the member can't create it in his database).
         // Its clock keeps up with the devices' (they stamp `Date()`), so the members' clocks aren't all clamped (step 7a).
         let cloud = FakeCloud(start: Date(), zones: [SyncZones.household], ownerRecordName: adminICloudUser, followsWallClock: true)
-        cloud.invite(memberICloudUser, zone: SyncZones.household)
-        cloud.accept(zone: SyncZones.household, as: memberICloudUser)
+        if memberInvited {
+            cloud.invite(memberICloudUser, zone: SyncZones.household)
+            cloud.accept(zone: SyncZones.household, as: memberICloudUser)
+        }
         let adminKeys = InMemorySyncKeyStore()
         let memberKeys = InMemorySyncKeyStore()
         let householdKey = DocumentCrypto.newZoneKey()
@@ -94,7 +98,9 @@ public final class TwoPersonHousehold {
             let personB = try SyncRecordStore.uuid(for: "person", localId: fixture.personB, db: db)
             try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?",
                            arguments: [adminICloudUser, fixture.admin.appUserId])
-            try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?", arguments: [memberICloudUser, member])
+            if memberInvited {
+                try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?", arguments: [memberICloudUser, member])
+            }
             try SyncChangeTracker.setWriter(adminUser, db: db)
             return (fixture, adminUser, memberUser, personB)
         }

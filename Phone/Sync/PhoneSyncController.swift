@@ -56,8 +56,6 @@ final class PhoneSyncController: ObservableObject {
     /// Shown once this device was found no longer in the household (its data removed here).
     @Published private(set) var householdNotice: String?
 
-    /// Moved into `HouseholdCopy.removedNotice` in Task 7.
-    static let removedNotice = "You're no longer in this household. Its data was removed from this device."
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
 
@@ -411,7 +409,7 @@ final class PhoneSyncController: ObservableObject {
                 }
             }.value
         }
-        householdNotice = Self.removedNotice
+        householdNotice = HouseholdCopy.removedNotice
         await startEngine(viewer: .none)
     }
 

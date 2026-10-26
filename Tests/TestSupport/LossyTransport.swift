@@ -49,3 +49,22 @@ public final class LossyTransport: SyncTransport, Sendable {
     public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await inner.fetch(recordName, zone: zone) }
     public func serverTime() async throws -> Date? { try await inner.serverTime() }
 }
+
+/// Sharing calls go to the wrapped transport (step 7a).
+extension LossyTransport: SyncShareTransport {
+    private var sharing: any SyncShareTransport {
+        get throws {
+            guard let sharing = inner as? any SyncShareTransport else { throw SyncShareNotSupported() }
+            return sharing
+        }
+    }
+
+    public func currentUserRecordName() async throws -> String { try await sharing.currentUserRecordName() }
+    public func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await sharing.zoneShare(zone) }
+    public func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
+        try await sharing.makeZoneShare(zone, title: title)
+    }
+    public func removeParticipant(userRecordName: String, zone: String) async throws {
+        try await sharing.removeParticipant(userRecordName: userRecordName, zone: zone)
+    }
+}

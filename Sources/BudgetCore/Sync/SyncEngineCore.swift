@@ -348,6 +348,12 @@ public actor SyncEngineCore {
                 // Someone else's household this device no longer reaches: it left (or was removed). Nothing is made
                 // or queued; the device drops the household's data (`SyncLocalData.dropZone`).
                 if zone == SyncZones.household, householdIsShared {
+                    // Not before her first household pull here (Task 7, M4): just after accepting, CloudKit may not list
+                    // the zone yet. Nothing was pulled, so nothing is kept or dropped meanwhile.
+                    guard try await db.read({ db in try SyncHouseholdMembership.hasJoined(db: db) }) else {
+                        Self.log.notice("Sync: the shared household isn't reachable yet; trying again on the next sync")
+                        return SyncPullReport()
+                    }
                     var left = SyncPullReport()
                     left.leftHousehold = true
                     return left
@@ -568,6 +574,7 @@ public actor SyncEngineCore {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
+            if zone == SyncZones.household, self.householdIsShared { try SyncHouseholdMembership.joined(db: db) }
             return (report, waitingDeleted)
         }
         // A row deleted remotely takes its local copy with it (never one whose hash has a row here again).

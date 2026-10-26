@@ -179,3 +179,23 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
 
     public func serverTime() async throws -> Date? { try await inner.serverTime() }
 }
+
+// MARK: SyncShareTransport (step 7a): passed on to the wrapped transport, so the invite runs through the audit.
+
+extension ZoneAuditingTransport: SyncShareTransport {
+    private var sharing: any SyncShareTransport {
+        get throws {
+            guard let sharing = inner as? any SyncShareTransport else { throw SyncShareNotSupported() }
+            return sharing
+        }
+    }
+
+    public func currentUserRecordName() async throws -> String { try await sharing.currentUserRecordName() }
+    public func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await sharing.zoneShare(zone) }
+    public func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
+        try await sharing.makeZoneShare(zone, title: title)
+    }
+    public func removeParticipant(userRecordName: String, zone: String) async throws {
+        try await sharing.removeParticipant(userRecordName: userRecordName, zone: zone)
+    }
+}
