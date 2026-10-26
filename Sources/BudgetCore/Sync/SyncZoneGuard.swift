@@ -145,7 +145,9 @@ public struct SyncZoneGuard {
                             WHERE c.tableName = 'document' AND c.localId = d.id AND c.field = ?) AS inserterPerson
             FROM document d JOIN syncRecord s ON s.tableName = 'document' AND s.localId = d.id
             LEFT JOIN customDocumentKind k ON k.id = d.customKindId
-            WHERE NOT (CASE WHEN d.customKindId IS NOT NULL THEN COALESCE(k.area = ?, 0) ELSE COALESCE(d.kind IN (\(propertyKinds)), 0) END)
+            WHERE NOT (CASE WHEN d.customKindId IS NOT NULL
+                            THEN (CASE WHEN k.mergedIntoKind IS NOT NULL THEN k.mergedIntoKind IN (\(propertyKinds)) ELSE COALESCE(k.area = ?, 0) END)
+                            ELSE COALESCE(d.kind IN (\(propertyKinds)), 0) END)
             \(referenced.map { "AND NOT EXISTS (\($0))" }.joined(separator: "\n"))
             """, arguments: [SyncMerge.insertClock, DocumentArea.property.rawValue]) {
             let zone = (row["inserterPerson"] as Int64?).flatMap { personUuid[$0] }.map(SyncZones.privateZone(personUuid:))

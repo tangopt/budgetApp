@@ -420,7 +420,7 @@ public final class SyncZoneRouter {
     /// person whose app user inserted it (the insert clock's writer); else the admin's.
     private func unlinkedPlacement(_ document: Int64) throws -> ZoneAssignment {
         guard let row = try Row.fetchOne(db.cachedStatement(sql: """
-            SELECT d.kind, d.customKindId, k.area,
+            SELECT d.kind, d.customKindId, k.area, k.mergedIntoKind,
                    (SELECT a.personId FROM syncFieldClock c
                     JOIN syncRecord u ON u.tableName = 'appUser' AND u.uuid = c.modifiedBy
                     JOIN appUser a ON a.id = u.localId
@@ -430,7 +430,12 @@ public final class SyncZoneRouter {
             """), arguments: [SyncMerge.insertClock, document]) else { return ZoneAssignment(zone: try adminZone()) }
         let isProperty: Bool
         if (row["customKindId"] as Int64?) != nil {
-            isProperty = (row["area"] as String?) == DocumentArea.property.rawValue
+            // A custom kind retired into a built-in (merged) is that built-in, as the library files it.
+            if let merged: String = row["mergedIntoKind"] {
+                isProperty = SyncZones.propertyDocumentKinds.contains(merged)
+            } else {
+                isProperty = (row["area"] as String?) == DocumentArea.property.rawValue
+            }
         } else {
             isProperty = (row["kind"] as String?).map(SyncZones.propertyDocumentKinds.contains) ?? false
         }

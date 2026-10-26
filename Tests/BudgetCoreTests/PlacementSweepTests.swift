@@ -381,4 +381,94 @@ final class PlacementSweepTests: XCTestCase {
         XCTAssertEqual(SyncPlacementSweep.routings.withLock { $0 }, routings + 1)
         try assertSettled(h)
     }
+
+    // MARK: Carried from the Task 4 review
+
+    /// M-1: an import that moves nothing re-queues nothing: a stub and property money are sent again only when their
+    /// reduced form changed since the last sweep (or the last sweep's forms aren't known, as after an upgrade).
+    func testUnrelatedImportRequeuesNothingAlreadyInPlace() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await syncEveryone(h)
+        try assertSettled(h)
+        let zones: Set<String> = [SyncZones.household, h.fixture.privateZone]
+        let stub = try h.uuid("account", h.fixture.privateAccount)
+        let propertyMoney = try h.uuid("transaction_", h.fixture.privatePropertyTransaction)
+        let reduced = try read(h.adminMac) { db in try SyncPlacementSweep.misplaced(zones: zones, db: db).map(\.uuid) }
+        XCTAssertTrue(reduced.contains(stub) && reduced.contains(propertyMoney), "precondition: reduced-form records exist")
+
+        // An unrelated import: a new batch and transaction in the shared account.
+        let routings = SyncPlacementSweep.routings.withLock { $0 }
+        let queued = try write(h.adminMac) { db -> Int in
+            let account = h.fixture.shared
+            try db.execute(sql: "INSERT INTO importBatch(accountId, sourceFileName, importedAt) VALUES (?, 'synthetic.csv', ?)",
+                           arguments: [account, Date(timeIntervalSince1970: 1_790_000_000)])
+            let batch = db.lastInsertedRowID
+            var t = Transaction(importBatchId: batch, accountId: account, date: Date(timeIntervalSince1970: 1_790_000_000),
+                                rawDescription: "SYNTHETIC SHOP", amountMinorUnits: -1_234, categoryId: nil, status: .confirmed,
+                                categorizedBy: .none, fingerprint: "fp-synthetic-shop")
+            try t.insert(db)
+            return try SyncPlacementSweep.run(zones: zones, db: db, now: Date())
+        }
+        XCTAssertEqual(SyncPlacementSweep.routings.withLock { $0 }, routings + 1, "the inputs changed: the sweep ran")
+        XCTAssertEqual(queued, 0, "nothing already on the server is queued again")
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending WHERE uuid IN (?, ?)", [stub, propertyMoney]), 0)
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending"), 2, "only the import's own batch and transaction")
+        _ = try await h.adminMac.engine.syncNow()
+
+        // Without the last sweep's forms (an upgrade), reduced records go again once, as before.
+        let again = try write(h.adminMac) { db -> Int in
+            try db.execute(sql: "DELETE FROM syncState WHERE key IN (?, ?)",
+                           arguments: [SyncPlacementSweep.reducedFormsKey, SyncPlacementSweep.fingerprintKey])
+            return try SyncPlacementSweep.run(zones: zones, db: db, now: Date())
+        }
+        XCTAssertGreaterThan(again, 0)
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending WHERE uuid IN (?, ?)", [stub, propertyMoney]), 2)
+        try await syncEveryone(h)
+        // A reduced form that differs from the last sweep's goes again, alone (the forms map edited as a change would).
+        let changed = try write(h.adminMac) { db -> Int in
+            var forms = try JSONDecoder().decode([String: String].self, from: try XCTUnwrap(
+                Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [SyncPlacementSweep.reducedFormsKey])))
+            XCTAssertNotNil(forms[stub])
+            forms[stub] = "household||"
+            try SyncImportGate.setState(try JSONEncoder().encode(forms), key: SyncPlacementSweep.reducedFormsKey, db: db, now: Date())
+            try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [SyncPlacementSweep.fingerprintKey])
+            return try SyncPlacementSweep.run(zones: zones, db: db, now: Date())
+        }
+        XCTAssertEqual(changed, 1, "only the record whose form differs")
+        try await syncEveryone(h)
+        try assertSettled(h)
+        assertAuditsClean(h)
+    }
+
+    /// L-3: a custom kind retired into a built-in kind (merged) places its documents as that built-in does.
+    func testRetiredCustomKindFollowsTheKindItWasMergedInto() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let f = try SharingFixture.build(db)
+            try SyncChangeTracker.setWriter(try SyncRecordStore.uuid(for: "appUser", localId: f.admin.appUserId, db: db), db: db)
+            // Was a tax kind, merged into the property deed; was a property kind, merged into an HMRC letter.
+            var intoDeed = CustomDocumentKind(name: "Synthetic deed copy", area: .tax, mergedIntoKind: .propertyDeed)
+            try intoDeed.insert(db)
+            var intoLetter = CustomDocumentKind(name: "Synthetic letter", area: .property, mergedIntoKind: .hmrcLetter)
+            try intoLetter.insert(db)
+            let deed = try addDocument(db, "a", customKindId: intoDeed.id)
+            let letter = try addDocument(db, "b", kind: DocumentKind.rentReceipt.rawValue, customKindId: intoLetter.id)
+            let router = try SyncZoneRouter(db: db)
+            XCTAssertEqual(try router.assignment(table: "document", localId: deed), .household)
+            XCTAssertEqual(try router.assignment(table: "document", localId: letter), ZoneAssignment(zone: f.privateZone))
+            func household(_ id: Int64) throws -> SyncPayload {
+                SyncPayload(recordType: "document", recordName: try SyncRecordStore.uuid(for: "document", localId: id, db: db),
+                            zone: SyncZones.household, fields: ["kind": .string("other")])
+            }
+            let guardian = try SyncZoneGuard(db: db)
+            XCTAssertNoThrow(try guardian.check([try household(deed)]))
+            XCTAssertThrowsError(try guardian.check([try household(letter)]))
+            // A merge changes the placement inputs.
+            let before = try SyncPlacementSweep.fingerprint(db: db)
+            try db.execute(sql: "UPDATE customDocumentKind SET mergedIntoKind = ? WHERE id = ?",
+                           arguments: [DocumentKind.rentReceipt.rawValue, intoLetter.id])
+            XCTAssertNotEqual(try SyncPlacementSweep.fingerprint(db: db), before)
+            XCTAssertEqual(try SyncZoneRouter(db: db).assignment(table: "document", localId: letter), .household)
+        }
+    }
 }
