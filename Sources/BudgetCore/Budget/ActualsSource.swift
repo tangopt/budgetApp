@@ -1,11 +1,18 @@
 import GRDB
 
-/// Where the Dashboard, Budget grid and Forecast get the actuals they total from. Today that
-/// is every transaction in the local database. In build step 5, private accounts below
-/// "Everything" contribute summary rows here instead of their transactions (sync spec §6.1,
-/// "How totals count"), so the screens need no change when that arrives.
+/// Where the Dashboard, Budget grid and Forecast get the actuals they total from, and the balance snapshots net
+/// worth starts from. `LocalActualsSource` is every row in the local database; `SharedActualsSource` replaces the
+/// accounts the viewer can't see in full with their summaries (sync spec §6.1, "How totals count"), so the screens
+/// need no change.
 public protocol ActualsSource {
     func transactions(_ db: Database) throws -> [Transaction]
+    func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot]
+}
+
+extension ActualsSource {
+    public func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot] {
+        try BalanceSnapshot.fetchAll(db)
+    }
 }
 
 /// All local transactions: the same set the screens read before the seam existed.

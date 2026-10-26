@@ -4,13 +4,14 @@ import GRDB
 extension DashboardInput {
     /// The dashboard's one batched read: everything `DashboardCalculator` needs, as the Mac's
     /// Dashboard and the iPhone's Home load it (the local ledger's actuals, the budget plan,
-    /// manual pay-month closes and transfer links).
-    public static func load(db: Database, today: Date) throws -> DashboardInput {
+    /// manual pay-month closes and transfer links). `actuals` gives the transactions and balance snapshots: the
+    /// local ledger's, or the viewer's with summaries for the accounts they can't see in full (`SharedActualsSource`).
+    public static func load(db: Database, today: Date, actuals: any ActualsSource = .local) throws -> DashboardInput {
         DashboardInput(
             today: today,
             accounts: try Account.fetchAll(db),
-            snapshots: try BalanceSnapshot.fetchAll(db),
-            transactions: try LocalActualsSource().transactions(db),
+            snapshots: try actuals.balanceSnapshots(db),
+            transactions: try actuals.transactions(db),
             categories: try Category.fetchAll(db),
             categoryGroups: try CategoryGroup.fetchAll(db),
             forecastEntries: try ForecastEntry.budget(db),
