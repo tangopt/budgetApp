@@ -193,7 +193,7 @@ extension DashboardCalculator {
         var behindDates: [Date] = []
         if let dataMonth {
             let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
-            for account in input.netWorthAccounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions) {
+            for account in input.netWorthAccounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions, snapshots: input.snapshots) {
                 guard let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
                 let parts = MonthRange.components(of: latest)
                 if MonthRange.index(year: parts.year, month: parts.month) < dataIndex { behindDates.append(latest) }
