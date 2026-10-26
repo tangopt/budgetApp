@@ -77,9 +77,15 @@ public struct PadRootView: View {
             SearchView(model: tabs.search, syncStatus: syncStatus, onRefresh: onRefresh)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .propertyOverview:
-            PropertyView(model: tabs.property, syncStatus: syncStatus, onRefresh: onRefresh)
+            PadOverviewView(model: tabs.property, syncStatus: syncStatus, onRefresh: onRefresh)
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .bills, .recharges, .rentReceipts, .tenancies, .documents, .missingEvidence:
+        case .tenancies:
+            PadTenanciesView(model: tabs.padProperty, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .bills:
+            PadBillsView(model: tabs.padProperty, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .recharges, .rentReceipts, .documents, .missingEvidence:
             PadPlaceholder(section: section)
         }
     }

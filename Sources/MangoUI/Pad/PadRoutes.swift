@@ -16,5 +16,27 @@ public enum PadRoutes {
                                                           preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, columns: .doubleColumn))
         },
+        DemoRoute(name: "pad-property-overview", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .propertyOverview,
+                                columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-tenancies", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .tenancies,
+                                columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-bills", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .bills,
+                                columns: .doubleColumn))
+        },
     ]
+
+    /// Tabs over the demo with Property's models already read, so the first frame has its data.
+    @MainActor
+    static func tabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let today = context.today
+        let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin)
+        tabs.padProperty.preload(PadPropertyModel.readNow(context.dbQueue, today: today))
+        tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
+        return tabs
+    }
 }
