@@ -140,9 +140,41 @@ enum SharingMigration {
     }
 }
 
+extension SharingMigration {
+    static let summaryDirtyIdentifier = "summaryDirtyTriggers"
+
+    /// Triggers that mark the account summaries dirty (`syncState` key `AccountSummaryBuilder.dirtyKey`) on any
+    /// write to what they read, also an incoming sync apply; the owner's device rebuilds them before its next push.
+    /// Marks them dirty once, so a database from before builds its first summaries. Guarded: a second run is a no-op.
+    static func applySummaryDirtyTriggers(db: Database) throws {
+        let key = AccountSummaryBuilder.dirtyKey.replacingOccurrences(of: "'", with: "''")
+        // The value is JSON `1`, like every value a migration leaves in `syncState`.
+        let mark = """
+            INSERT INTO syncState(key, value, updatedAt) SELECT '\(key)', X'31', \(SyncChangeTracker.now)
+                WHERE NOT EXISTS (SELECT 1 FROM syncState WHERE key = '\(key)');
+            """
+        for table in AccountSummaryBuilder.sourceTables where try db.tableExists(table) {
+            for (suffix, event) in [("ins", "INSERT"), ("upd", "UPDATE"), ("del", "DELETE")] {
+                try db.execute(sql: """
+                    CREATE TRIGGER IF NOT EXISTS \(SyncChangeTracker.quoted("summaryDirty_\(table)_\(suffix)"))
+                    AFTER \(event) ON \(SyncChangeTracker.quoted(table))
+                    BEGIN
+                    \(mark)
+                    END
+                    """)
+            }
+        }
+        try db.execute(sql: mark)
+    }
+}
+
 func registerSharingMigration(_ migrator: inout DatabaseMigrator) {
     // Adds columns (NULL owner, Everything) and tables only: no existing value changes.
     migrator.registerMigration(SharingMigration.identifier) { db in
         try SharingMigration.apply(db: db)
+    }
+    // Triggers and one bookkeeping row only: no data changes.
+    migrator.registerMigration(SharingMigration.summaryDirtyIdentifier) { db in
+        try SharingMigration.applySummaryDirtyTriggers(db: db)
     }
 }

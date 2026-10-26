@@ -571,6 +571,16 @@ public actor SyncEngineCore {
         if readOnly { return SyncPushReport() }
         try await prepare()
         var report = SyncPushReport()
+        // Step 6: the summaries of the viewer's own accounts are rebuilt first when something they read changed, so
+        // what changed goes up with this push. Only the owner's devices build them (the viewer's own accounts only).
+        if let personUuid = viewer.personUuid {
+            let today = clock()
+            try await db.write { db in
+                guard try AccountSummaryBuilder.isDirty(db: db),
+                      let person = try SyncRecordStore.localId(table: "person", uuid: personUuid, db: db) else { return }
+                try AccountSummaryBuilder.rebuild(ownerPersonId: person, db: db, today: today)
+            }
+        }
         let busy = try await db.read { db in
             try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
                 || !SyncZoneMoves.unfinished(db: db).isEmpty || !SyncCleanup.all(db: db).isEmpty
