@@ -30,13 +30,19 @@ public struct DemoRoute {
     /// renders: the line it returns goes in the report; a throw fails the run.
     public let check: (@MainActor (PhoneDemoContext) throws -> String)?
     public let make: @MainActor (PhoneDemoContext) -> AnyView
+    /// An iPad route: rendered only by the iPad harness (`--device ipad`), at the iPad window sizes; the iPhone run
+    /// skips it, and every other route is the iPhone's.
+    public let pad: Bool
 
     /// Default (`.large`), the largest size short of the accessibility sizes (`.xxxLarge`), where figures must still
     /// sit beside their labels, and `.accessibility3`, where rows stack (iPhone spec §4; fix round 1).
     public static let standardSizes: [DynamicTypeSize] = [.large, .xxxLarge, .accessibility3]
 
+    /// An iPad route's sizes: default and `.xxxLarge` (the sidebar and detail still hold their figures there).
+    public static let padSizes: [DynamicTypeSize] = [.large, .xxxLarge]
+
     public init(name: String, sizes: [DynamicTypeSize] = DemoRoute.standardSizes, minimumFigures: Int = 1,
-                figuresBelowFold: Int = 0, check: (@MainActor (PhoneDemoContext) throws -> String)? = nil,
+                figuresBelowFold: Int = 0, pad: Bool = false, check: (@MainActor (PhoneDemoContext) throws -> String)? = nil,
                 make: @escaping @MainActor (PhoneDemoContext) -> AnyView) {
         self.name = name
         self.sizes = sizes
@@ -44,6 +50,7 @@ public struct DemoRoute {
         self.figuresBelowFold = figuresBelowFold
         self.check = check
         self.make = make
+        self.pad = pad
     }
 
     /// Why a render doesn't count (it measured too little), or nil. `full`: the full-height render.
@@ -74,7 +81,7 @@ public enum DemoRoutes {
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
     ] + HomeRoutes.all + MonthRoutes.all + AccountsRoutes.all + PropertyRoutes.all
-        + SearchRoutes.all + SyncRoutes.all + SharingRoutes.all + JoinRoutes.all
+        + SearchRoutes.all + SyncRoutes.all + SharingRoutes.all + JoinRoutes.all + PadRoutes.all
 }
 
 /// Step 6's routes (Task 11): Settings' read-only Sharing section as the demo's admin (A); Accounts with A's lock
