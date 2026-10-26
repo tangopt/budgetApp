@@ -94,6 +94,19 @@ public enum LocalSetting {
         return id
     }
 
+    static let macDeviceIdKey = "mac.deviceId"
+
+    /// The Mac's id as a sync device for the real database (`SyncDevice.id`, step 6): as `phoneDeviceId`, a random id
+    /// made the first time it's asked for, kept with this database (never synced).
+    public static func macDeviceId(_ db: Database) throws -> String {
+        if let id = try String.fetchOne(db, sql: "SELECT value FROM localSetting WHERE key = ?", arguments: [macDeviceIdKey]) {
+            return id
+        }
+        let id = UUID().uuidString
+        try db.execute(sql: "INSERT INTO localSetting (key, value) VALUES (?, ?)", arguments: [macDeviceIdKey, id])
+        return id
+    }
+
     /// A random id made the first time it's asked for. Touch ID enrolment on this Mac is keyed by it as well as
     /// by the app user id, so another database whose users share ids can't be unlocked by this enrolment.
     public static func databaseId(_ db: Database) throws -> String {

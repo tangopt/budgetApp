@@ -9,10 +9,15 @@ import MangoUI
 /// Sync on the phone (plan step 4 Task 12): a `SyncScheduler` around a pull-only `SyncEngineCore` over CloudKit, and
 /// what the screens show of it.
 ///
-/// - **Whether it runs at all** is `SyncActivation`'s: in this step only a DEBUG `--sync-demo` launch on a demo
-///   database (`BUDGET_DB_PATH`, honoured by simulator builds only, and the very database the phone opened) syncs;
-///   the phone's own database (Application Support/Mango) never does. Otherwise the status stays `.off` and the
-///   reason is logged.
+/// - **Whether it runs at all** is `SyncActivation.phoneDecision`'s (step 6): demo data never syncs; a DEBUG
+///   `--sync-demo` launch keeps step 4's rules (a demo database named by `BUDGET_DB_PATH`, honoured by simulator
+///   builds only, and the very database the phone opened); otherwise the phone's own database (Application
+///   Support/Mango) syncs in a Release build signed for the container (TestFlight). Refused: the status stays `.off`
+///   and the reason is logged.
+/// - **Zones** (step 6): the household, then the private zone of the person this iPhone's iCloud user is
+///   (`CloudKitAccountStatus.userRecordName` → `SyncViewer.forCloudKitUser`), once the household pull has brought
+///   that app user here: the engine is then made again with the viewer and syncs once more. Never another person's
+///   private zone. The screens read through the same iCloud user (`viewerRecordName`, `PhoneViewer.iCloudUser`).
 /// - **Read-only:** the engine is made `readOnly`: it only pulls, never creates the zone (a missing one is "nothing
 ///   to download yet", the first download waiting for the Mac), never pushes, makes no key and takes no lease.
 ///   Documents aren't downloaded (`documents: nil`).
@@ -38,12 +43,24 @@ final class PhoneSyncController: ObservableObject {
     @Published private(set) var account: ICloudAccountState = .unknown
     /// Whether this iPhone holds the household key; nil while sync is off here.
     @Published private(set) var keyHeld: Bool?
+    /// This iPhone's iCloud user's record name, once read (the viewer: `PhoneViewer.iCloudUser`); nil before, without
+    /// an account, or in a build that can't ask.
+    @Published private(set) var viewerRecordName: String?
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
 
     private var dbQueue: DatabaseQueue?
     private var scheduler: SyncScheduler?
     private var keyStore: (any SyncKeyStore)?
+    private var deviceId: String?
+    /// The viewer the running engine was made with: `.none` (household only) until the household names it.
+    private var engineViewer: SyncViewer = .none
+    /// A check for the viewer's private zone is under way (one at a time).
+    private var followingViewer = false
+    /// A read of the iCloud user's record name is under way.
+    private var readingRecordName = false
+    /// Counts `startEngine` calls (and demo data going on): only the latest makes a scheduler.
+    private var engineGeneration = 0
     private var statusTask: Task<Void, Never>?
     private var wentToBackground = false
     private var accountCheck: Task<Void, Never>?
@@ -71,7 +88,6 @@ final class PhoneSyncController: ObservableObject {
         let keyStore = KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: demo))
         if demo { PhoneSyncDemoMode.storeHandedOverKey(in: keyStore) }
         let dbQueue = environment.dbQueue
-        let deviceId: String
         do {
             // A local setting: never synced, so the phone still has nothing pending.
             deviceId = try await dbQueue.write { db in try LocalSetting.phoneDeviceId(db) }
@@ -79,13 +95,51 @@ final class PhoneSyncController: ObservableObject {
             Self.log.error("Sync is off: the device id couldn't be kept (\(String(describing: type(of: error)), privacy: .public))")
             return
         }
+        self.keyStore = keyStore
+        // The household's zone starts at once; this iPhone's iCloud user is read beside it (and again on a later
+        // idle sync or a return to the foreground until it is known), and its private zone joins once named.
+        await startEngine(viewer: .none)
+        readViewerRecordName()
+    }
+
+    /// Asks CloudKit for this iPhone's iCloud user's record name, one ask at a time, until it is known; then follows
+    /// the viewer if the household already names it. No account, or no answer: the household's data only for now.
+    private func readViewerRecordName() {
+        guard viewerRecordName == nil, !readingRecordName, scheduler != nil, !isDemo else { return }
+        readingRecordName = true
+        Task { [weak self] in
+            let recordName = try? await CloudKitAccountStatus.userRecordName()
+            guard let self else { return }
+            self.readingRecordName = false
+            guard let recordName, !self.isDemo, self.scheduler != nil else { return }
+            self.viewerRecordName = recordName
+            await self.followViewer()
+        }
+    }
+
+    /// Makes the read-only engine for `viewer`'s zones and its scheduler (stopping one already running), then asks
+    /// for a sync. One at a time: a newer call (or demo data going on) supersedes one still stopping the old
+    /// scheduler, so no scheduler is ever left running unowned.
+    private func startEngine(viewer: SyncViewer) async {
+        guard let dbQueue, let keyStore, let deviceId, !isDemo else { return }
+        engineGeneration += 1
+        let mine = engineGeneration
+        statusTask?.cancel()
+        statusTask = nil
+        if let running = scheduler {
+            scheduler = nil
+            await running.stop()
+        }
+        guard mine == engineGeneration, !isDemo else { return }
+        engineViewer = viewer
         let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                     device: SyncDevice(id: deviceId, name: UIDevice.current.name),
-                                    keyStore: keyStore, documents: nil, readOnly: true)
+                                    keyStore: keyStore, documents: nil, readOnly: true, viewer: viewer)
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
-        self.keyStore = keyStore
         await scheduler.start()
+        // Superseded while starting: the newer call has taken this scheduler off and stops it.
+        guard mine == engineGeneration, self.scheduler === scheduler else { return }
         statusTask = Task { [weak self] in
             for await status in await scheduler.statusStream() {
                 await self?.statusChanged(status)
@@ -94,27 +148,47 @@ final class PhoneSyncController: ObservableObject {
         Task { await scheduler.requestSync(.launch) }
     }
 
+    /// Follows the viewer (`followViewerIfNamed`), one check at a time.
+    private func followViewer() async {
+        guard !followingViewer else { return }
+        followingViewer = true
+        await followViewerIfNamed()
+        followingViewer = false
+    }
+
+    /// After a pull: if the household has now named this iPhone's iCloud user, the engine is made again with its
+    /// private zone (household, then the viewer's own).
+    private func followViewerIfNamed() async {
+        guard engineViewer == .none, let recordName = viewerRecordName, let dbQueue, !isDemo else { return }
+        guard let viewer = try? await dbQueue.read({ db in try SyncViewer.forCloudKitUser(recordName: recordName, db: db) }),
+              viewer != .none else { return }
+        Self.log.info("Sync: this iPhone's person is known; its private zone joins the household's")
+        await startEngine(viewer: viewer)
+    }
+
     /// Why this launch can't sync, or nil: `SyncActivation`'s rules, and the database opened must be the one
     /// `BUDGET_DB_PATH` names (a device build ignores the variable and opens its own, which is refused here).
     nonisolated static func refusal(databasePath: String, canUseCloudKit: Bool, demoModeOn: Bool,
                                     environment: [String: String] = ProcessInfo.processInfo.environment,
                                     arguments: [String] = CommandLine.arguments) -> String? {
+        let isSyncDemoLaunch = arguments.contains(SyncActivation.demoArgument)
         // Demo data never syncs, whatever else holds.
-        if let refusal = PhoneDemoMode.syncRefusal(databasePath: databasePath, demoModeOn: demoModeOn,
-                                                   isSyncDemoLaunch: arguments.contains(SyncActivation.demoArgument)) {
-            return refusal
-        }
+        let demoRefusal = PhoneDemoMode.syncRefusal(databasePath: databasePath, demoModeOn: demoModeOn, isSyncDemoLaunch: isSyncDemoLaunch)
         #if DEBUG
         let isDebug = true
         #else
         let isDebug = false
         #endif
-        let decision = SyncActivation.decision(databasePath: environment["BUDGET_DB_PATH"], arguments: arguments,
-                                               isDebug: isDebug, hasCloudKitEntitlement: canUseCloudKit)
+        let decision = SyncActivation.phoneDecision(isDemoData: demoRefusal != nil, isSyncDemoLaunch: isSyncDemoLaunch,
+                                                    hasCloudKitEntitlement: canUseCloudKit, isDebug: isDebug,
+                                                    databasePath: environment["BUDGET_DB_PATH"])
+        if let demoRefusal { return demoRefusal }
         guard decision.allowed else { return decision.reason ?? "refused" }
-        guard let named = environment["BUDGET_DB_PATH"],
-              TaxRegression.resolvedPath(named) == TaxRegression.resolvedPath(databasePath) else {
-            return "\(SyncActivation.demoArgument): the database this iPhone opened isn't BUDGET_DB_PATH's."
+        if isSyncDemoLaunch {
+            guard let named = environment["BUDGET_DB_PATH"],
+                  TaxRegression.resolvedPath(named) == TaxRegression.resolvedPath(databasePath) else {
+                return "\(SyncActivation.demoArgument): the database this iPhone opened isn't BUDGET_DB_PATH's."
+            }
         }
         return nil
     }
@@ -125,14 +199,19 @@ final class PhoneSyncController: ObservableObject {
     /// the Keychain until `leaveDemo()`.
     func enterDemo() async {
         isDemo = true
+        engineGeneration += 1
         accountCheck?.cancel()
         accountCheck = nil
         accountGeneration += 1
         statusTask?.cancel()
         statusTask = nil
-        if let scheduler { await scheduler.stop() }
+        let running = scheduler
         scheduler = nil
+        if let running { await running.stop() }
         keyStore = nil
+        deviceId = nil
+        engineViewer = .none
+        viewerRecordName = nil
         dbQueue = nil
         status = .off
         lastSync = nil
@@ -155,6 +234,7 @@ final class PhoneSyncController: ObservableObject {
         wentToBackground = false
         guard !isDemo else { return }
         checkAccount()
+        readViewerRecordName()
         Task { await scheduler?.requestSync(.foreground) }
     }
 
@@ -189,6 +269,14 @@ final class PhoneSyncController: ObservableObject {
             isFirstDownload = !pulled
         }
         if case .syncing = status { return }
+        if case .idle = status, engineViewer == .none {
+            if viewerRecordName == nil {
+                readViewerRecordName()
+            } else {
+                // Not inside the status loop: making the engine again ends that loop.
+                Task { [weak self] in await self?.followViewer() }
+            }
+        }
         if let keyStore {
             // A Keychain read, off the main actor.
             let held = await Task.detached { (try? keyStore.key(zone: SyncRecordStore.householdZone)) != nil }.value

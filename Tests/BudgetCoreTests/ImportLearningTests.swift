@@ -264,7 +264,7 @@ final class ImportLearningTests: XCTestCase {
         item = try only(plan)
         XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
         XCTAssertEqual(item.ruleDrafts.map(\.kind), [.link])
-        XCTAssertEqual(item.ruleDrafts.first?.actionJSON, "{\"descriptionKey\":\"DEMO SEGUROS\"}")
+        XCTAssertEqual(item.ruleDrafts.first?.actionJSON, "{\"descriptionKey\":\"DEMO SEGUROS\",\"sourceAccountId\":\(accountId!)}")
         _ = try applier.apply(plan, entryPoint: "Test")
         XCTAssertEqual(try rules().map(\.kind), [.link])
         pipeline.discardPlanningCopy()
@@ -307,7 +307,7 @@ final class ImportLearningTests: XCTestCase {
         var plan = try await pipeline.plan([try receipt("seguro.pdf", date: "10/03/2024")])
         let id = try only(plan).id
         plan = try await pipeline.resolve(plan, itemId: id, .linkTransactions([a]))
-        XCTAssertEqual(try only(plan).ruleDrafts.map(\.actionJSON), ["{\"descriptionKey\":\"DEMO SEGUROS\"}"])
+        XCTAssertEqual(try only(plan).ruleDrafts.map(\.actionJSON), ["{\"descriptionKey\":\"DEMO SEGUROS\",\"sourceAccountId\":\(accountId!)}"])
         plan = try await pipeline.resolve(plan, itemId: id, .linkTransactions([a, b]))
         XCTAssertEqual(try only(plan).ruleDrafts, [], "a split payment isn't a pattern")
         plan = try await pipeline.resolve(plan, itemId: id, .linkTransactions([b]))
@@ -646,7 +646,7 @@ final class ImportLearningTests: XCTestCase {
         XCTAssertEqual(learnt.count, 2, "\(learnt)")
         let actions = learnt.compactMap { ImportLearning.decode(LinkAction.self, $0.actionJSON) }
         XCTAssertTrue(actions.contains(LinkAction(entity: .property(propertyId))))
-        XCTAssertTrue(actions.contains(LinkAction(descriptionKey: "DEMO SEGUROS")))
+        XCTAssertTrue(actions.contains(LinkAction(descriptionKey: "DEMO SEGUROS", sourceAccountId: accountId)), "learnt from the payment's account")
         pipeline.discardPlanningCopy()
 
         let october = try transaction(Self.date(2024, 10, 5), -12_000, "DEMO SEGUROS 78")
@@ -671,7 +671,7 @@ final class ImportLearningTests: XCTestCase {
         _ = try applier.apply(plan, entryPoint: "Test")
         let learnt = try rules().filter { $0.kind == .link }
         XCTAssertEqual(learnt.map(\.matchKey), [Self.issuerKey + "#transaction"], "the old rule is the one replaced")
-        XCTAssertEqual(learnt.first?.actionJSON, "{\"descriptionKey\":\"DEMO SEGUROS\"}")
+        XCTAssertEqual(learnt.first?.actionJSON, "{\"descriptionKey\":\"DEMO SEGUROS\",\"sourceAccountId\":\(accountId!)}")
     }
 
     func testConflictingChoicesForOneIssuerInOneRunAreNotLearnt() async throws {

@@ -269,7 +269,12 @@ public enum RechargeTrackerRebuild {
     // MARK: Apply
 
     /// Applies the plan (inside the caller's transaction: a refusal rolls everything back).
-    public static func apply(db: Database, plan: Plan) throws -> Outcome {
+    /// Written as `actor` (nil: the admin, as a tool), with Property's permission and the matching origin (step 6).
+    public static func apply(db: Database, plan: Plan, actor: AccessActor? = nil) throws -> Outcome {
+        try ActorWrite.perform(orAdmin: actor, area: .property, origin: .propertyMatching, db: db) { try applyMatched(db: db, plan: plan) }
+    }
+
+    private static func applyMatched(db: Database, plan: Plan) throws -> Outcome {
         guard let tenancy = try Tenancy.fetchOne(db, key: plan.tenancyId) else { throw RebuildError.tenancyNotFound }
         let propertyId = tenancy.propertyId
         let years = try taxYears(db: db, plan: plan)

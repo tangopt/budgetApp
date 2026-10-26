@@ -16,10 +16,14 @@ public struct AccountRowPresentation: Equatable, Sendable, Identifiable {
     public let gbpMinorUnits: Int?
     /// Counts toward net worth (and the section's subtotal).
     public let isInNetWorth: Bool
+    /// The lock badge's words for one of the viewer's own accounts shared below Everything (`SharingCopy.badge`,
+    /// step 6); nil otherwise.
+    public let sharingBadge: String?
     /// What VoiceOver reads after the name: "balance £1,200.00, Imported · through 12 Oct 2026".
     public let spoken: String
 
-    public init(_ row: AccountRow, importedThrough: Date?, today: Date) {
+    /// `sharing`: the account's level when it is the viewer's own and below Everything (`SharingViewer.badgeLevel`).
+    public init(_ row: AccountRow, importedThrough: Date?, today: Date, sharing: SharingLevel? = nil) {
         id = row.id
         name = row.account.displayName
         if let importedThrough {
@@ -34,6 +38,7 @@ public struct AccountRowPresentation: Equatable, Sendable, Identifiable {
         currency = row.account.currency
         gbpMinorUnits = row.account.currency == .gbp ? nil : row.gbpBalanceMinorUnits
         isInNetWorth = row.account.includeInNetWorth
+        sharingBadge = sharing.flatMap(SharingCopy.badge)
 
         var parts = [MoneyPresentation(minorUnits: nativeMinorUnits, currency: currency, role: .balance).spoken]
         if let gbpMinorUnits {
@@ -42,6 +47,7 @@ public struct AccountRowPresentation: Equatable, Sendable, Identifiable {
         parts.append(caption)
         if needsUpdate { parts.append(AccountsCopy.needsUpdate) }
         if !isInNetWorth { parts.append(AccountsCopy.notInNetWorth) }
+        if let sharingBadge { parts.append(sharingBadge) }
         spoken = parts.joined(separator: ", ")
     }
 
@@ -114,6 +120,9 @@ struct AccountRowView: View {
                 Text(AccountsCopy.notInNetWorth)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if let badge = row.sharingBadge {
+                SharingBadgeView(text: badge)
             }
         }
     }

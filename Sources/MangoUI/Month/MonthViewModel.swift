@@ -31,6 +31,10 @@ public final class MonthViewModel: ObservableObject {
 
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
+    /// Whose figures Month shows (step 6): the next load reads with it, and so do the pushed lists.
+    public var viewer: PhoneViewer {
+        didSet { for model in transactionModels.values { model.viewer = viewer } }
+    }
     /// The month asked for; nil = the current pay month.
     private var requested: PayMonth?
     /// The `reloadKey` the last `reload(for:)` loaded for.
@@ -40,18 +44,20 @@ public final class MonthViewModel: ObservableObject {
     /// Counts reads, so a slower earlier read (two quick taps on ‹) never replaces a later one.
     private var generation = 0
 
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, segment: MonthSegment = .spending) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone, segment: MonthSegment = .spending) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.segment = segment
         self.state = .idle
     }
 
     /// Already loaded (the snapshot harness: a route renders its first frame with the data in it).
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, segment: MonthSegment = .spending,
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone, segment: MonthSegment = .spending,
                 preloaded state: State) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.segment = segment
         self.state = state
         if case let .loaded(page) = state { requested = page.review.month }
@@ -64,8 +70,9 @@ public final class MonthViewModel: ObservableObject {
         let day = today()
         let month = requested
         let reader = dbQueue
+        let viewer = viewer
         do {
-            let page = try await reader.read { db in try Self.read(db, today: day, month: month) }
+            let page = try await reader.read { db in try Self.read(db, today: day, month: month, viewer: viewer) }
             guard mine == generation else { return }
             state = .loaded(page)
             errorMessage = nil
@@ -80,16 +87,17 @@ public final class MonthViewModel: ObservableObject {
 
     /// The same read, now (the snapshot routes, which can't await before their first frame). `month` nil: the
     /// current pay month.
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date, month: PayMonth? = nil) -> State {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date, month: PayMonth? = nil,
+                                           viewer: PhoneViewer = .everyone) -> State {
         do {
-            return .loaded(try dbQueue.read { db in try read(db, today: today, month: month) })
+            return .loaded(try dbQueue.read { db in try read(db, today: today, month: month, viewer: viewer) })
         } catch {
             return .failed(loadFailureMessage)
         }
     }
 
-    nonisolated static func read(_ db: Database, today: Date, month: PayMonth?) throws -> MonthPage {
-        let input = try DashboardInput.load(db: db, today: today)
+    nonisolated static func read(_ db: Database, today: Date, month: PayMonth?, viewer: PhoneViewer = .everyone) throws -> MonthPage {
+        let input = try DashboardInput.load(db: db, today: today, actuals: try viewer.actuals(db: db, today: today))
         let calendar = input.payCalendar
         let current = calendar.current
         let firstDay = input.transactions.map(\.date).min()
@@ -153,7 +161,7 @@ public final class MonthViewModel: ObservableObject {
     /// The model of the list `destination` pushes: made once, read when it first shows.
     public func transactionsModel(for destination: MonthRowDestination) -> MonthTransactionsModel {
         if let model = transactionModels[destination] { return model }
-        let model = MonthTransactionsModel(dbQueue: dbQueue, row: destination.row, range: destination.range)
+        let model = MonthTransactionsModel(dbQueue: dbQueue, row: destination.row, range: destination.range, viewer: viewer, today: today)
         transactionModels[destination] = model
         return model
     }

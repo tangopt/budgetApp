@@ -354,9 +354,13 @@ public enum ImportUndo {
     // MARK: Undo
 
     /// Reverts the run in one write (or refuses), refreshes the auto forecast, then removes the
-    /// stored copies of the documents it removed that no other document has.
-    public static func undo(dbQueue: DatabaseQueue, library: EvidenceLibrary, runId: Int64, now: Date = Date()) throws -> ImportUndoResult {
+    /// stored copies of the documents it removed that no other document has. It writes as `actor` (else app user
+    /// `undoneBy`; neither: the admin, as a tool) with Import's permission and origin (step 6: `ActorWrite.perform`).
+    public static func undo(dbQueue: DatabaseQueue, library: EvidenceLibrary, runId: Int64, actor: AccessActor? = nil,
+                            undoneBy: Int64? = nil, now: Date = Date()) throws -> ImportUndoResult {
         let (outcome, rowsRemoved, rowsRestored) = try dbQueue.write { db -> (Reverted, Int, Int) in
+          try ActorWrite.perform(orAdmin: try actor ?? ActorWrite.actor(appUserId: undoneBy, db: db), area: .import, origin: .import, db: db) {
+            () -> (Reverted, Int, Int) in
             guard var run = try ImportRun.fetchOne(db, key: runId) else { throw ImportUndoError.runNotFound }
             guard run.undoneAt == nil else { throw ImportUndoError.alreadyUndone }
             // With sync on, an Undo is a batch too and needs the import lease (sync spec §5.2).
@@ -376,6 +380,7 @@ public enum ImportUndo {
             try AutoForecastGenerator.refresh(db: db)
             try SyncBatch.open(runId: runId, since: syncMark, revives: outcome.revived, db: db)
             return (outcome, outcome.removed, outcome.restored)
+          }
         }
         var filesRemoved = 0
         let stillStored = try dbQueue.read { db in

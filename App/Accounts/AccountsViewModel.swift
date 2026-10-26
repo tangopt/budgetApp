@@ -28,6 +28,8 @@ final class AccountsViewModel: ObservableObject {
     @Published private(set) var importedThrough: [Int64: Date] = [:]
     /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
+    /// Who the screen is shown to: their own accounts below Everything carry a lock badge (`SharingBadge`).
+    @Published private(set) var viewer = SharingViewer(personId: nil)
     /// What the last Update balance did, one line per account ("added a Market movement of
     /// £120.00", "balance already matches").
     @Published var balanceMessages: [String] = []
@@ -56,10 +58,15 @@ final class AccountsViewModel: ObservableObject {
     @discardableResult
     func load() -> Bool {
         do {
-            let (accounts, snapshots, transactions, rate, builtIns, batches) = try dbQueue.read { db in
-                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db),
-                 try Category.filter(Column("builtInRole") != nil).fetchAll(db), try ImportBatch.fetchAll(db))
+            // As the person signed in sees them (`SharedActualsSource`): the other person's accounts below Everything
+            // with the balances they publish, their Hidden ones not at all.
+            let (viewer, accounts, snapshots, transactions, rate, builtIns, batches) = try dbQueue.read { db in
+                let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
+                return (actuals.viewer, try actuals.accounts(db), try actuals.balanceSnapshots(db), try actuals.transactions(db),
+                        try ExchangeRateSetting.currentOrDefault(db: db),
+                        try Category.filter(Column("builtInRole") != nil).fetchAll(db), try ImportBatch.fetchAll(db))
             }
+            self.viewer = viewer
             self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
             self.transactions = transactions
@@ -85,10 +92,12 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails, includeInNetWorth: Bool) -> SaveOutcome {
+    /// Once ownership is confirmed the account is the signed-in user's (Balance only), unless added as `joint`.
+    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails, includeInNetWorth: Bool,
+                    joint: Bool = false) -> SaveOutcome {
         perform { db in
             let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details,
-                                                 includeInNetWorth: includeInNetWorth)
+                                                 includeInNetWorth: includeInNetWorth, owner: try SignedInActor.actor(db: db), joint: joint)
             return account.id
         } onSuccess: { [weak self] id in
             self?.selectedAccountId = id
@@ -126,7 +135,7 @@ final class AccountsViewModel: ObservableObject {
     /// shows in the banner.
     func moveAccounts(ids: [Int64], fromOffsets: IndexSet, toOffset: Int) {
         do {
-            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+            try dbQueue.write(.budgetAndAccounts) { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
         } catch {
             errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
             return
@@ -182,7 +191,7 @@ final class AccountsViewModel: ObservableObject {
     private func perform<T>(_ write: (Database) throws -> T, onSuccess: ((T) -> Void)? = nil) -> SaveOutcome {
         let result: T
         do {
-            result = try dbQueue.write { db in try write(db) }
+            result = try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(Self.message(for: error))
         }
@@ -210,7 +219,7 @@ final class AccountsViewModel: ObservableObject {
 
     /// The picker's "New category…": creates the category and re-reads the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {
             categories = reloaded
         } else {
@@ -224,7 +233,7 @@ final class AccountsViewModel: ObservableObject {
     /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
     func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
-        gate.run(dbQueue, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }, done: { [weak self] result in

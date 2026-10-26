@@ -13,8 +13,8 @@ public enum SyncRecordStoreError: Error, Equatable {
 /// UUID that names its CloudKit record. Local ids stay local; the UUID is what other devices see.
 /// The tracking triggers (`SyncChangeTracker`) create identities as rows are written.
 public enum SyncRecordStore {
-    /// Every row's zone in build step 3.
-    public static let householdZone = "household"
+    /// The household zone (`SyncZones.household`).
+    public static let householdZone = SyncZones.household
 
     /// A random version 4 UUID in its canonical lowercase form (8-4-4-4-12 hex digits, version digit 4,
     /// variant digit 8, 9, a or b), made by SQLite so the triggers and Swift share one format.
@@ -111,9 +111,15 @@ public enum SyncRecordStore {
         return builtInCategoryUUID(role)
     }
 
-    /// A name-based UUID in the canonical lowercase v4 shape (version digit 4, variant 8–b).
+    /// The built-in category of `role`'s UUID (`derivedUUID`), the same on every device.
     static func builtInCategoryUUID(_ role: String) -> String {
-        var hex = Array(SHA256.hash(data: Data("mango.category.builtInRole.\(role)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
+        derivedUUID("mango.category.builtInRole.\(role)")
+    }
+
+    /// A UUID derived from `name` alone, in the canonical lowercase v4 shape (version digit 4, variant 8–b):
+    /// the same on every device, for records each device would otherwise create under its own identity.
+    public static func derivedUUID(_ name: String) -> String {
+        var hex = Array(SHA256.hash(data: Data(name.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
         hex[12] = "4"
         hex[16] = Array("89ab")[Int(String(hex[16]), radix: 16)! % 4]
         let s = String(hex)

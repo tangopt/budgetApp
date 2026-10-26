@@ -2,6 +2,7 @@
 import AppKit
 import BudgetCore
 import GRDB
+import OSLog
 
 /// How long Mango waits without input before locking (Settings ▸ Sign-in). Stored in `auth.lockTimeout`
 /// as minutes, 0 meaning Never.
@@ -45,6 +46,12 @@ final class SessionModel: ObservableObject {
         case notSetUp
         case locked
         case signedIn(AppUser)
+
+        /// Who is signed in; nil while locked or before sign-in is set up.
+        var signedInId: Int64? {
+            if case .signedIn(let user) = self { return user.id }
+            return nil
+        }
     }
 
     enum SignInResult: Equatable {
@@ -73,11 +80,16 @@ final class SessionModel: ObservableObject {
         /// Not enrolled on this Mac, or dropped because the fingerprints changed: ask for the password, then
         /// offer Touch ID again.
         case notEnrolled
+        /// This Mac user's database holds someone else's private accounts (`SharingSignIn`): not here.
+        case refused(String)
         case failed(String)
     }
 
     @Published private(set) var state: State {
-        didSet { if state == .locked && oldValue != .locked { autoPrompt.lockBegan() } }
+        didSet {
+            publishWriter()
+            if state == .locked && oldValue != .locked { autoPrompt.lockBegan() }
+        }
     }
     /// Touch ID by itself on the lock screen, once per lock; shared by every window's lock screen.
     private(set) var autoPrompt = TouchIDAutoPrompt()
@@ -152,9 +164,11 @@ final class SessionModel: ObservableObject {
         self.gate = SignInGate(dbQueue: dbQueue)
         if SnapshotMode.isActive, let snapshotUser {
             state = .signedIn(snapshotUser)
+            publishWriter()
             return
         }
         state = isSetUp ? .locked : .notSetUp
+        publishWriter()
         observeSystemLocks()
         SheetCovers.shared.trackTransients()
         Task { await refreshCandidates() }
@@ -190,6 +204,40 @@ final class SessionModel: ObservableObject {
         guard case .signedIn(let user) = state, let id = user.id else { throw AppUserStoreError.noSuchUser }
         try await dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
         afterSignIn = thenOfferTouchID ? .offerTouchID : nil
+    }
+
+    /// Who the app's writes are made as (`SignedInActor`), and the database's default writer for what BudgetCore
+    /// writes on its own (`ActorWrite.useDefaultWriter`): the signed-in user, else the admin.
+    private func publishWriter() {
+        let id: Int64?
+        switch state {
+        case .signedIn(let user):
+            id = user.id
+            SignedInActor.state = user.id.map { .signedIn(appUserId: $0) } ?? .notSetUp
+        case .locked:
+            id = nil
+            SignedInActor.state = .signedOut
+        case .notSetUp:
+            id = nil
+            SignedInActor.state = .notSetUp
+        }
+        do {
+            try dbQueue.write { db in try ActorWrite.useDefaultWriter(appUserId: id, db: db) }
+        } catch {
+            Logger(subsystem: "com.personal.budget", category: "Auth").error("Setting the default writer failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The signed-in user's own new password (sign-in bookkeeping: their credentials aren't synced data).
+    func changeOwnPassword(_ password: String) async throws {
+        guard let id = currentAppUserId else { throw AppUserStoreError.noSuchUser }
+        try await dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+    }
+
+    /// A new recovery key for the signed-in user (sign-in bookkeeping).
+    func regenerateOwnRecoveryKey() async throws -> String {
+        guard let id = currentAppUserId else { throw AppUserStoreError.noSuchUser }
+        return try await dbQueue.write { try AppUserStore.regenerateRecoveryKey($0, appUserId: id) }
     }
 
     /// The Touch ID offer answered (turned on or not now).
@@ -229,6 +277,8 @@ final class SessionModel: ObservableObject {
             return .notRecognised
         } catch BiometricUnlockError.lockedOut {
             return .lockedOut
+        } catch let refused as SignInRefused {
+            return .refused(refused.message)
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -288,6 +338,12 @@ final class SessionModel: ObservableObject {
     }
 
     private func begin(appUserId: Int64, then step: AfterSignIn? = nil) async throws {
+        // One person per Mac user (fails closed): nobody signs in to a database holding someone else's private accounts.
+        let refusal = try await dbQueue.read { db -> String? in
+            guard let user = try AppUser.fetchOne(db, key: appUserId) else { return nil }
+            return try SharingSignIn.refusal(personId: user.personId, db: db)
+        }
+        if let refusal { throw SignInRefused(message: refusal) }
         let user = try await dbQueue.write { db -> AppUser? in
             try AppUserStore.recordSignIn(db, appUserId: appUserId, now: Date())
             return try AppUser.fetchOne(db, key: appUserId)
@@ -317,4 +373,11 @@ final class SessionModel: ObservableObject {
         }
         observers.append((center, token))
     }
+}
+
+/// A sign-in refused because this Mac user's database holds someone else's private accounts (`SharingSignIn`); its
+/// message is the lock screen's.
+struct SignInRefused: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

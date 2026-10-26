@@ -38,11 +38,11 @@ final class SyncReferenceClassificationTests: XCTestCase {
     func testAnUnclassifiedIdColumnFailsByName() throws {
         let manager = try migrated()
         try manager.dbQueue.write { db in
-            try db.execute(sql: "ALTER TABLE account ADD COLUMN ownerPersonId INTEGER")
+            try db.execute(sql: "ALTER TABLE account ADD COLUMN reviewerPersonId INTEGER")
             try db.execute(sql: "ALTER TABLE property ADD COLUMN accountIds TEXT")
         }
         XCTAssertEqual(try manager.dbQueue.read { try unclassifiedIdColumns($0) }, [
-            "column account.ownerPersonId holds ids but isn't classified",
+            "column account.reviewerPersonId holds ids but isn't classified",
             "column property.accountIds holds ids but isn't classified",
         ])
     }
@@ -123,7 +123,8 @@ final class SyncReferenceClassificationTests: XCTestCase {
             case .documentKind: return [json(DocumentKindAction(kind: .utilityInvoice)), json(DocumentKindAction(kind: .other, customKindId: 7))]
             case .issuer: return [json(IssuerAction(name: "Synthetic issuer"))]
             case .link: return [json(LinkAction(entity: EvidenceEntity(type: .rentReceipt, id: 22), role: "r", descriptionKey: "k")),
-                                json(LinkAction(descriptionKey: "merchant"))]
+                                json(LinkAction(descriptionKey: "merchant")),
+                                json(LinkAction(descriptionKey: "merchant", sourceAccountId: 7))]
             case .figurePosition: return [json(FigurePositionAction(field: ImportFigureField.allCases[0], label: "TOTAL", occurrence: 2))]
             }
         }

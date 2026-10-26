@@ -48,10 +48,30 @@ public enum SyncTranslator {
     /// The payload for a pending insert or update; nil for a delete (the record name is all it needs) and
     /// for a row that is no longer there. A referenced row without an identity gets one (and is queued).
     public static func outgoing(_ change: PendingChange, db: Database) throws -> SyncPayload? {
+        try outgoing(change, db: db, placement: nil)?.payload
+    }
+
+    /// Where outgoing records go (step 6): each record's zone and what it leaves out there (`SyncZoneRouter`, or a
+    /// test's stand-in), and the zone of any record by UUID (for the batch tags).
+    struct Placement {
+        var assignment: (PendingChange) throws -> ZoneAssignment
+        var zones: SyncZoneLookup
+    }
+
+    /// A record as it goes, placed: its payload in its zone, without what it leaves out there, and the companion
+    /// carrying what a household stub leaves out (an `accountDetails` record in the owner's private zone).
+    struct Outgoing {
+        var payload: SyncPayload
+        var assignment: ZoneAssignment?
+        var companion: SyncPayload?
+    }
+
+    /// `outgoing(_:db:)`, placed by `placement` (nil: where the record last went, as before step 6).
+    static func outgoing(_ change: PendingChange, db: Database, placement: Placement?) throws -> Outgoing? {
         guard change.kind != .delete, let schema = SyncSchema.table(change.table) else { return nil }
         if let redirect = try SyncTombstoneRow.fetchOne(db, key: change.uuid), let target = redirect.mergedInto {
             // This device merged the record into another: it goes out as a redirect, never as a delete.
-            return SyncPayload(recordType: schema.name, recordName: change.uuid, zone: redirect.zone, fields: [:], mergedInto: target)
+            return Outgoing(payload: SyncPayload(recordType: schema.name, recordName: change.uuid, zone: redirect.zone, fields: [:], mergedInto: target))
         }
         guard let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE tableName = ? AND localId = ?",
                                                       arguments: [change.table, change.localId]),
@@ -86,8 +106,31 @@ public enum SyncTranslator {
                                   clocks: try SyncMerge.clocks(table: schema.name, localId: change.localId, db: db),
                                   modifiedBy: record.modifiedBy, modifiedAt: record.modifiedAt,
                                   deletedReferences: resolver.deletedReferences.isEmpty ? nil : resolver.deletedReferences.sorted())
-        try SyncBatch.decorate(&payload, db: db)
-        return payload
+        payload.origin = record.origin
+        guard let placement else {
+            try SyncBatch.decorate(&payload, db: db)
+            return Outgoing(payload: payload)
+        }
+        let assignment = try placement.assignment(change)
+        payload.zone = assignment.zone
+        var companion: SyncPayload?
+        if let details = assignment.companion {
+            let carried = Set(details.fields)
+            companion = SyncPayload(recordType: details.recordType, recordName: SyncZoneRouter.companionRecordName(accountUuid: record.uuid),
+                                    zone: details.zone,
+                                    fields: fields.filter { carried.contains($0.key) },
+                                    clocks: payload.clocks.filter { carried.contains($0.key) || $0.key == SyncMerge.insertClock },
+                                    modifiedBy: record.modifiedBy, modifiedAt: record.modifiedAt)
+        }
+        if !assignment.omittedFields.isEmpty {
+            for field in assignment.omittedFields {
+                payload.fields[field] = nil
+                payload.clocks[field] = nil
+            }
+            payload.omittedFields = assignment.omittedFields.sorted()
+        }
+        try SyncBatch.decorate(&payload, db: db, zones: placement.zones)
+        return Outgoing(payload: payload, assignment: assignment, companion: companion)
     }
 
     private static func reference(_ value: DatabaseValue, table: String, nullable: Bool, resolver: SyncReferenceResolver) throws -> SyncValue {
@@ -179,6 +222,10 @@ public enum SyncTranslator {
                 case .delete(let name, let type): deletes.append((name, type))
                 }
             }
+            // Move markers (step 6) remove rows: after the saves, children first, as deletes go.
+            let markers = saves.filter { $0.movedTo != nil && $0.mergedInto == nil }
+                .sorted { (order[$0.recordType] ?? -1) > (order[$1.recordType] ?? -1) }
+            saves.removeAll { $0.movedTo != nil && $0.mergedInto == nil }
             saves.sort { (order[$0.recordType] ?? Int.max) < (order[$1.recordType] ?? Int.max) }
             var arrived: Set<String> = []
             var unknownArrived = false
@@ -186,6 +233,14 @@ public enum SyncTranslator {
                 let result = try applySave(payload, db: db, deviceUser: deviceUser, now: now, revivals: revivals)
                 results[payload.recordName] = result
                 if case .staged = result {} else { arrived.insert(payload.recordType) }
+            }
+            if !markers.isEmpty {
+                for marker in markers {
+                    results[marker.recordName] = try applyMarker(marker, db: db, deviceUser: deviceUser, now: now)
+                    arrived.insert(marker.recordType)
+                }
+                // What went with them (cascades) moved too: forgotten, not tombstoned, so a move back applies.
+                try forgetRemoved(db: db)
             }
             let deleteTables = try deletes.map { delete in
                 try delete.type ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [delete.name])
@@ -308,6 +363,12 @@ public enum SyncTranslator {
 
     private static func applySave(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date,
                                   fromStaging: Bool = false, revivals: [String: Int64] = [:]) throws -> IncomingResult {
+        if payload.recordType == SyncZoneRouter.companionRecordType {
+            return try applyCompanion(payload, db: db, deviceUser: deviceUser, now: now, fromStaging: fromStaging)
+        }
+        if payload.movedTo != nil, payload.mergedInto == nil {
+            return try applyMarker(payload, db: db, deviceUser: deviceUser, now: now)
+        }
         guard let schema = SyncSchema.table(payload.recordType), try db.tableExists(schema.name) else {
             return try stage(payload, reason: "unknown record type", db: db, now: now, fromStaging: fromStaging)
         }
@@ -347,6 +408,15 @@ public enum SyncTranslator {
             // Ruling R12: a record sent again because it was missing on the server comes back too, visibly
             // (a resurrected row is preferred to silent divergence; step 6 asks a person to confirm).
             if schema.name == "document" {
+                try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            } else if tombstone.zone != payload.zone {
+                // Deleted (or left) in another zone: this is the record moving (step 6), and it is taken.
+                try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            } else if AccessAreaMap.summaryTables.contains(schema.name),
+                      try !(Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ? AND kind = 'delete')", arguments: [uuid]) ?? false) {
+                // A summary made again under its derived name (`AccountSummaryBuilder`: its account's level went back
+                // down) after this device took its delete: the owner's device rebuilt it, so it is taken. A delete made
+                // here and not yet sent still wins.
                 try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
             } else if payload.resent == true {
                 takeBack = true
@@ -391,6 +461,30 @@ public enum SyncTranslator {
                 }
             }
         }
+        // A copy leaving fields out (a stub, step 6): what this device holds of them stays or goes (`leftOut`).
+        var cleared: [String] = []
+        if let omitted = payload.omittedFields, !omitted.isEmpty {
+            cleared = try leftOut(omitted, payload: payload, schema: schema, columns: columns, existing: existing, values: &values, db: db)
+        }
+        // Step 6 Task 9: on the Mac, what the writer had no permission for is reverted (`AccessRevalidation`).
+        var reverts: [AccessRevalidation.Revert] = []
+        var selfUser: String?
+        // The record as this device held it, when what came in is judged (its clears too, after the merge).
+        var judgedLocal: [String: SyncValue]?
+        if AccessRevalidation.isOn(db: db), !redirected {
+            selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
+            if !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser) {
+                // Only the Mac's own user wrote it: nothing to judge.
+            } else if let localId = existing {
+                let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields ?? [:]
+                judgedLocal = local
+                reverts = try AccessRevalidation.reverts(for: payload, local: local, selfUser: selfUser, db: db)
+                for field in reverts.flatMap(\.fields) { values[field] = nil }
+            } else if let revert = try AccessRevalidation.reverts(for: payload, local: nil, selfUser: selfUser, db: db).first {
+                try AccessRevalidation.remove(revert, payload: payload, selfUser: selfUser, db: db, now: now)
+                return .discarded("no permission")
+            }
+        }
         // One payload's failure (a constraint this device's data refuses) mustn't undo the others: it is
         // staged with the SQLite code, never the values.
         let savepoint = "syncApplySave"
@@ -400,6 +494,23 @@ public enum SyncTranslator {
             if let localId = existing {
                 result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
                                              adopted: redirected, now: now)
+                if let judgedLocal, !cleared.isEmpty {
+                    // A clear the Mac's own placement doesn't explain is a change, judged like the others.
+                    let refused = try AccessRevalidation.revertsOfClears(cleared, payload: payload, local: judgedLocal, table: schema.name,
+                                                                        localId: localId, selfUser: selfUser, db: db)
+                    let kept = Set(refused.flatMap(\.fields))
+                    cleared.removeAll { kept.contains($0) }
+                    reverts += refused
+                }
+                if !reverts.isEmpty {
+                    try AccessRevalidation.restamp(reverts, payload: payload, table: schema.name, localId: localId, selfUser: selfUser, db: db, now: now)
+                }
+                if !cleared.isEmpty {
+                    try db.execute(sql: "UPDATE \(SyncChangeTracker.quoted(schema.name)) SET \(cleared.map { "\(SyncChangeTracker.quoted($0)) = NULL" }.joined(separator: ", ")) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
+                                   arguments: [localId])
+                }
+                // The zone it came from is where it lives now (step 6: it may have moved).
+                try db.execute(sql: "UPDATE syncRecord SET zone = ? WHERE uuid = ? AND zone <> ?", arguments: [payload.zone, uuid, payload.zone])
             } else {
                 result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now, at: reviveAt)
                 if takeBack, try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db) != nil {
@@ -411,6 +522,8 @@ public enum SyncTranslator {
                 }
             }
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+            // Back in a zone it once left: the marker there is gone (this save replaced it).
+            try SyncZoneMoves.arrived(uuid: uuid, zone: payload.zone, db: db)
             try db.execute(sql: "RELEASE \(savepoint)")
             return result
         } catch let error as DatabaseError {
@@ -452,6 +565,174 @@ public enum SyncTranslator {
         try SyncMerge.redirect(old, to: target, table: schema.name, localId: row ?? 0, zone: SyncRecordStore.householdZone,
                                by: nil, now: now, db: db)
         return .applied
+    }
+
+    // MARK: Zones (step 6)
+
+    /// The fields an incoming copy leaves out (`SyncPayload.omittedFields`): never taken from the payload. A device
+    /// that pulls the private zone holding them keeps its own values (`keepsOwnValue`); any other clears them
+    /// (returned: written NULL after the merge of an existing row). A new row leaves them empty, except a reference
+    /// that can't be (a §10 transaction's batch), which names this device's placeholder batch for the account.
+    private static func leftOut(_ omitted: [String], payload: SyncPayload, schema: SyncTableSchema, columns: Columns, existing: Int64?,
+                                values: inout [String: DatabaseValue], db: Database) throws -> [String] {
+        let privateZones = try SyncZoneSet.current(db: db).filter(SyncZones.isPrivate)
+        var cleared: [String] = []
+        for column in omitted.sorted() where columns.declared[column] != nil && schema.syncedColumns.contains(column) {
+            values[column] = nil
+            if let existing {
+                if columns.nullable(column),
+                   try !keepsOwnValue(column, of: existing, payload: payload, schema: schema, privateZones: privateZones, db: db) {
+                    cleared.append(column)
+                }
+            } else if !columns.nullable(column), schema.name == "transaction_", column == "importBatchId",
+                      let account = Int64.fromDatabaseValue(values["accountId"] ?? .null) {
+                values[column] = try placeholderBatch(accountId: account, db: db).databaseValue
+            }
+        }
+        return cleared
+    }
+
+    /// Whether this device holds the private zone a left-out value lives in: for a reference, the zone of the row
+    /// it names here; for an account's own column, its owner's private zone.
+    private static func keepsOwnValue(_ column: String, of localId: Int64, payload: SyncPayload, schema: SyncTableSchema,
+                                      privateZones: Set<String>, db: Database) throws -> Bool {
+        guard !privateZones.isEmpty else { return false }
+        if let target = schema.foreignKeys[column] ?? SyncSchema.logicalReferences(of: schema.name)[column] {
+            guard let id = try Int64.fetchOne(db, sql: """
+                SELECT \(SyncChangeTracker.quoted(column)) FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?
+                """, arguments: [localId]),
+                  let zone = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE tableName = ? AND localId = ?", arguments: [target, id])
+            else { return false }
+            return privateZones.contains(zone)
+        }
+        var owner: String?
+        if schema.name == "account" {
+            if case .string(let person) = payload.fields["ownerPersonId"] ?? .null { owner = person }
+        } else if case .string(let accountUuid) = payload.fields["accountId"] ?? .null,
+                  let account = try SyncRecordStore.localId(table: "account", uuid: accountUuid, db: db),
+                  let person = try Int64.fetchOne(db, sql: "SELECT ownerPersonId FROM account WHERE id = ?", arguments: [account]) {
+            owner = try SyncRecordStore.existingUUID(table: "person", localId: person, db: db)
+        }
+        return owner.map { privateZones.contains(SyncZones.privateZone(personUuid: $0)) } ?? false
+    }
+
+    /// The source file name of the batch a device files shared transactions of a private batch under.
+    public static let placeholderBatchName = "Imported privately"
+
+    /// This device's placeholder batch for `accountId`'s shared transactions whose own batch is private (made once,
+    /// untracked, with an identity in no zone: it is never sent).
+    static func placeholderBatch(accountId: Int64, db: Database) throws -> Int64 {
+        if let id = try Int64.fetchOne(db, sql: """
+            SELECT id FROM importBatch WHERE accountId = ? AND sourceFileName = ? AND importRunId IS NULL ORDER BY id LIMIT 1
+            """, arguments: [accountId, placeholderBatchName]) {
+            return id
+        }
+        let accountUuid = try SyncRecordStore.existingUUID(table: "account", localId: accountId, db: db) ?? String(accountId)
+        try db.execute(sql: "INSERT INTO importBatch(accountId, sourceFileName, importedAt) VALUES (?, ?, ?)",
+                       arguments: [accountId, placeholderBatchName, Date(timeIntervalSinceReferenceDate: 0)])
+        let id = db.lastInsertedRowID
+        try db.execute(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES ('importBatch', ?, ?, ?) ON CONFLICT DO NOTHING",
+                       arguments: [id, SyncRecordStore.derivedUUID("mango.placeholderBatch." + accountUuid), SyncZoneSet.deviceOnlyZone])
+        try db.execute(sql: "DELETE FROM syncPending WHERE tableName = 'importBatch' AND localId = ?", arguments: [id])
+        return id
+    }
+
+    /// A move marker (step 6): the record now lives in `movedTo`. A device that syncs that zone keeps its row (the
+    /// record's save comes, or came, from there). Any other drops it with tracking off and no tombstone (a move back
+    /// applies as a new record), when it holds it from the marker's zone; a parent still pointed at stays, logged.
+    private static func applyMarker(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
+        guard let target = payload.movedTo else { return .applied }
+        if try SyncZoneSet.current(db: db).contains(target) { return .applied }
+        let uuid = payload.recordName
+        try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+        guard let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [uuid]),
+              record.zone == payload.zone, let schema = SyncSchema.table(record.tableName) else { return .applied }
+        try db.execute(sql: "SAVEPOINT syncApplyMarker")
+        do {
+            if schema.name == "importBatch" {
+                // Its shared transactions stay: filed under this device's placeholder for the account.
+                if let account = try Int64.fetchOne(db, sql: "SELECT accountId FROM importBatch WHERE id = ?", arguments: [record.localId]),
+                   try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM transaction_ WHERE importBatchId = ?)", arguments: [record.localId]) == true {
+                    try db.execute(sql: "UPDATE transaction_ SET importBatchId = ? WHERE importBatchId = ?",
+                                   arguments: [try placeholderBatch(accountId: account, db: db), record.localId])
+                }
+            }
+            try db.execute(sql: "DELETE FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
+                           arguments: [record.localId])
+            try db.execute(sql: "RELEASE syncApplyMarker")
+        } catch let error as DatabaseError where error.extendedResultCode == .SQLITE_CONSTRAINT_FOREIGNKEY || error.resultCode == .SQLITE_CONSTRAINT {
+            try db.execute(sql: "ROLLBACK TO syncApplyMarker")
+            try db.execute(sql: "RELEASE syncApplyMarker")
+            try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*",
+                                      losing: .string(needsAttention + "moved out of view, but records here still point at it"),
+                                      winner: nil, loser: nil, db: db, now: now)
+            return .kept("still referenced")
+        }
+        try forget(uuid: uuid, table: schema.name, localId: record.localId, db: db)
+        return .applied
+    }
+
+    /// Removes a record's identity, clocks and pending entry, with no tombstone.
+    private static func forget(uuid: String, table: String, localId: Int64, db: Database) throws {
+        try db.execute(sql: "DELETE FROM syncPending WHERE uuid = ?", arguments: [uuid])
+        try db.execute(sql: "DELETE FROM syncFieldClock WHERE tableName = ? AND localId = ?", arguments: [table, localId])
+        try db.execute(sql: "DELETE FROM syncRecord WHERE uuid = ?", arguments: [uuid])
+    }
+
+    /// Identities whose row went with a marker's (cascades): forgotten, like it.
+    private static func forgetRemoved(db: Database) throws {
+        for table in SyncSchema.tables where try db.tableExists(table.name) {
+            let gone = "s.tableName = ? AND NOT EXISTS (SELECT 1 FROM \(SyncChangeTracker.quoted(table.name)) t WHERE t.\(SyncChangeTracker.quoted(table.localIdColumn)) = s.localId)"
+            for record in try SyncRecordRow.fetchAll(db, sql: "SELECT s.* FROM syncRecord s WHERE \(gone)", arguments: [table.name]) {
+                try forget(uuid: record.uuid, table: table.name, localId: record.localId, db: db)
+            }
+        }
+    }
+
+    /// An `accountDetails` companion (step 6, named `SyncZoneRouter.companionRecordName`): the private columns of
+    /// its account, merged field by field with their clocks. It waits (staged) until the account is here, and is
+    /// taken only from the private zone of the account's owner.
+    private static func applyCompanion(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date,
+                                       fromStaging: Bool) throws -> IncomingResult {
+        let schema = SyncSchema.table("account")!
+        guard let (accountId, accountUuid) = try SyncCompanions.account(named: payload.recordName, db: db) else {
+            return try stage(payload, reason: waitingFor + schema.name, db: db, now: now, fromStaging: fromStaging)
+        }
+        try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
+        let owner = try Int64.fetchOne(db, sql: "SELECT ownerPersonId FROM account WHERE id = ?", arguments: [accountId])
+            .flatMap { try SyncRecordStore.existingUUID(table: "person", localId: $0, db: db) }
+        guard let owner, payload.zone == SyncZones.privateZone(personUuid: owner) else {
+            try SyncMerge.logConflict(table: schema.name, uuid: accountUuid, field: "*",
+                                      losing: .string(needsAttention + "account details from outside the owner's private zone; not taken"),
+                                      winner: nil, loser: payload.modifiedBy, db: db, now: now)
+            return .discarded("account details outside the owner's zone")
+        }
+        let columns = try Columns(table: schema.name, db: db)
+        var values: [String: DatabaseValue] = [:]
+        for column in SyncZoneRouter.privateAccountColumns where columns.declared[column] != nil {
+            if let value = payload.fields[column] { values[column] = value.databaseValue }
+        }
+        try db.execute(sql: "SAVEPOINT syncApplyCompanion")
+        do {
+            let outcome = try SyncMerge.mergeFields(payload, into: accountId, values: values, held: [:], schema: schema, db: db,
+                                                    deviceUser: deviceUser, uuid: accountUuid, adopted: false, now: now)
+            // The server's clocks of these fields are their base now (the account's other fields keep theirs).
+            for column in values.keys {
+                if let clock = payload.clock(column) {
+                    try SyncMerge.setClock(clock, field: SyncMerge.basePrefix + column, table: schema.name, localId: accountId, db: db)
+                }
+            }
+            if outcome.localWon, try !SyncMerge.isPending(uuid: accountUuid, db: db) {
+                try SyncMerge.queue(uuid: accountUuid, table: schema.name, localId: accountId, kind: .update, db: db)
+            }
+            try db.execute(sql: "RELEASE syncApplyCompanion")
+            return outcome.conflicts.isEmpty ? .applied : .conflicted(outcome.conflicts)
+        } catch let error as DatabaseError {
+            try db.execute(sql: "ROLLBACK TO syncApplyCompanion")
+            try db.execute(sql: "RELEASE syncApplyCompanion")
+            log.error("Sync apply of account details failed: SQLite \(error.extendedResultCode.rawValue)")
+            return .staged(applyFailed + ": SQLite \(error.extendedResultCode.rawValue)")
+        }
     }
 
     /// `onDelete` of each foreign key column (`CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`).
@@ -719,6 +1000,9 @@ public enum SyncTranslator {
     // MARK: Deletes
 
     private static func applyDelete(uuid: String, recordType: String?, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
+        if AccessRevalidation.isOn(db: db) {
+            AccessRevalidation.logUnjudgedDelete(table: try recordType ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [uuid]))
+        }
         let staged = try SyncStagingRow.filter(Column("uuid") == uuid).fetchOne(db)
         try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
         if try SyncTombstoneRow.fetchOne(db, key: uuid)?.mergedInto != nil {

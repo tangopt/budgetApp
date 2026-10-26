@@ -26,6 +26,9 @@ struct TransactionsSidePanel<Planned: View>: View {
     var conversion: CurrencyConversion = .none
     /// False for a reserve (planned items only): no transactions list or count.
     var showsTransactions = true
+    /// After the transactions, one line per private account of the other person's (sharing spec §3 goal 6): its
+    /// name, owner and count, "details private", and its total in GBP, counted in the panel's total.
+    var privateLines: [SharedActuals.PrivateLine] = []
     /// Shown above the list (e.g. an error banner or a filter), when given.
     var accessory: AnyView? = nil
     /// Add transaction… in the header, when given.
@@ -40,7 +43,7 @@ struct TransactionsSidePanel<Planned: View>: View {
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          accountNameById: [Int64: String] = [:],
          transfers: [Int64: [TransferCounterpart]] = [:], conversion: CurrencyConversion = .none,
-         showsTransactions: Bool = true, accessory: AnyView? = nil,
+         showsTransactions: Bool = true, privateLines: [SharedActuals.PrivateLine] = [], accessory: AnyView? = nil,
          onAdd: (() -> Void)? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: ((Transaction) -> Void)?, onClose: @escaping () -> Void) {
@@ -52,6 +55,7 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.transfers = transfers
         self.conversion = conversion
         self.showsTransactions = showsTransactions
+        self.privateLines = privateLines
         self.accessory = accessory
         self.onAdd = onAdd
         self.plannedSection = plannedSection
@@ -96,7 +100,7 @@ struct TransactionsSidePanel<Planned: View>: View {
                     Text(transactions.count == 1 ? "1 transaction" : "\(transactions.count) transactions")
                         .figureText()
                     Spacer()
-                    MoneyText(minorUnits: transactions.reduce(0) { $0 + conversion.gbp($1) })
+                    MoneyText(minorUnits: transactions.reduce(0) { $0 + conversion.gbp($1) } + privateLines.reduce(0) { $0 + $1.amountMinorUnits })
                         .help(convertedTotalNote.map { _ in Self.convertedTotalHelp } ?? "")
                 }
                 .font(.callout)
@@ -114,11 +118,14 @@ struct TransactionsSidePanel<Planned: View>: View {
             List {
                 if showsTransactions {
                     Section("Transactions") {
-                        if transactions.isEmpty {
+                        if transactions.isEmpty && privateLines.isEmpty {
                             Text("No transactions.").foregroundStyle(.secondary)
                         }
                         ForEach(sorted) { transaction in
                             row(transaction)
+                        }
+                        ForEach(privateLines) { line in
+                            privateLine(line)
                         }
                     }
                 }
@@ -129,6 +136,18 @@ struct TransactionsSidePanel<Planned: View>: View {
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(theme.windowFill)
+    }
+
+    /// "Card (Name) · 7 transactions · details private", with its total in GBP; nothing to open or edit.
+    private func privateLine(_ line: SharedActuals.PrivateLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+            Text(line.text).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+            Spacer(minLength: 8)
+            MoneyText(minorUnits: line.amountMinorUnits)
+                .fixedSize()
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func row(_ transaction: Transaction) -> some View {
@@ -196,9 +215,11 @@ struct TransactionsSidePanel<Planned: View>: View {
 extension TransactionsSidePanel where Planned == EmptyView {
     /// No planned section (e.g. a Year Total, or the Categories screen).
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
-         transfers: [Int64: [TransferCounterpart]] = [:], conversion: CurrencyConversion = .none, accessory: AnyView? = nil,
+         transfers: [Int64: [TransferCounterpart]] = [:], conversion: CurrencyConversion = .none,
+         privateLines: [SharedActuals.PrivateLine] = [], accessory: AnyView? = nil,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.init(title: title, transactions: transactions, categoryById: categoryById, showCategory: showCategory,
-                  transfers: transfers, conversion: conversion, accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
+                  transfers: transfers, conversion: conversion, privateLines: privateLines, accessory: accessory,
+                  plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
     }
 }

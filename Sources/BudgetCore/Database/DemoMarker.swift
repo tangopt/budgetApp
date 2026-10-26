@@ -21,6 +21,11 @@ public enum DemoMarker {
         return id == applicationID
     }
 
+    /// Whether the open database carries the demo id.
+    public static func isDemo(_ db: Database) throws -> Bool {
+        try Int32.fetchOne(db, sql: "PRAGMA application_id") == applicationID
+    }
+
     /// Marks a database as the demo's.
     public static func mark(_ db: Database) throws {
         try db.execute(sql: "PRAGMA application_id = \(applicationID)")

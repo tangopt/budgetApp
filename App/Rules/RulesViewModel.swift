@@ -62,19 +62,19 @@ final class RulesViewModel: ObservableObject {
     /// Learnt import rules are the user's to change outside an import run: written straight
     /// away, like transaction-rule edits.
     func setEnabled(importRuleId id: Int64, _ enabled: Bool) throws {
-        try dbQueue.write { db in try ImportRuleEditing.setEnabled(db: db, id: id, enabled) }
+        try dbQueue.write(.rulesAndCategories) { db in try ImportRuleEditing.setEnabled(db: db, id: id, enabled) }
         try reloadImportRules()
     }
 
     func delete(importRuleId id: Int64) throws {
-        try dbQueue.write { db in try ImportRuleEditing.delete(db: db, id: id) }
+        try dbQueue.write(.rulesAndCategories) { db in try ImportRuleEditing.delete(db: db, id: id) }
         try reloadImportRules()
     }
 
     /// Saves the Edit Rule sheet's choice. Returns the error to show, or nil once saved.
     func update(importRuleId id: Int64, edit: ImportRuleEdit) -> String? {
         do {
-            try dbQueue.write { db in try ImportRuleEditing.update(db: db, id: id, edit: edit) }
+            try dbQueue.write(.rulesAndCategories) { db in try ImportRuleEditing.update(db: db, id: id, edit: edit) }
         } catch ImportRuleEditError.blank {
             return "Enter a value."
         } catch ImportRuleEditError.noLetters {
@@ -109,14 +109,14 @@ final class RulesViewModel: ObservableObject {
     }
 
     func delete(_ rule: Rule) throws {
-        _ = try dbQueue.write { db in try rule.delete(db) }
+        _ = try dbQueue.write(.rulesAndCategories) { db in try rule.delete(db) }
         try load()
     }
 
     func updateCategory(_ rule: Rule, to categoryId: Int64) throws {
         guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
         rules[index].categoryId = categoryId
-        try dbQueue.write { db in try rules[index].update(db) }
+        try dbQueue.write(.rulesAndCategories) { db in try rules[index].update(db) }
     }
 
     /// The rule sheet's live preview (off the main thread); a failed read throws so the sheet
@@ -132,7 +132,7 @@ final class RulesViewModel: ObservableObject {
               gate: FiledYearGate, done: @escaping (String?) -> Void) {
         let name = categories.first { $0.id == categoryId }?.name ?? "its category"
         let edit = "Rule “\(pattern.trimmingCharacters(in: .whitespacesAndNewlines))” filed into \(name)"
-        gate.run(dbQueue, edit: edit, scope: { db in
+        gate.run(dbQueue, area: .rulesAndCategories, edit: edit, scope: { db in
             applyToUncategorised
                 ? .categorising(try Rules.uncategorisedMatchIds(db: db, pattern: pattern, matchType: matchType), as: categoryId)
                 : FiledYearEditCheck.Scope()
@@ -158,7 +158,7 @@ final class RulesViewModel: ObservableObject {
 
     /// The picker's "New category…": creates the category and adds it to the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         categories.append(category)
         return category
     }

@@ -277,7 +277,9 @@ public enum ImportRuleEditing {
             return (try json(LinkAction(entity: entity, role: role)), "Link to \(try entityLabel(db: db, entity))")
         case (.link, .merchant(let merchant)):
             let merchant = MerchantKey.make(try text(merchant))
-            return (try json(LinkAction(descriptionKey: merchant)), "Paid by “\(merchant)”")
+            // The account it was learnt from stays: the merchant is still that account's payee.
+            let source = ImportLearning.decode(LinkAction.self, rule.actionJSON)?.sourceAccountId
+            return (try json(LinkAction(descriptionKey: merchant, sourceAccountId: source)), "Paid by “\(merchant)”")
         case (.figurePosition, .figureLabel(let label)):
             let label = try text(label)
             guard let old = ImportLearning.decode(FigurePositionAction.self, rule.actionJSON) else { throw ImportRuleEditError.wrongKind }

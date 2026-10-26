@@ -243,7 +243,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     func unlink(documentId: Int64, from item: MissingEvidence.Item) {
         let library = library, entity = item.target.entity
         Task {
-            guard let result = await guarded({ _ = try library.unlink(documentId, from: entity) }) else { return }
+            guard let result = await guarded({ _ = try library.unlink(documentId, from: entity, actor: try library.database.signedInActor()) }) else { return }
             errorMessage = result.failure?.localizedDescription
         }
     }
@@ -251,7 +251,9 @@ final class MissingEvidenceViewModel: ObservableObject {
     /// Links, fills in what's missing for the item (one write), and describes what happened.
     nonisolated private static func linkFillingIn(library: EvidenceLibrary, documentId: Int64,
                                                   item: MissingEvidence.Item) throws -> String {
-        let outcome = try library.database.write { db in try MissingEvidence.link(db: db, documentId: documentId, to: item) }
+        let outcome = try library.database.write(.documents, origin: .documentLink) { db in
+            try MissingEvidence.link(db: db, documentId: documentId, to: item, actor: try SignedInActor.actor(db: db))
+        }
         let name = outcome.document.displayName
         var note = "Linked “\(name)”."
         if !outcome.filled.isEmpty { note += " Set its \(outcome.filled.joined(separator: " and ")) — change it in Documents if that's wrong." }
@@ -267,7 +269,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     func waive(_ item: MissingEvidence.Item, reason: EvidenceWaiverReason, note: String?) -> String? {
         guard let requirementId = item.requirement.id else { return "The rule no longer exists." }
         do {
-            _ = try dbQueue.write { db in try EvidenceRequirements.waive(db: db, requirementId: requirementId, target: item.target, reason: reason, note: note) }
+            _ = try dbQueue.write(.property) { db in try EvidenceRequirements.waive(db: db, requirementId: requirementId, target: item.target, reason: reason, note: note) }
             return nil
         } catch {
             return error.localizedDescription
@@ -277,7 +279,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     func removeWaiver(_ item: MissingEvidence.Item) {
         guard let requirementId = item.requirement.id else { return }
         do {
-            _ = try dbQueue.write { db in try EvidenceRequirements.removeWaiver(db: db, requirementId: requirementId, target: item.target) }
+            _ = try dbQueue.write(.property) { db in try EvidenceRequirements.removeWaiver(db: db, requirementId: requirementId, target: item.target) }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -313,7 +315,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     func save(_ requirement: EvidenceRequirement) -> String? {
         var requirement = requirement
         do {
-            try dbQueue.write { db in try EvidenceRequirements.save(db: db, &requirement) }
+            try dbQueue.write(.property) { db in try EvidenceRequirements.save(db: db, &requirement) }
             return nil
         } catch let error as EvidenceRequirementError {
             switch error {
@@ -330,7 +332,7 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     func deleteRequirement(_ id: Int64) {
         do {
-            _ = try dbQueue.write { db in try EvidenceRequirements.delete(db: db, id: id) }
+            _ = try dbQueue.write(.property) { db in try EvidenceRequirements.delete(db: db, id: id) }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -343,7 +345,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     }
 
     func seedPropertyRules(groupId: Int64, mortgageAccountIds: [Int64]) -> Result<[EvidenceRequirement], Error> {
-        Result { try dbQueue.write { db in try EvidenceRequirementDefaults.seedPropertyRules(db: db, categoryGroupId: groupId, mortgageAccountIds: mortgageAccountIds) } }
+        Result { try dbQueue.write(.property) { db in try EvidenceRequirementDefaults.seedPropertyRules(db: db, categoryGroupId: groupId, mortgageAccountIds: mortgageAccountIds) } }
     }
 
     // MARK: Describing rules

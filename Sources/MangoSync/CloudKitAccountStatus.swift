@@ -20,6 +20,12 @@ public enum CloudKitAccountStatus {
         }
     }
 
+    /// The iCloud user's record name in `container` (`CKContainer.userRecordID()`), which `appUser.cloudKitUserRecordName`
+    /// holds for the app user signed in with it (the iPhone's viewer, step 6). Throws when there's no account.
+    public static func userRecordName(container: String = CloudKitTransport.containerIdentifier) async throws -> String {
+        try await CKContainer(identifier: container).userRecordID().recordName
+    }
+
     static func status(for status: CKAccountStatus) -> Status {
         switch status {
         case .available: return .available

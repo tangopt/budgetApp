@@ -87,7 +87,7 @@ final class UncategorizedViewModel: ObservableObject {
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         categories.append(category)
         return category
     }
@@ -99,7 +99,7 @@ final class UncategorizedViewModel: ObservableObject {
         var updated = transactions[index]
         updated.note = Transaction.normalizedNote(note)
         do {
-            try dbQueue.write { db in try updated.update(db, columns: ["note"]) }
+            try dbQueue.write(.budgetAndAccounts) { db in try updated.update(db, columns: ["note"]) }
         } catch {
             errorMessage = "Couldn't save the note: \(error.localizedDescription)"
             return
@@ -150,7 +150,7 @@ final class UncategorizedViewModel: ObservableObject {
     /// question for all the rows); the rows leave the list once written.
     private func write(_ updates: [(row: Transaction, learn: Bool)], categoryId: Int64, ids: Set<Int64>) {
         let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
-        filedYearGate.run(dbQueue, edit: edit, scope: .categorising(Array(ids), as: categoryId), { db in
+        filedYearGate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: .categorising(Array(ids), as: categoryId), { db in
             for update in updates {
                 try update.row.update(db)
                 if update.learn {

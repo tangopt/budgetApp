@@ -52,6 +52,23 @@ final class ImportWaitingListTests: XCTestCase {
 
     // MARK: Keep
 
+    /// Step 6: a kept file records who kept it (the signed-in app user), whose private zone it lives in.
+    func testKeepRecordsTheKeeper() throws {
+        let user = try db.write { db -> Int64 in
+            var person = Person(name: "Synthetic Keeper")
+            try People.save(db: db, &person)
+            var user = AppUser(personId: person.id!, displayName: "K", isAdmin: true, createdAt: Self.now)
+            try user.insert(db)
+            try SyncChangeTracker.setWriter(try SyncRecordStore.uuid(for: "appUser", localId: user.id!, db: db), db: db)
+            return user.id!
+        }
+        _ = try list.keep([try dropped("kept.txt", "Kept by someone")], now: Self.now)
+        XCTAssertEqual(try rows().map(\.keptByAppUserId), [user])
+        try db.write { db in try SyncChangeTracker.setWriter(nil, db: db) }
+        _ = try list.keep([try dropped("nobody.txt", "Kept while signed out")], now: Self.now)
+        XCTAssertEqual(try rows().map(\.keptByAppUserId), [user, nil])
+    }
+
     func testKeepCopiesTheFileAndListsItAcrossReopen() throws {
         let file = try dropped("letter.txt", "A letter nobody recognises")
         let result = try list.keep([file], now: Self.now)
@@ -362,8 +379,9 @@ final class ImportWaitingListTests: XCTestCase {
 
     func testWaitingTableSyncsWithoutItsText() throws {
         let table = try XCTUnwrap(SyncSchema.table("importWaitingFile"))
-        XCTAssertEqual(table.syncedColumns, ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId"])
-        XCTAssertEqual(table.foreignKeys, ["importedRunId": "importRun"])
+        XCTAssertEqual(table.syncedColumns, ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId",
+                                             "keptByAppUserId"])
+        XCTAssertEqual(table.foreignKeys, ["importedRunId": "importRun", "keptByAppUserId": "appUser"])
         XCTAssertEqual(Set(table.localOnlyColumns), ["text", "textStatus", "suggestion", "checkedSignature"])
         let names = SyncSchema.tables.map(\.name)
         XCTAssertLessThan(try XCTUnwrap(names.firstIndex(of: "importRun")), try XCTUnwrap(names.firstIndex(of: "importWaitingFile")))

@@ -68,7 +68,7 @@ public enum SettingsDemoRow {
 }
 
 /// Settings (plan step 4 Task 12), opened from Home's avatar, presented inside the lock: Lock now; Appearance and the
-/// theme (`ThemeCatalog`'s, as `PhoneTheme.all`); Security (the iCloud account, whether records are sealed with the
+/// theme (`ThemeCatalog`'s, as `PhoneTheme.all`); Sharing (read-only, `SharingSection`); Security (the iCloud account, whether records are sealed with the
 /// household key or it is still awaited); About (version, build, the sync status line, "Sync now" while sync runs).
 /// Read-only phone: nothing here changes the household's data.
 public struct SettingsSheet: View {
@@ -85,13 +85,16 @@ public struct SettingsSheet: View {
     let onSyncNow: (() async -> Void)?
     /// "Try with demo data" or "Leave demo"; nil once the household's data is here.
     let demo: SettingsDemoRow?
+    /// The read-only Sharing section (step 6); nil while it hasn't been read (left out).
+    let sharing: SharingSectionState?
     @Environment(\.dismiss) private var dismiss
     @State private var syncing = false
 
     public init(appearance: Binding<PhoneAppearance>, themeId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
-                onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil) {
+                onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil) {
         self.demo = demo
+        self.sharing = sharing
         _appearance = appearance
         _themeId = themeId
         self.iCloud = iCloud
@@ -128,6 +131,9 @@ public struct SettingsSheet: View {
                         ForEach(PhoneTheme.all) { Text($0.name).tag($0.id) }
                     }
                     .frame(minHeight: 44)
+                }
+                if let sharing {
+                    SharingSection(state: sharing)
                 }
                 Section("Security") {
                     LabeledContent("iCloud", value: SettingsCopy.iCloudAccount(iCloud))

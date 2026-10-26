@@ -15,7 +15,9 @@ public struct AccountDetail: Equatable, Sendable {
 
 /// An account's detail (iPhone spec §3.6, "shows its recent transactions and its balance chart"). Reads only the
 /// account's own snapshots and transactions (filtered in SQL); both calculators filter by account themselves, so
-/// the result is the same as over everything. Read-only: updating a balance from the phone comes in step 6.
+/// the result is the same as over everything. An account the viewer doesn't see in full (step 6) reads through
+/// `SharedActualsSource`: its balance points draw the chart, and only what the household shares of it is listed
+/// (never a summary). Read-only: updating a balance from the phone comes later.
 @MainActor
 public final class AccountDetailModel: ObservableObject {
     public enum State: Equatable, Sendable {
@@ -32,15 +34,18 @@ public final class AccountDetailModel: ObservableObject {
     /// The row as Accounts last showed it (a sync can change its balance); nil if Accounts doesn't have it.
     @Published public private(set) var row: AccountRowPresentation?
     public let accountId: Int64
+    /// Whose detail this is (step 6): the next load reads with it.
+    public var viewer: PhoneViewer
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
 
     public init(dbQueue: any DatabaseReader, accountId: Int64, row: AccountRowPresentation?, today: @escaping () -> Date,
-                preloaded: State = .idle) {
+                viewer: PhoneViewer = .everyone, preloaded: State = .idle) {
         self.dbQueue = dbQueue
         self.accountId = accountId
         self.row = row
         self.today = today
+        self.viewer = viewer
         self.state = preloaded
     }
 
@@ -49,8 +54,9 @@ public final class AccountDetailModel: ObservableObject {
         let reader = dbQueue
         let id = accountId
         let day = today()
+        let viewer = viewer
         do {
-            state = .loaded(try await reader.read { db in try Self.read(db, accountId: id, today: day) })
+            state = .loaded(try await reader.read { db in try Self.read(db, accountId: id, today: day, viewer: viewer) })
         } catch {
             if case .loaded = state { return }
             state = .failed(Self.loadFailureMessage)
@@ -64,24 +70,34 @@ public final class AccountDetailModel: ObservableObject {
     }
 
     /// The same read, now (the snapshot routes).
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, accountId: Int64, today: Date) -> State {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, accountId: Int64, today: Date,
+                                           viewer: PhoneViewer = .everyone) -> State {
         do {
-            return .loaded(try dbQueue.read { db in try read(db, accountId: accountId, today: today) })
+            return .loaded(try dbQueue.read { db in try read(db, accountId: accountId, today: today, viewer: viewer) })
         } catch {
             return .failed(loadFailureMessage)
         }
     }
 
-    nonisolated static func read(_ db: Database, accountId: Int64, today: Date) throws -> AccountDetail {
+    nonisolated static func read(_ db: Database, accountId: Int64, today: Date, viewer: PhoneViewer = .everyone) throws -> AccountDetail {
         guard let account = try Account.fetchOne(db, key: accountId) else { throw DatabaseError(resultCode: .SQLITE_NOTFOUND) }
-        let snapshots = try BalanceSnapshot.filter(Column("accountId") == accountId).fetchAll(db)
-        let transactions = try Transaction.filter(Column("accountId") == accountId).fetchAll(db)
+        let seer = try viewer.resolve(db: db)
+        guard seer.shows(account) else { throw DatabaseError(resultCode: .SQLITE_NOTFOUND) }
+        var snapshots = try BalanceSnapshot.filter(Column("accountId") == accountId).fetchAll(db)
+        var transactions = try Transaction.filter(Column("accountId") == accountId).fetchAll(db)
+        var listed = transactions
+        if !seer.seesInFull(account) {
+            let source = SharedActualsSource(viewer: seer, today: today)
+            snapshots = try source.balanceSnapshots(db).filter { $0.accountId == accountId }
+            transactions = try source.transactions(db).filter { $0.accountId == accountId }
+            listed = transactions.filter { !SharedActuals.isSummary($0) }
+        }
         let categories = try Category.fetchAll(db)
         let adjustmentNames = Dictionary(categories.filter(\.isBuiltIn).compactMap { category in category.id.map { ($0, category.name) } },
                                          uniquingKeysWith: { first, _ in first })
         let history = AccountHistory.make(accountId: accountId, snapshots: snapshots, transactions: transactions,
                                           adjustmentCategoryNames: adjustmentNames, today: today)
-        let input = TransactionSearch.Input(transactions: transactions, categories: categories, accounts: [account],
+        let input = TransactionSearch.Input(transactions: listed, categories: categories, accounts: [account],
                                             links: try TransferLink.fetchAll(db),
                                             eurToGbpRate: try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate)
         let recent = TransactionSearch.rows(input, criteria: .init(accountIds: [accountId]), now: today)
@@ -189,6 +205,10 @@ private struct BalanceCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHidden(true)
+            if let badge = row.sharingBadge {
+                SharingBadgeView(text: badge)
+                    .accessibilityHidden(true)
+            }
             if row.needsUpdate {
                 InlineBanner(tone: .amber, text: AccountsCopy.needsUpdate)
                     .accessibilityHidden(true)

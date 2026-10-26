@@ -3,11 +3,116 @@ import Foundation
 import BudgetCore
 import GRDB
 import OSLog
+import os
 
 struct LaunchBackupError: LocalizedError {
     let underlying: Error
     var errorDescription: String? {
         "Mango couldn't back up your data before updating it, so it didn't update anything. \(underlying.localizedDescription)"
+    }
+}
+
+/// Who the app's data writes are made as (step 6 Task 9): the user signed in now, kept by the session (`SessionModel`)
+/// where any thread can read it.
+enum SignedInActor {
+    enum State: Equatable, Sendable {
+        /// Sign-in isn't set up (no app users yet): nothing to check, nobody to stamp.
+        case notSetUp
+        /// Locked, or no session yet: the app writes nothing.
+        case signedOut
+        case signedIn(appUserId: Int64)
+    }
+
+    private static let current = OSAllocatedUnfairLock<State>(initialState: .signedOut)
+
+    static var state: State {
+        get { current.withLock { $0 } }
+        set { current.withLock { $0 = newValue } }
+    }
+
+    /// The signed-in app user's id; nil while locked or before sign-in is set up.
+    static var appUserId: Int64? {
+        if case .signedIn(let id) = state { return id }
+        return nil
+    }
+
+    /// The actor a write made now is made as: the signed-in user; nil before sign-in is set up (nothing to check).
+    /// Signed out, it throws (fix round 1 M-2: never stamped as the admin).
+    static func actor(for state: State, db: Database) throws -> AccessActor? {
+        switch state {
+        case .signedIn(let id): return try AccessActor.load(appUserId: id, db: db)
+        case .notSetUp: return nil
+        case .signedOut: throw SignedOutWrite()
+        }
+    }
+
+    static func actor(db: Database) throws -> AccessActor? { try actor(for: state, db: db) }
+
+    /// Whose figures the screens show (`SharingViewer`): the signed-in user; everything before sign-in is set up.
+    static func viewer(db: Database) throws -> SharingViewer {
+        try SharingViewer.load(appUserId: appUserId, db: db)
+    }
+
+    /// The screens' actuals as the signed-in user sees them (`SharedActualsSource`).
+    static func actuals(db: Database, today: Date) throws -> SharedActualsSource {
+        SharedActualsSource(viewer: try viewer(db: db), today: today)
+    }
+}
+
+/// A data write asked for while nobody is signed in: refused, nothing written.
+struct SignedOutWrite: LocalizedError {
+    var errorDescription: String? { "Sign in to change this." }
+}
+
+/// Every data write the app makes goes through these (`scripts/check-actor-writes.sh` keeps it so): it runs as the
+/// signed-in user, only with Edit on `area` (else `AccessDenied` and nothing written), stamping them as the writer
+/// and `origin` on what it changes (`ActorWrite.perform`).
+extension DatabaseWriter {
+    func write<T>(_ area: AccessArea, origin: WriteOrigin = .edit, _ body: (Database) throws -> T) throws -> T {
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try write { db in
+            try ActorWrite.perform(orAdmin: try SignedInActor.actor(for: state, db: db), area: area, origin: origin, db: db) { try body(db) }
+        }
+    }
+
+    func write<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit,
+                            _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try await write { db in
+            try ActorWrite.perform(orAdmin: try SignedInActor.actor(for: state, db: db), area: area, origin: origin, db: db) {
+                try body(db)
+            }
+        }
+    }
+
+    /// A write whose rule is who you are, not an area (sharing: the ownership sheet is the admin's, a level its
+    /// account owner's): BudgetCore checks the actor and stamps them (`SharingSetup.save`, `SharingLevels.set`).
+    /// Refused while nobody is signed in, and before sign-in is set up (nobody to check).
+    func writeAsSignedInUser<T: Sendable>(_ body: @escaping @Sendable (Database, AccessActor) throws -> T) async throws -> T {
+        let state = SignedInActor.state
+        guard case .signedIn = state else { throw SignedOutWrite() }
+        return try await write { db in
+            guard let actor = try SignedInActor.actor(for: state, db: db) else { throw SignedOutWrite() }
+            return try body(db, actor)
+        }
+    }
+
+    /// `signedInActor()` off the main thread: the signed-in user's actor (its writer UUID made if new); nil before
+    /// sign-in is set up; throws `SignedOutWrite` while nobody is signed in.
+    func loadSignedInActor() async throws -> AccessActor? {
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try await write { db in try SignedInActor.actor(for: state, db: db) }
+    }
+
+    /// The signed-in user's actor, for BudgetCore entry points that write by themselves (`EvidenceLibrary.link`);
+    /// throws `SignedOutWrite` when nobody is signed in.
+    func signedInActor() throws -> AccessActor? {
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try write { db in try SignedInActor.actor(for: state, db: db) }
     }
 }
 
@@ -22,13 +127,16 @@ final class AppEnvironment: ObservableObject {
     /// Set once, right after launch, only if the fetched rate actually differs from the
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
-    /// What Settings ▸ Sync shows. `.off` unless a DEBUG `--sync-demo` launch on the demo database runs the
-    /// scheduler (`SyncDemoMode`): the real database never syncs in this build (`SyncActivation`).
+    /// What Settings ▸ Sync shows for a DEBUG `--sync-demo` launch on the demo database (`SyncDemoMode`); the real
+    /// database's status is `realSync`'s.
     @Published var syncStatus: SyncStatus = .off
-    /// The last sync's report in that demo (Settings ▸ Sync's counts); nil until one has finished.
+    /// The last sync's report (Settings ▸ Sync's counts); nil until one has finished.
     @Published var syncLastReport: SyncReport?
-    /// The demo's scheduler; nil whenever sync is off.
+    /// The demo's scheduler; nil unless the demo syncs.
     var syncScheduler: SyncScheduler?
+    /// The real database's sync (step 6 Task 13): runs once "Turn on sync…" has begun the upload, on Mango's own
+    /// database in a Production build (`SyncActivation.realDecision`). One per database: windows share it.
+    let realSync: RealSync
     /// HMRC's average rates the ended tax years lack, fetched in the background (after
     /// launch, and whenever the Tax years screen appears).
     let hmrcRateAutoFetch: HMRCRateAutoFetch
@@ -48,17 +156,20 @@ final class AppEnvironment: ObservableObject {
         // Read when Confirm import is pressed: whoever is signed in then (auth spec §6).
         currentAppUserId: { [weak self] in self?.session.currentAppUserId })
 
-    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?) {
+    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?,
+                 realSync existingSync: RealSync?) {
         self.dbQueue = dbQueue
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         // A second window on the same database shares the first one's session: one sign-in for every window.
         // The snapshot build never touches the Keychain or the app's own preferences.
-        self.session = existing ?? (SnapshotMode.isActive
+        let session = existing ?? (SnapshotMode.isActive
             ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp,
                            biometrics: BiometricUnlock.snapshot(scope: auth.databaseId, defaults: SnapshotMode.defaults),
                            defaults: SnapshotMode.defaults, snapshotUser: auth.snapshotUser)
             : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId)))
+        self.session = session
+        self.realSync = existingSync ?? RealSync(dbQueue: dbQueue, databasePath: databasePath, evidenceRoot: evidenceRoot, session: session)
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
@@ -111,8 +222,9 @@ final class AppEnvironment: ObservableObject {
             } catch {
                 throw LaunchBackupError(underlying: error)
             }
+            // Launch upkeep is a hub job: the admin's (nothing to check before sign-in is set up).
             try manager.dbQueue.write { db in
-                try CategorySeeder.seedDefaults(db)
+                try ActorWrite.perform(orAdmin: nil, area: .rulesAndCategories, origin: .system, db: db) { try CategorySeeder.seedDefaults(db) }
             }
             // Gives every account its transfer category (spec 2026-10-14 §4), then links
             // transfers between accounts already imported, filing their legs under those
@@ -120,8 +232,10 @@ final class AppEnvironment: ObservableObject {
             // import or launch — never blocks launch.
             do {
                 _ = try manager.dbQueue.write { db in
-                    try TransferCategories.ensure(db: db)
-                    return try TransferMatcher.match(db: db, today: AppClock.now)
+                    try ActorWrite.perform(orAdmin: nil, area: .budgetAndAccounts, origin: .system, db: db) {
+                        try TransferCategories.ensure(db: db)
+                        return try TransferMatcher.match(db: db, today: AppClock.now)
+                    }
                 }
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
@@ -135,14 +249,23 @@ final class AppEnvironment: ObservableObject {
         // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
         // beside a `BUDGET_DB_PATH` copy when testing against one.
         let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
-        let existing = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0.session : nil }
-        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth, session: existing)
+        let sameDatabase = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0 : nil }
+        // A second window's queue is its own; the real sync stays the first window's (one engine per database).
+        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth,
+                                         session: sameDatabase?.session, realSync: sameDatabase?.realSync)
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)
         #if DEBUG
         SyncDemoMode.start(environment)
+        let demoLaunch = SyncDemoMode.isRequested
+        #else
+        let demoLaunch = false
         #endif
+        // The real database's sync resumes by itself once its upload began (never with --sync-demo, never snapshots).
+        if !demoLaunch && !SnapshotMode.isActive {
+            Task { await environment.realSync.startIfAllowed() }
+        }
         return environment
     }
 
@@ -153,21 +276,32 @@ final class AppEnvironment: ObservableObject {
         let databaseId: String
         let snapshotUser: AppUser?
 
-        /// The demo database's first app user, else a stand-in for its first person (snapshot build only).
+        /// The demo database's first app user who can sign in, else its admin (`DemoSharing`'s, with no password),
+        /// else a stand-in for its first person (snapshot build only).
         static func snapshotUser(_ db: Database) throws -> AppUser? {
             if let user = try AppUserStore.signInCandidates(db).first { return user }
+            if let admin = try AppUser.filter(Column("isAdmin") == true).order(Column("id")).fetchOne(db) { return admin }
             guard let person = try Person.order(Column("id")).fetchOne(db), let personId = person.id else { return nil }
             return AppUser(personId: personId, displayName: person.name, isAdmin: true, createdAt: AppClock.now)
         }
     }
 
-    /// Sync runs in this window's database (only a DEBUG `--sync-demo` launch on the demo database).
+    /// A data write as the signed-in user (`DatabaseWriter.write(_:origin:_:)`).
+    func write<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit,
+                            _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await dbQueue.write(area, origin: origin, body)
+    }
+
+    /// The DEBUG `--sync-demo` launch's sync runs in this window's database.
     var isSyncRunning: Bool { syncScheduler != nil }
 
     /// Settings ▸ Sync's "Sync now": pulls then pushes through the scheduler and keeps the report. Nothing when
     /// sync is off.
     func syncNow() async {
-        guard let scheduler = syncScheduler else { return }
+        guard let scheduler = syncScheduler else {
+            if let report = await realSync.syncNow() { syncLastReport = report }
+            return
+        }
         do {
             syncLastReport = try await scheduler.syncNowAndWait()
         } catch {
@@ -203,9 +337,12 @@ final class AppEnvironment: ObservableObject {
             let newRate = ExchangeRateSetting(eurToGbpRate: fetchedRate, updatedAt: AppClock.now)
             let impact = ExchangeRateFetcher.netWorthImpact(accounts: accounts, snapshots: snapshots, transactions: transactions, oldRate: previousRate, newRate: newRate)
 
+            // A hub job (no one asked for it): the admin's, whoever is signed in.
             try await dbQueue.write { db in
-                var setting = newRate
-                try setting.insert(db)
+                try ActorWrite.perform(orAdmin: nil, area: .householdSettings, origin: .system, db: db) {
+                    var setting = newRate
+                    try setting.insert(db)
+                }
             }
 
             let sign = impact >= 0 ? "+" : ""

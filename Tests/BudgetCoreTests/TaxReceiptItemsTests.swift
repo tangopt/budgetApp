@@ -38,12 +38,13 @@ final class TaxReceiptItemsTests: XCTestCase {
                 PropertyOwner(propertyId: p, personId: a.id!, shareBasisPoints: 5_000),
                 PropertyOwner(propertyId: p, personId: b.id!, shareBasisPoints: 5_000)
             ])
-            var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)
-            try account.insert(db)
-            ids["bank"] = account.id!
-            try db.execute(sql: "INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (?, 'bank.csv', ?)", arguments: [account.id!, Date()])
+            // Raw SQL: the Account record has columns from later migrations (one test migrates part of the way).
+            try db.execute(sql: "INSERT INTO account (name, currency, kind, trackingMode) VALUES ('Bank A', 'eur', 'cash', 'imported')")
+            let accountId = db.lastInsertedRowID
+            ids["bank"] = accountId
+            try db.execute(sql: "INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (?, 'bank.csv', ?)", arguments: [accountId, Date()])
             ids["batch"] = db.lastInsertedRowID
-            try Properties.setAccount(db: db, propertyId: p, accountId: account.id!, role: .current)
+            try Properties.setAccount(db: db, propertyId: p, accountId: accountId, role: .current)
             var group = CategoryGroup(name: "Property A")
             try group.insert(db)
             try Properties.addCategoryGroup(db: db, propertyId: p, categoryGroupId: group.id!)

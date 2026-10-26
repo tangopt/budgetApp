@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 7
+    public static let version = 8
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -56,13 +56,27 @@ public enum SyncSchema {
                         synced: ["personId", "displayName", "cloudKitUserRecordName", "isAdmin", "createdAt"],
                         foreignKeys: ["personId": "person"],
                         localOnly: ["lastSignInAt"]),
+        SyncTableSchema("personSharing",
+                        synced: ["personId", "taxIncomeLevel", "ownershipConfirmedAt"],
+                        foreignKeys: ["personId": "person"]),
+        SyncTableSchema("memberPermission",
+                        synced: ["appUserId", "area", "level"],
+                        foreignKeys: ["appUserId": "appUser"]),
         SyncTableSchema("account",
-                        synced: ["name", "currency", "kind", "trackingMode", "alias", "sortCode", "accountNumber", "iban", "sortOrder", "statementMismatchMinorUnits", "statementMismatchDate", "statementMismatchClosingMinorUnits", "statementLastCheckedDate", "balanceConfirmedAt", "bankRegion", "bankName", "routingNumber", "bic", "isMain", "includeInNetWorth"]),
+                        synced: ["name", "currency", "kind", "trackingMode", "alias", "sortCode", "accountNumber", "iban", "sortOrder", "statementMismatchMinorUnits", "statementMismatchDate", "statementMismatchClosingMinorUnits", "statementLastCheckedDate", "balanceConfirmedAt", "bankRegion", "bankName", "routingNumber", "bic", "isMain", "includeInNetWorth", "ownerPersonId", "sharingLevel"],
+                        foreignKeys: ["ownerPersonId": "person"]),
         SyncTableSchema("categoryGroup",
                         synced: ["name", "type"]),
         SyncTableSchema("category",
                         synced: ["name", "type", "groupId", "isReserved", "excludeFromAutoForecast", "isExternalTransfer", "iconName", "builtInRole", "transferAccountId"],
                         foreignKeys: ["transferAccountId": "account"]),
+        // Summaries of accounts below Everything (sharing spec 2026-10-25 §3), rebuilt by the owner's devices.
+        SyncTableSchema("accountBalancePoint",
+                        synced: ["accountId", "payMonth", "date", "balanceMinorUnits"],
+                        foreignKeys: ["accountId": "account"]),
+        SyncTableSchema("accountSummaryMonth",
+                        synced: ["accountId", "payMonth", "categoryId", "amountMinorUnits", "gbpAmountMinorUnits", "transactionCount"],
+                        foreignKeys: ["accountId": "account", "categoryId": "category"]),
         SyncTableSchema("importRun",
                         synced: ["confirmedAt", "entryPoint", "summary", "reasonsJSON", "undoneAt", "undoSummary", "appUserId"],
                         foreignKeys: ["appUserId": "appUser"],
@@ -70,8 +84,9 @@ public enum SyncSchema {
         // Files kept for later (spec 2026-10-24 §1): the household's list; each device reads the text
         // and suggests on its own.
         SyncTableSchema("importWaitingFile",
-                        synced: ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId"],
-                        foreignKeys: ["importedRunId": "importRun"],
+                        synced: ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId",
+                                 "keptByAppUserId"],
+                        foreignKeys: ["importedRunId": "importRun", "keptByAppUserId": "appUser"],
                         localOnly: ["text", "textStatus", "suggestion", "checkedSignature"]),
         SyncTableSchema("importBatch",
                         synced: ["accountId", "sourceFileName", "importedAt", "importRunId"],
@@ -257,6 +272,7 @@ public enum SyncSchema {
         "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
         "localCredential", "localSetting",
         "sourceFolder", "sourceFile",
+        "syncZoneMove", "syncCompanion", "syncAccessRevert", "syncPresence", "syncZoneCleanup",
         "grdb_migrations", "sqlite_sequence",
     ]
 
@@ -379,6 +395,7 @@ extension SyncSchema {
             SyncJSONRule("accountId", .row("account")),
             SyncJSONRule("entity", .evidenceEntity),
             SyncJSONRule("customKindId", .row("customDocumentKind")),
+            SyncJSONRule("sourceAccountId", .row("account")),
         ]), plainNumbers: ["occurrence"]),
         SyncJSONReference(table: "scenarioApplication", column: "journal", content: .rules([
             SyncJSONRule("operations[].differenceId", .row("forecastEntry")),
@@ -464,12 +481,17 @@ extension SyncSchema {
         SyncUniqueKey("person", ["name"], .suffix("name")),
         SyncUniqueKey("appUser", ["personId"], .identity),                     // one app user per person
         SyncUniqueKey("appUser", ["cloudKitUserRecordName"], .identity),       // one app user per iCloud user
+        SyncUniqueKey("personSharing", ["personId"], .identity),               // one sharing row per person
+        SyncUniqueKey("memberPermission", ["appUserId", "area"], .identity),   // one level per user and area
         SyncUniqueKey("account", ["isMain"], .exclusiveFlag("isMain")),
         SyncUniqueKey("account", ["name"], .suffix("name")),
         SyncUniqueKey("categoryGroup", ["name"], .suffix("name")),
         SyncUniqueKey("category", ["transferAccountId"], .yield("transferAccountId", .null)),
         SyncUniqueKey("category", ["builtInRole"], .identity),
         SyncUniqueKey("category", ["name"], .suffix("name")),
+        SyncUniqueKey("accountBalancePoint", ["accountId", "payMonth"], .identity),
+        SyncUniqueKey("accountSummaryMonth", ["accountId", "payMonth", "categoryId"], .identity),
+        SyncUniqueKey("accountSummaryMonth", ["accountId", "payMonth"], .identity),  // the uncategorised row (partial index)
         SyncUniqueKey("customDocumentKind", ["name"], .identity),              // one kind per name (ignoring case) on every device
         SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
         SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format

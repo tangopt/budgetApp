@@ -19,12 +19,25 @@ public enum PaydaySource {
     public static let salaryCategoryName = "Income"
     static let minimumFractionOfMedianSalary = 0.5
 
+    /// `publishedCloses`: the pay-month closes the other person's devices published for accounts this device
+    /// doesn't hold in full (`ActualsSource.publishedCloses`). A calendar month with one takes it, and this
+    /// device's own paydays in that month are left out; elsewhere the own paydays stand. Summary rows standing for
+    /// the other person's totals (`SharedActuals.isSummary`) are never paydays.
+    public static func paydayDates(transactions: [Transaction], categories: [Category], publishedCloses: [Date]) -> [Date] {
+        guard !publishedCloses.isEmpty else { return paydayDates(transactions: transactions, categories: categories) }
+        let calendar = PayCalendar.calendar
+        func month(_ date: Date) -> DateComponents { calendar.dateComponents([.year, .month], from: date) }
+        let published = Set(publishedCloses.map(month))
+        let own = paydayDates(transactions: transactions, categories: categories).filter { !published.contains(month($0)) }
+        return (own + publishedCloses).sorted()
+    }
+
     public static func paydayDates(transactions: [Transaction], categories: [Category]) -> [Date] {
         guard let salaryCategoryId = categories.first(where: { $0.name == salaryCategoryName && $0.type == .income })?.id else {
             return []
         }
         let salaryCredits = transactions.filter {
-            $0.categoryId == salaryCategoryId && $0.status == .confirmed && $0.amountMinorUnits > 0
+            $0.categoryId == salaryCategoryId && $0.status == .confirmed && $0.amountMinorUnits > 0 && !SharedActuals.isSummary($0)
         }
         guard !salaryCredits.isEmpty else { return [] }
 

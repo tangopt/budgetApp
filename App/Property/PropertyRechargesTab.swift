@@ -123,7 +123,7 @@ final class RechargesModel: ObservableObject {
 
     /// `body` through the filed-year check, off the main thread, then reloads.
     private func write(_ edit: String, _ body: @escaping (Database) throws -> Void) {
-        filedYearGate.run(dbQueue, edit: edit, scope: .everyYear, body) { [weak self] result in
+        filedYearGate.run(dbQueue, area: .property, origin: .propertyMatching, edit: edit, scope: .everyYear, body) { [weak self] result in
             self?.errorMessage = result.failure.map(RechargeMessages.text(for:))
             self?.load()
         }

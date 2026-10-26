@@ -92,11 +92,16 @@ public struct LinkAction: Codable, Equatable, Sendable {
     public var entity: EvidenceEntity?
     public var role: String?
     public var descriptionKey: String?
+    /// For a merchant link (`descriptionKey`): the account of the payment it was learnt from, so the rule
+    /// stays as private as that account (`SyncZoneRouter`). Absent from the JSON when nil (rules learnt
+    /// before, which the router keeps private).
+    public var sourceAccountId: Int64?
 
-    public init(entity: EvidenceEntity? = nil, role: String? = nil, descriptionKey: String? = nil) {
+    public init(entity: EvidenceEntity? = nil, role: String? = nil, descriptionKey: String? = nil, sourceAccountId: Int64? = nil) {
         self.entity = entity
         self.role = role
         self.descriptionKey = descriptionKey
+        self.sourceAccountId = sourceAccountId
     }
 }
 

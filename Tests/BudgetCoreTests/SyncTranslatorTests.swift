@@ -779,7 +779,13 @@ final class SyncTranslatorTests: XCTestCase {
         let moved = try empty.queue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncRecord WHERE localId >= 5000")! }
         XCTAssertGreaterThan(moved, sameIds * 9 / 10, "most records have a different local id there")
         var differences: [String] = []
-        for (name, payload) in original where copied[name] != payload {
+        // The write's origin (`WriteOrigin`) is the sender's, judged on arrival; it isn't a column and doesn't travel on.
+        func columns(_ payload: SyncPayload?) -> SyncPayload? {
+            var payload = payload
+            payload?.origin = nil
+            return payload
+        }
+        for (name, payload) in original where columns(copied[name]) != columns(payload) {
             let other = copied[name]
             let fields = payload.fields.keys.filter { payload.fields[$0] != other?.fields[$0] }.sorted()
             differences.append("\(payload.recordType) \(fields)")

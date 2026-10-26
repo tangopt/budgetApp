@@ -38,10 +38,10 @@ final class ImportRunTests: XCTestCase {
         let m = try DatabaseManager(path: nil)
         try m.migrate(upTo: "taxPolicyReceiptItems")
         try m.dbQueue.write { db in
-            var account = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .imported)
-            try account.insert(db)
+            // Raw SQL: the Account record has columns from later migrations.
+            try db.execute(sql: "INSERT INTO account (name, currency, kind, trackingMode) VALUES ('A', 'gbp', 'cash', 'imported')")
             try db.execute(sql: "INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (?, 'old.csv', ?)",
-                           arguments: [account.id!, Date()])
+                           arguments: [db.lastInsertedRowID, Date()])
         }
         try m.migrate()
         try m.dbQueue.read { db in

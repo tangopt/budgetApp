@@ -58,6 +58,12 @@ struct NetWorthCard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                if content.showsNetWorthNote {
+                    Label(SharingCopy.netWorthNote, systemImage: "lock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
     }

@@ -1,0 +1,433 @@
+import Foundation
+import GRDB
+import os
+
+/// Records that moved between zones (a level change, sharing spec 2026-10-25 §3 goal 4), as this device knows
+/// them, in `syncZoneMove` (local only): one row per record and zone it left.
+///
+/// A move is durable: the push decides it from the record's zone here and the router's, saves the record's new copy
+/// (its row, with its file sealed again under the new zone's key) and only then, in the transaction that takes that
+/// save in, writes the move: the zone it left (`zone`), where it went (`toZone`), the old copy's stamp and the file
+/// record it left behind there (`oldFile`). Every push then saves a *marker* (`SyncPayload.movedTo`, no fields) over
+/// the old copy and deletes the old file record, and keeps trying until the server has confirmed both. Nothing is
+/// cleared before the server confirms it. A move that hasn't finished after `attentionAfter` pushes is logged for
+/// attention and still retried. A finished row keeps the marker's stamp, so a later move back saves over it.
+public enum SyncZoneMoves {
+    /// Pushes after which an unfinished move is logged "needs attention" (it keeps being retried).
+    static let attentionAfter = 5
+    static let attentionMessage = SyncTranslator.needsAttention + "a move between zones hasn't finished; still retrying"
+
+    /// An unfinished move: the record, its table, the zone it left, whether its marker is still to save and the file
+    /// record still to delete there.
+    public struct Unfinished: Equatable, Sendable {
+        public var uuid: String
+        public var tableName: String
+        public var zone: String
+        public var toZone: String?
+        public var markerPending: Bool
+        /// File records the record left in `zone`, each still to delete there.
+        public var oldFiles: [String]
+        /// The file record its copy in `toZone` names (to clean up if it comes back).
+        public var toFile: String?
+        public var attempts: Int
+    }
+
+    static func files(_ json: String?) -> [String] {
+        json.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
+    }
+
+    static func json(_ files: [String]) -> String? {
+        let unique = Array(Set(files)).sorted()
+        guard !unique.isEmpty else { return nil }
+        return String(decoding: (try? JSONEncoder().encode(unique)) ?? Data(), as: UTF8.self)
+    }
+
+    /// Moves still to finish (a marker to save or an old file record to delete), oldest first.
+    public static func unfinished(db: Database) throws -> [Unfinished] {
+        try Row.fetchAll(db, sql: """
+            SELECT uuid, tableName, zone, toZone, toFile, pending, oldFile, attempts FROM syncZoneMove
+            WHERE pending = 1 OR oldFile IS NOT NULL OR toZone IS NOT NULL ORDER BY rowid
+            """).map {
+            Unfinished(uuid: $0["uuid"], tableName: $0["tableName"], zone: $0["zone"], toZone: $0["toZone"],
+                       markerPending: ($0["pending"] as Int) == 1, oldFiles: files($0["oldFile"]), toFile: $0["toFile"], attempts: $0["attempts"])
+        }.filter { $0.markerPending || !$0.oldFiles.isEmpty || $0.toZone != nil }
+    }
+
+    /// Markers still to save: the record, its table and the zone it left.
+    public static func pending(db: Database) throws -> [(uuid: String, tableName: String, zone: String)] {
+        try unfinished(db: db).filter(\.markerPending).map { (uuid: $0.uuid, tableName: $0.tableName, zone: $0.zone) }
+    }
+
+    /// The record's new copy in `toZone` is saved (naming `toFile`): it left `zone`, where its old copy is at the
+    /// version `systemFields` names and `oldFile` (if any) is a file record it left there. A marker and the deletes of
+    /// every old file record still listed go next (an earlier one still to delete is kept).
+    static func record(uuid: String, tableName: String, from zone: String, to toZone: String, systemFields: Data?, oldFile: String?,
+                       toFile: String? = nil, db: Database) throws {
+        let earlier = files(try String.fetchOne(db, sql: "SELECT oldFile FROM syncZoneMove WHERE uuid = ? AND zone = ?", arguments: [uuid, zone]))
+        try db.execute(sql: """
+            INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending, toZone, toFile, oldFile, attempts) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0)
+            ON CONFLICT(uuid, zone) DO UPDATE SET tableName = excluded.tableName, systemFields = excluded.systemFields, pending = 1,
+                toZone = excluded.toZone, toFile = excluded.toFile, oldFile = excluded.oldFile, attempts = 0
+            """, arguments: [uuid, zone, tableName, systemFields, toZone, toFile, json(earlier + [oldFile].compactMap { $0 })])
+    }
+
+    /// The move's new copy names `file` now (taken from the server's copy).
+    static func setToFile(uuid: String, zone: String, file: String?, db: Database) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET toFile = ? WHERE uuid = ? AND zone = ?", arguments: [file, uuid, zone])
+    }
+
+    /// The move's destination is dealt with (the record left it again, or came back): nothing more to follow there.
+    static func forgetDestination(uuid: String, zone: String, db: Database) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET toZone = NULL, toFile = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
+    }
+
+    /// The marker in `zone` is on the server at `stamp` (nil: nothing is there any more, the old copy was deleted or its
+    /// zone is gone).
+    static func acknowledge(uuid: String, zone: String, stamp: SyncServerStamp?, db: Database) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET pending = 0, systemFields = ? WHERE uuid = ? AND zone = ?",
+                       arguments: [stamp?.systemFields, uuid, zone])
+    }
+
+    /// These old file records in `zone` need no delete any more: the server took it, or the record's copy there names
+    /// the file again.
+    static func filesDone(_ done: [String], uuid: String, zone: String, db: Database) throws {
+        let left = files(try String.fetchOne(db, sql: "SELECT oldFile FROM syncZoneMove WHERE uuid = ? AND zone = ?", arguments: [uuid, zone]))
+            .filter { !done.contains($0) }
+        try db.execute(sql: "UPDATE syncZoneMove SET oldFile = ? WHERE uuid = ? AND zone = ?", arguments: [json(left), uuid, zone])
+    }
+
+    /// A push tried to finish the move and couldn't: counted; logged for attention once it has taken too long.
+    static func tried(uuid: String, zone: String, tableName: String, db: Database, now: Date) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET attempts = attempts + 1 WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
+        if try Int.fetchOne(db, sql: "SELECT attempts FROM syncZoneMove WHERE uuid = ? AND zone = ?", arguments: [uuid, zone]) == attentionAfter {
+            try SyncMerge.logConflict(table: tableName, uuid: uuid, field: "*", losing: .string(attentionMessage), winner: nil, loser: nil,
+                                      db: db, now: now)
+        }
+    }
+
+    /// Someone else's version is over the old copy in `zone` (an edit there, seen on a pull or a refused save): the
+    /// marker goes again over it.
+    static func markerAgain(uuid: String, tableName: String, zone: String, systemFields: Data?, db: Database) throws {
+        try db.execute(sql: """
+            INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending, attempts) VALUES (?, ?, ?, ?, 1, 0)
+            ON CONFLICT(uuid, zone) DO UPDATE SET systemFields = excluded.systemFields, pending = 1
+            """, arguments: [uuid, zone, tableName, systemFields])
+    }
+
+    /// The server's marker in `zone` seen on a pull (or on a refused save): its stamp kept, so this device can save
+    /// over it. A pending marker stays pending.
+    static func takeServerStamp(uuid: String, tableName: String, zone: String, systemFields: Data, db: Database) throws {
+        try db.execute(sql: """
+            INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending) VALUES (?, ?, ?, ?, 0)
+            ON CONFLICT(uuid, zone) DO UPDATE SET systemFields = excluded.systemFields
+            """, arguments: [uuid, zone, tableName, systemFields])
+    }
+
+    /// The stamp of the marker this device knows in `zone` (what a save of the record back into it names).
+    static func markerStamp(uuid: String, zone: String, db: Database) throws -> Data? {
+        try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncZoneMove WHERE uuid = ? AND zone = ?"),
+                          arguments: [uuid, zone])
+    }
+
+    /// Whether this device knows of a marker for the record in `zone` (it left that zone).
+    static func knowsMarker(uuid: String, zone: String, db: Database) throws -> Bool {
+        try Bool.fetchOne(db.cachedStatement(sql: "SELECT EXISTS (SELECT 1 FROM syncZoneMove WHERE uuid = ? AND zone = ?)"),
+                          arguments: [uuid, zone]) ?? false
+    }
+
+    /// The record is back in `zone`: its marker there is gone (the record's save replaced it). Old file records still
+    /// to delete there, and where the record had gone, stay for `finishMoves` to settle against its copy now.
+    static func arrived(uuid: String, zone: String, db: Database) throws {
+        try db.execute(sql: "DELETE FROM syncZoneMove WHERE uuid = ? AND zone = ? AND oldFile IS NULL AND toZone IS NULL", arguments: [uuid, zone])
+        try db.execute(sql: "UPDATE syncZoneMove SET pending = 0, systemFields = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
+    }
+
+    /// A record a level change places differently: its zone, what it leaves out there or its companion.
+    struct PlacementChange: Equatable {
+        typealias Placed = Result<ZoneAssignment, SyncZoneRouterError>
+        var uuid: String
+        var tableName: String
+        var localId: Int64
+        var before: Placed
+        var after: Placed
+
+        /// It goes to another zone (not only in another form).
+        var changesZone: Bool {
+            guard case .success(let old) = before, case .success(let new) = after else { return true }
+            return old.zone != new.zone
+        }
+    }
+
+    /// Every record this device tracks whose placement under the account facts `to` differs from its placement under
+    /// `from` (account id to owner and level; an account in neither is as stored), sharing spec 2026-10-25 §3 goal 4:
+    /// what a level change sends again, so the push moves it (or resends it without the fields it now leaves out).
+    /// Reads only. A record the router can't place counts when the reason changes (it may become placeable, or stop
+    /// being); a gone row never counts. Summaries never count: the owner's device rebuilds them before the push
+    /// (`AccountSummaryBuilder`), deleting those the new level doesn't allow, and they never leave the household.
+    static func placementChanges(from: [Int64: SyncZoneRouter.AccountPlacement], to: [Int64: SyncZoneRouter.AccountPlacement],
+                                 db: Database) throws -> [PlacementChange] {
+        let then = try SyncZoneRouter(db: db, accounts: from)
+        let now = try SyncZoneRouter(db: db, accounts: to)
+        func place(_ router: SyncZoneRouter, _ table: String, _ id: Int64) throws -> PlacementChange.Placed {
+            do { return .success(try router.assignment(table: table, localId: id)) } catch let error as SyncZoneRouterError { return .failure(error) }
+        }
+        var changes: [PlacementChange] = []
+        for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId FROM syncRecord WHERE zone <> ? ORDER BY rowid",
+                                    arguments: [SyncZoneSet.deviceOnlyZone]) {
+            let table: String = row["tableName"]
+            let id: Int64 = row["localId"]
+            guard SyncZoneRouter.rules[table] != nil, !AccessAreaMap.summaryTables.contains(table) else { continue }
+            let before = try place(then, table, id)
+            let after = try place(now, table, id)
+            if before != after {
+                changes.append(PlacementChange(uuid: row["uuid"], tableName: table, localId: id, before: before, after: after))
+            }
+        }
+        return changes
+    }
+
+    // MARK: The levels records were last placed by
+
+    /// `syncState` key of the account facts (owner and level by account UUID) this device last placed records by.
+    static let placedLevelsKey = "placedLevels"
+
+    struct PlacedFacts: Codable, Equatable {
+        /// The owner's `person` UUID; nil: joint.
+        var owner: String?
+        var level: String
+    }
+
+    /// Every account's owner and level now, by account UUID (accounts with no sync identity aside).
+    static func currentFacts(db: Database) throws -> [String: PlacedFacts] {
+        var facts: [String: PlacedFacts] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT s.uuid, a.sharingLevel, p.uuid AS ownerUuid FROM account a
+            JOIN syncRecord s ON s.tableName = 'account' AND s.localId = a.id
+            LEFT JOIN syncRecord p ON p.tableName = 'person' AND p.localId = a.ownerPersonId
+            """) {
+            facts[row["uuid"]] = PlacedFacts(owner: row["ownerUuid"], level: row["sharingLevel"])
+        }
+        return facts
+    }
+
+    static func storedFacts(db: Database) throws -> [String: PlacedFacts]? {
+        guard let data = try Data.fetchOne(db.cachedStatement(sql: "SELECT value FROM syncState WHERE key = ?"), arguments: [placedLevelsKey]) else {
+            return nil
+        }
+        return try? JSONDecoder().decode([String: PlacedFacts].self, from: data)
+    }
+
+    static func storeFacts(_ facts: [String: PlacedFacts], db: Database, now: Date) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(facts)
+        guard try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [placedLevelsKey]) != data else { return }
+        try SyncImportGate.setState(data, key: placedLevelsKey, db: db, now: now)
+    }
+
+    /// The account's entry of the stored facts is now `facts` (a level change whose records were queued here). Nothing
+    /// is stored when there are none yet: the next push's reconcile works them out.
+    static func noteFacts(accountId: Int64, db: Database, now: Date) throws {
+        guard var stored = try storedFacts(db: db),
+              let uuid = try String.fetchOne(db, sql: "SELECT uuid FROM syncRecord WHERE tableName = 'account' AND localId = ?", arguments: [accountId]),
+              let facts = try currentFacts(db: db)[uuid] else { return }
+        stored[uuid] = facts
+        try storeFacts(stored, db: db, now: now)
+    }
+
+    /// How many routings `reconcile` has run (tests: a push with nothing changed routes nothing).
+    static let reconcileRoutings = OSAllocatedUnfairLock(initialState: 0)
+
+    /// Before a push (sharing spec 2026-10-25 §3 goal 4, §5 anti-goal 2): the levels or owners of this person's accounts
+    /// changed since this device last placed their records, by a pull (another device's change), a tool or anything
+    /// that didn't go through `SharingLevels.set`. Their records placed differently are queued, so this push moves
+    /// them. One query when nothing changed. Only `owner`'s accounts (the viewer's): the owner's devices hold both
+    /// zones, another person's device leaves their records to them. With nothing stored yet (an upgrade, a restore):
+    /// every record on the server whose zone here, or on the server as far as this device knows, isn't where it is
+    /// placed now, in a zone this device syncs, and every one placed in a reduced form (a stub, property money leaving
+    /// out its batch). Returns how many records were queued.
+    @discardableResult
+    static func reconcile(owner: Int64?, zones: Set<String>, db: Database, now: Date) throws -> Int {
+        let current = try currentFacts(db: db)
+        let stored = try storedFacts(db: db)
+        if stored == current { return 0 }
+        reconcileRoutings.withLock { $0 += 1 }
+        var changes: [PlacementChange] = []
+        if let stored {
+            var from: [Int64: SyncZoneRouter.AccountPlacement] = [:]
+            for (uuid, old) in stored where current[uuid] != nil && current[uuid] != old {
+                guard let account = try SyncRecordStore.localId(table: "account", uuid: uuid, db: db) else { continue }
+                var oldOwner: Int64?
+                if let person = old.owner {
+                    guard let id = try SyncRecordStore.localId(table: "person", uuid: person, db: db) else { continue }
+                    oldOwner = id
+                }
+                let nowOwner = try Int64.fetchOne(db, sql: "SELECT ownerPersonId FROM account WHERE id = ?", arguments: [account])
+                guard let owner, oldOwner == owner || nowOwner == owner else { continue }
+                from[account] = .init(owner: oldOwner, level: SharingLevel(rawValue: old.level) ?? .hidden)
+            }
+            if !from.isEmpty {
+                // A record that is already where it now goes (another of the owner's devices moved it, and this one
+                // pulled it there) needs nothing more.
+                changes = try placementChanges(from: from, to: [:], db: db).filter { change in
+                    guard change.changesZone, case .success(let placed) = change.after else { return true }
+                    let zone = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [change.uuid])
+                    guard zone == placed.zone else { return true }
+                    return try !SyncPresence.isIn(uuid: change.uuid, zone: placed.zone, db: db)
+                }
+            }
+        } else {
+            let router = try SyncZoneRouter(db: db)
+            for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId, zone FROM syncRecord WHERE zone <> ? ORDER BY rowid",
+                                        arguments: [SyncZoneSet.deviceOnlyZone]) {
+                let table: String = row["tableName"]
+                let id: Int64 = row["localId"]
+                let uuid: String = row["uuid"]
+                guard SyncZoneRouter.rules[table] != nil, !AccessAreaMap.summaryTables.contains(table),
+                      let placed = try? router.assignment(table: table, localId: id), zones.contains(placed.zone) else { continue }
+                let presence = try SyncPresence.zones(uuid: uuid, db: db)
+                // On the server somewhere, and not (only) where it goes now; or sent in a form that leaves fields out
+                // (a stub, property money): what went before can't be told here, so it goes again (a few records).
+                let reduced = !placed.omittedFields.isEmpty || placed.companion != nil
+                guard !presence.isEmpty, row["zone"] != placed.zone || !presence.contains(placed.zone) || reduced else { continue }
+                let result: PlacementChange.Placed = .success(placed)
+                changes.append(PlacementChange(uuid: uuid, tableName: table, localId: id, before: result, after: result))
+            }
+        }
+        try queue(changes, db: db)
+        try storeFacts(current, db: db, now: now)
+        return changes.count
+    }
+
+    /// Queues the records to be sent again as updates (`syncPending`; a queued insert stays an insert), with a fresh
+    /// revision, so an upload already under way doesn't clear them. No data row and no field clock is touched.
+    static func queue(_ changes: [PlacementChange], db: Database) throws {
+        let statement = try db.cachedStatement(sql: """
+            INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
+            VALUES (?, ?, ?, 'update', (SELECT COALESCE(MAX(revision), 0) + 1 FROM syncPending))
+            ON CONFLICT(uuid) DO UPDATE SET revision = excluded.revision
+            """)
+        for change in changes {
+            try statement.execute(arguments: [change.uuid, change.tableName, change.localId])
+        }
+    }
+
+    /// The marker saved over a moved record's old copy: no fields, sealed like any record of `zone`.
+    static func marker(uuid: String, tableName: String, zone: String, movedTo: String) -> SyncPayload {
+        var payload = SyncPayload(recordType: tableName, recordName: uuid, zone: zone, fields: [:])
+        payload.movedTo = movedTo
+        return payload
+    }
+}
+
+/// Where each record is on the server (`syncPresence`, local only): a zone holding its copy or a marker over it,
+/// learnt from this device's acknowledged saves and from pulls. A delete goes to exactly those zones, and nowhere for
+/// a record the server never had.
+enum SyncPresence {
+    static func add(uuid: String, zone: String, db: Database) throws {
+        try db.cachedStatement(sql: "INSERT INTO syncPresence(uuid, zone) VALUES (?, ?) ON CONFLICT DO NOTHING").execute(arguments: [uuid, zone])
+    }
+
+    static func remove(uuid: String, zone: String, db: Database) throws {
+        try db.cachedStatement(sql: "DELETE FROM syncPresence WHERE uuid = ? AND zone = ?").execute(arguments: [uuid, zone])
+    }
+
+    static func zones(uuid: String, db: Database) throws -> [String] {
+        try String.fetchAll(db.cachedStatement(sql: "SELECT zone FROM syncPresence WHERE uuid = ? ORDER BY zone"), arguments: [uuid])
+    }
+
+    /// What this device saved or saw on the server before `syncPresence` existed: every record with a server stamp (in
+    /// its zone) and every marker it knows. Idempotent.
+    static func backfill(db: Database) throws {
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO syncPresence(uuid, zone)
+            SELECT uuid, zone FROM syncRecord WHERE systemFields IS NOT NULL OR changeTag IS NOT NULL
+            """)
+        try db.execute(sql: "INSERT OR IGNORE INTO syncPresence(uuid, zone) SELECT uuid, zone FROM syncZoneMove")
+    }
+
+    static func isIn(uuid: String, zone: String, db: Database) throws -> Bool {
+        try Bool.fetchOne(db.cachedStatement(sql: "SELECT EXISTS (SELECT 1 FROM syncPresence WHERE uuid = ? AND zone = ?)"),
+                          arguments: [uuid, zone]) ?? false
+    }
+}
+
+/// Records to delete on the server (`syncZoneCleanup`, local only): a file record sealed for a save that didn't go, a
+/// companion no longer needed. Every push tries them; a row goes once the server has taken the delete.
+enum SyncCleanup {
+    static func add(zone: String, recordName: String, db: Database) throws {
+        try db.execute(sql: "INSERT INTO syncZoneCleanup(zone, recordName) VALUES (?, ?) ON CONFLICT DO NOTHING", arguments: [zone, recordName])
+    }
+
+    static func all(db: Database) throws -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT zone, recordName FROM syncZoneCleanup ORDER BY zone, recordName") {
+            result[row["zone"], default: []].append(row["recordName"])
+        }
+        return result
+    }
+
+    static func done(zone: String, recordNames: [String], db: Database) throws {
+        for name in recordNames {
+            try db.execute(sql: "DELETE FROM syncZoneCleanup WHERE zone = ? AND recordName = ?", arguments: [zone, name])
+        }
+    }
+}
+
+/// The zones this device syncs (`SyncEngineCore.zones(db:)`), as its engine last stored them, so an apply (and a
+/// retry from staging later) knows which zones it follows: a move marker into one of them is ignored, and a stub's
+/// left-out fields are kept only when it holds the owner's private zone. Without one stored: `household` only.
+enum SyncZoneSet {
+    static let stateKey = "zoneSet"
+    /// The zone of an identity this device made for itself (a placeholder): never fetched, never sent.
+    static let deviceOnlyZone = "device"
+
+    static func current(db: Database) throws -> Set<String> {
+        guard let data = try Data.fetchOne(db.cachedStatement(sql: "SELECT value FROM syncState WHERE key = ?"), arguments: [stateKey]),
+              let zones = try? JSONDecoder().decode([String].self, from: data) else { return [SyncZones.household] }
+        return Set(zones)
+    }
+
+    static func store(_ zones: [String], db: Database, now: Date) throws {
+        let data = try JSONEncoder().encode(zones)
+        guard try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [stateKey]) != data else { return }
+        try SyncImportGate.setState(data, key: stateKey, db: db, now: now)
+    }
+}
+
+/// The server stamps of the companions this device saved or received (`syncCompanion`, local only), by companion
+/// record name (`SyncZoneRouter.companionRecordName`): one per account stub, an `accountDetails` record in its owner's
+/// private zone.
+enum SyncCompanions {
+    struct Stamp {
+        var zone: String
+        var systemFields: Data?
+        var changeTag: String?
+    }
+
+    static func stamp(name: String, db: Database) throws -> Stamp? {
+        try Row.fetchOne(db.cachedStatement(sql: "SELECT zone, systemFields, changeTag FROM syncCompanion WHERE recordType = ? AND uuid = ?"),
+                         arguments: [SyncZoneRouter.companionRecordType, name])
+            .map { Stamp(zone: $0["zone"], systemFields: $0["systemFields"], changeTag: $0["changeTag"]) }
+    }
+
+    static func store(name: String, zone: String, stamp: SyncServerStamp?, db: Database) throws {
+        try db.execute(sql: """
+            INSERT INTO syncCompanion(recordType, uuid, zone, systemFields, changeTag) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(recordType, uuid) DO UPDATE SET zone = excluded.zone, systemFields = excluded.systemFields, changeTag = excluded.changeTag
+            """, arguments: [SyncZoneRouter.companionRecordType, name, zone, stamp?.systemFields, stamp?.changeTag])
+    }
+
+    static func remove(name: String, db: Database) throws {
+        try db.execute(sql: "DELETE FROM syncCompanion WHERE recordType = ? AND uuid = ?", arguments: [SyncZoneRouter.companionRecordType, name])
+    }
+
+    /// The account (by local id and UUID) a companion record names, when it is here.
+    static func account(named name: String, db: Database) throws -> (id: Int64, uuid: String)? {
+        for row in try Row.fetchAll(db, sql: "SELECT localId, uuid FROM syncRecord WHERE tableName = 'account'")
+        where SyncZoneRouter.companionRecordName(accountUuid: row["uuid"]) == name {
+            return (row["localId"], row["uuid"])
+        }
+        return nil
+    }
+}

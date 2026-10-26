@@ -129,6 +129,16 @@ public struct PayMonthReview: Equatable, Sendable {
     /// `budgetTransactions`): the category's confirmed, budget-facing transactions (no incoming leg of an
     /// active transfer link) within `range`, in GBP; newest first. Filtered in SQL, so a tap reads one
     /// category's month, not the ledger.
+    /// The viewer's (step 6 Task 11): the transactions of `transactions(db:categoryId:range:)` that `viewer` reads
+    /// (`SharedActualsSource`: accounts seen in full, and what the household shares of the others). The rest of the
+    /// row's figure is the private accounts' lines (`SharedActuals.privateLines`).
+    public static func transactions(db: Database, categoryId: Int64, range: DayRange, viewer: SharingViewer, today: Date) throws -> [RowTransaction] {
+        let all = try transactions(db: db, categoryId: categoryId, range: range)
+        guard try Account.fetchAll(db).contains(where: { !viewer.seesInFull($0) }) else { return all }
+        let read = Set(try SharedActualsSource(viewer: viewer, today: today).transactions(db).lazy.filter { !SharedActuals.isSummary($0) }.compactMap(\.id))
+        return all.filter { read.contains($0.id) }
+    }
+
     public static func transactions(db: Database, categoryId: Int64, range: DayRange) throws -> [RowTransaction] {
         let found = try Transaction.budgetFacing
             .filter(Column("categoryId") == categoryId && Column("status") == TransactionStatus.confirmed.rawValue

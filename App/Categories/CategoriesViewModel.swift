@@ -49,6 +49,8 @@ final class CategoriesViewModel: ObservableObject {
     /// Runs after an Edit transaction save (the uncategorised count may change).
     var onTransactionEdited: (() -> Void)?
     private let dbQueue: DatabaseQueue
+    /// Whose actuals the screen shows, from the last load (`SharedActualsSource`).
+    private var actuals = SharedActualsSource(viewer: SharingViewer(personId: nil), today: AppClock.now)
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -56,15 +58,19 @@ final class CategoriesViewModel: ObservableObject {
 
     func load() {
         do {
-            let (categories, groups, all, closes, links, counterparts, accounts, rate) = try dbQueue.read { db in
-                (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
-                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
+            // As the person signed in sees them (`SharedActualsSource`), with the pay months the owner published.
+            let (actuals, categories, groups, all, closes, links, counterparts, accounts, rate, published) = try dbQueue.read { db in
+                let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
+                return (actuals, try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try actuals.transactions(db), try PayMonthClose.fetchAll(db),
+                        try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try actuals.accounts(db), try ExchangeRateSetting.currentOrDefault(db: db),
+                        try actuals.publishedCloses(db))
             }
             propertyGroupIds = (try? dbQueue.read { db in Set(try Int64.fetchAll(db, sql: "SELECT categoryGroupId FROM propertyCategoryGroup")) }) ?? []
+            self.actuals = actuals
             self.categories = categories
             self.accounts = accounts.sortedForDisplay()
             self.groups = groups
-            payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories),
+            payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories, publishedCloses: published),
                                       manualCloses: closes, today: AppClock.now)
             transferCounterparts = counterparts
             transactions = TransferLinks.budgetFacing(all, links: links).filter { $0.status == .confirmed && $0.categoryId != nil }
@@ -101,7 +107,7 @@ final class CategoriesViewModel: ObservableObject {
     /// Through the filed-year check: moving a property's categories out of its group moves rental figures.
     func createGroup(name: String, type: CategoryType, moving categoryIds: [Int64], gate: FiledYearGate,
                      done: @escaping (Result<CategoryGroup, Error>) -> Void) {
-        gate.run(dbQueue, edit: "Categories moved to a new group \(name)", scope: { db in try .categories(db: db, ids: categoryIds) }, { db in
+        gate.run(dbQueue, area: .rulesAndCategories, edit: "Categories moved to a new group \(name)", scope: { db in try .categories(db: db, ids: categoryIds) }, { db in
             try CategoryGroups.create(db: db, name: name, type: type, moving: categoryIds)
         }, done: { [weak self] result in
             if case .success = result {
@@ -115,7 +121,7 @@ final class CategoriesViewModel: ObservableObject {
     /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message.
     func renameGroup(id: Int64, to name: String) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try CategoryGroups.rename(db: db, id: id, name: name) }
+            try dbQueue.write(.rulesAndCategories) { db in try CategoryGroups.rename(db: db, id: id, name: name) }
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -139,7 +145,7 @@ final class CategoriesViewModel: ObservableObject {
 
     /// The New category sheet's save.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         load()
         return category
     }
@@ -156,7 +162,7 @@ final class CategoriesViewModel: ObservableObject {
             return .saved
         }
         do {
-            try dbQueue.write { db in try Categories.rename(db: db, id: id, name: name) }
+            try dbQueue.write(.rulesAndCategories) { db in try Categories.rename(db: db, id: id, name: name) }
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -258,6 +264,17 @@ final class CategoriesViewModel: ObservableObject {
         transactions.filter { $0.categoryId.map(ids.contains) == true && (year == nil || payYear(of: $0) == year) }
     }
 
+    /// The other person's private accounts in the panel, one line each (`SharedActuals.privateLines`), over the days
+    /// the year's summary rows fall on; read off the main thread, once per category and year shown.
+    func privateLines(forCategoryIds ids: Set<Int64>, year: Int?) async -> [SharedActuals.PrivateLine] {
+        let dates = transactions(forCategoryIds: ids, year: year).filter(SharedActuals.isSummary).map(\.date)
+        guard let from = dates.min(), let to = dates.max() else { return [] }
+        let (viewer, today) = (actuals.viewer, actuals.today)
+        return (try? await dbQueue.read { db in
+            try SharedActuals.privateLines(categoryIds: ids, from: from, to: to, viewer: viewer, today: today, db: db)
+        }) ?? []
+    }
+
     /// The years the panel's filter offers: the current one, then any with transactions, newest first.
     func years(forCategoryIds ids: Set<Int64>) -> [Int] {
         var years = Set(transactions.filter { $0.categoryId.map(ids.contains) == true }.map(payYear(of:)))
@@ -328,7 +345,7 @@ final class CategoriesViewModel: ObservableObject {
 
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
@@ -339,7 +356,7 @@ final class CategoriesViewModel: ObservableObject {
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
     private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }
@@ -376,7 +393,7 @@ final class CategoriesViewModel: ObservableObject {
     private func checked<T>(_ prefix: String, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                             _ change: @escaping (Database) throws -> T, done: ((T) -> Void)? = nil) {
         errorMessage = nil
-        filedYearGate.run(dbQueue, edit: edit, scope: scope, change) { [weak self] result in
+        filedYearGate.run(dbQueue, area: .rulesAndCategories, edit: edit, scope: scope, change) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let value):
@@ -395,7 +412,7 @@ final class CategoriesViewModel: ObservableObject {
     private func write(_ prefix: String, _ change: (Database) throws -> Void) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try change(db) }
+            try dbQueue.write(.rulesAndCategories) { db in try change(db) }
         } catch let error as LocalizedError where error.errorDescription != nil {
             errorMessage = error.errorDescription
             return false

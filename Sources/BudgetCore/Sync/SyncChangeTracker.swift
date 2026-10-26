@@ -32,6 +32,9 @@ public enum SyncChangeTrackerError: Error, Equatable {
     case notInTransaction
 }
 
+/// What made a write, as stored in `syncWriter.origin` and `syncRecord.origin` (step 6 task 2 names the values).
+public typealias WriteOriginRaw = String
+
 /// Change tracking by SQLite triggers generated from `SyncSchema` (ruling R5). Each insert, update and
 /// delete of a synced table writes, in the same statement and so the same transaction:
 /// - the row's identity in `syncRecord` (created on first sight), or its tombstone on delete;
@@ -51,7 +54,8 @@ public enum SyncChangeTrackerError: Error, Equatable {
 ///   `recursive_triggers` on, which `DatabaseManager` and the tools (`ToolDatabase`) set. For other connections,
 ///   `refreshSyncTriggers` sweeps identities whose row is gone into tombstones on every open.
 /// - The writer (`modifiedBy`) is `syncWriter`'s user, which the app sets while someone is signed in.
-///   A tool run while it is set is stamped with that user; otherwise tools leave it NULL.
+///   A tool run while it is set is stamped with that user; otherwise tools leave it NULL. The write's
+///   origin (`syncRecord.origin`) is copied from `syncWriter.origin` the same way.
 public enum SyncChangeTracker {
     static let triggerPrefix = "syncTrack_"
 
@@ -81,10 +85,14 @@ public enum SyncChangeTracker {
 
     // MARK: Writer and incoming applies
 
-    /// The `appUser` UUID stamped on what this connection's writes change, or nil (signed out).
-    public static func setWriter(_ appUserUuid: String?, db: Database) throws {
-        try db.execute(sql: "INSERT INTO syncWriter(id, appUserUuid) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET appUserUuid = excluded.appUserUuid",
-                       arguments: [appUserUuid])
+    /// The `appUser` UUID stamped on what this connection's writes change, or nil (signed out), and the
+    /// origin of those writes (what made them: an import, an edit, ...), which the triggers copy into
+    /// `syncRecord.origin`; nil when unknown.
+    public static func setWriter(_ appUserUuid: String?, origin: WriteOriginRaw? = nil, db: Database) throws {
+        try db.execute(sql: """
+            INSERT INTO syncWriter(id, appUserUuid, origin) VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET appUserUuid = excluded.appUserUuid, origin = excluded.origin
+            """, arguments: [appUserUuid, origin])
     }
 
     /// Runs `body`, which applies incoming records, without tracking its writes: they came from the
@@ -168,7 +176,7 @@ public enum SyncChangeTracker {
 
     /// SHA-256 of every trigger `schema` calls for: it changes with the schema and with the template.
     public static func schemaHash(_ schema: [SyncTableSchema]) -> String {
-        let text = schema.flatMap(triggers(for:)).map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
+        let text = schema.flatMap { triggers(for: $0) }.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -178,7 +186,7 @@ public enum SyncChangeTracker {
     ///   migrated part of the way still takes writes.
     /// - Triggers a newer `version` installed are left as they are (logged): an older build must not
     ///   take tracking away from columns it doesn't know.
-    /// Also clears a stale incoming-apply marker and sweeps identities whose row is gone (a delete no
+    /// Also clears a stale incoming-apply marker and write origin, and sweeps identities whose row is gone (a delete no
     /// trigger saw) into tombstones. `DatabaseManager.migrate` runs it on every open.
     public static func refreshSyncTriggers(db: Database, schema: [SyncTableSchema] = SyncSchema.tables,
                                            version: Int = SyncSchema.version) throws {
@@ -186,7 +194,10 @@ public enum SyncChangeTracker {
         if let installed = try installedSchema(db: db), installed.version > version {
             log.error("Sync triggers were installed by schema version \(installed.version), newer than this build's \(version); left as they are")
         } else {
-            let expected = Dictionary(uniqueKeysWithValues: present.flatMap(triggers(for:)))
+            // A database migrated only part of the way (tests' `migrate(upTo:)`) has no origin columns yet.
+            let stampOrigin = try db.columns(in: "syncRecord").contains { $0.name == "origin" }
+                && db.columns(in: "syncWriter").contains { $0.name == "origin" }
+            let expected = Dictionary(uniqueKeysWithValues: present.flatMap { triggers(for: $0, stampOrigin: stampOrigin) })
             let installed = try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ESCAPE '\\'",
                                              arguments: [triggerPrefix.replacingOccurrences(of: "_", with: "\\_") + "%"])
             var current: [String: String] = [:]
@@ -206,6 +217,10 @@ public enum SyncChangeTracker {
             }
         }
         try db.execute(sql: "DELETE FROM syncApplying")
+        // A write origin left by a run that never finished (a crash mid-import) must not stamp later writes.
+        if try db.columns(in: "syncWriter").contains(where: { $0.name == "origin" }) {
+            try db.execute(sql: "UPDATE syncWriter SET origin = NULL WHERE origin IS NOT NULL")
+        }
         for table in present { try sweepOrphans(table, db: db) }
     }
 
@@ -230,8 +245,9 @@ public enum SyncChangeTracker {
         }
     }
 
-    /// The tracking triggers for one table, by name.
-    static func triggers(for table: SyncTableSchema) -> [(String, String)] {
+    /// The tracking triggers for one table, by name. `stampOrigin` false leaves out `syncRecord.origin`, for
+    /// a database whose migrations haven't added it yet.
+    static func triggers(for table: SyncTableSchema, stampOrigin: Bool = true) -> [(String, String)] {
         let t = literal(table.name)
         let tq = quoted(table.name)
         let key = quoted(table.localIdColumn)
@@ -252,7 +268,7 @@ public enum SyncChangeTracker {
                 INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
                     SELECT s.uuid, \(t), \(id), 'insert', \(revision) FROM syncRecord s
                     WHERE s.tableName = \(t) AND s.localId = \(id) AND NOT EXISTS (SELECT 1 FROM syncPending p WHERE p.uuid = s.uuid);
-                UPDATE syncRecord SET modifiedAt = \(now), modifiedBy = \(writer) WHERE tableName = \(t) AND localId = \(id);
+                UPDATE syncRecord SET modifiedAt = \(now), modifiedBy = \(writer)\(stampOrigin ? ", origin = \(origin)" : "") WHERE tableName = \(t) AND localId = \(id);
                 """
         }
         let clockUpsert = "ON CONFLICT(tableName, localId, field) DO UPDATE SET modifiedAt = excluded.modifiedAt, modifiedBy = excluded.modifiedBy"
@@ -331,6 +347,7 @@ public enum SyncChangeTracker {
     /// GRDB's own date format (UTC, milliseconds), so `Date` columns decode.
     static let now = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
     private static let writer = "(SELECT appUserUuid FROM syncWriter WHERE id = 1)"
+    private static let origin = "(SELECT origin FROM syncWriter WHERE id = 1)"
     /// One more than any queued revision: above the record's own, which is still queued if not sent.
     private static let revision = "(SELECT COALESCE(MAX(revision), 0) + 1 FROM syncPending)"
 

@@ -11,9 +11,12 @@ public enum BalanceStaleness {
     public static let thresholdDays = 45
 
     /// Whether the rule applies to the account: investments, and accounts with no imported
-    /// (non-manual) transaction.
-    public static func needsUpdates(account: Account, transactions: [Transaction]) -> Bool {
-        account.kind == .investment || !transactions.contains { $0.accountId == account.id && !$0.isManual }
+    /// (non-manual) transaction. Another person's account read through its summaries
+    /// (`SharedActuals.isSummary` rows or snapshots) counts as imported: its owner keeps it.
+    public static func needsUpdates(account: Account, transactions: [Transaction], snapshots: [BalanceSnapshot] = []) -> Bool {
+        account.kind == .investment
+            || !(transactions.contains { $0.accountId == account.id && (!$0.isManual || SharedActuals.isSummary($0)) }
+                 || snapshots.contains { $0.accountId == account.id && SharedActuals.isSummary($0) })
     }
 
     /// The account's last activity: its latest snapshot, transaction dated up to `today`'s day,
@@ -32,7 +35,7 @@ public enum BalanceStaleness {
     }
 
     public static func isStale(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Bool {
-        guard needsUpdates(account: account, transactions: transactions) else { return false }
+        guard needsUpdates(account: account, transactions: transactions, snapshots: snapshots) else { return false }
         guard let last = lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: today) else { return true }
         let calendar = MonthRange.calendar
         let threshold = calendar.date(byAdding: .day, value: -thresholdDays, to: calendar.startOfDay(for: today))!

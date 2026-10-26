@@ -80,6 +80,8 @@ public enum DemoDatabase {
         try dbQueue.write { db in try builder.linkDocuments(db, added: added) }
         try keepWaitingFile(dbQueue: dbQueue, evidenceRoot: evidenceRoot, scratch: scratch, asOf: builder.asOf)
         builder.count("waiting files")
+        // Last: the ownership sheet saved for Person A, and the summaries it makes (`DemoSharing`).
+        try dbQueue.write { db in try DemoSharing.apply(db: db, now: builder.asOf) }
         return builder.report
     }
 

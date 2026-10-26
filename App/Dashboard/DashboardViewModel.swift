@@ -23,6 +23,9 @@ struct DashboardContent {
     let yearRange: ClosedRange<Int>
     /// The stored EUR→GBP rate (the import card's note for a non-GBP account).
     let eurToGbpRate: Double
+    /// Some account reaches the person signed in only as its summaries, or not at all: net worth says it
+    /// "Includes everything you can see" (`SharingCopy.netWorthNote`).
+    var showsNetWorthNote = false
 }
 
 @MainActor
@@ -51,7 +54,12 @@ final class DashboardViewModel: ObservableObject {
     func load() {
         do {
             let today = todayProvider()
-            let loaded = try dbQueue.read { db in try DashboardInput.load(db: db, today: today) }
+            // As the person signed in sees it (`SharedActualsSource`): the other person's accounts below Everything as
+            // their summaries, their Hidden ones not at all.
+            let (loaded, partial) = try dbQueue.read { db in
+                let actuals = try SignedInActor.actuals(db: db, today: today)
+                return (try DashboardInput.load(db: db, today: today, actuals: actuals), actuals.viewer.seesOnlyPart(of: try Account.fetchAll(db)))
+            }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
             let thisYear = MonthRange.components(of: today).year
             let firstYear = netWorth.actual.first?.year ?? thisYear
@@ -70,7 +78,8 @@ final class DashboardViewModel: ObservableObject {
                 bills: DashboardCalculator.upcomingBills(loaded),
                 accounts: DashboardCalculator.accountSummaries(loaded),
                 yearRange: range,
-                eurToGbpRate: loaded.rate.eurToGbpRate
+                eurToGbpRate: loaded.rate.eurToGbpRate,
+                showsNetWorthNote: partial
             )
             if !range.contains(selectedYear) { selectedYear = thisYear }
             flows = DashboardCalculator.monthlyFlows(loaded, year: selectedYear)
@@ -90,7 +99,7 @@ final class DashboardViewModel: ObservableObject {
     func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
         closeErrorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: todayProvider()) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.close(db: db, month: month, on: date, today: todayProvider()) }
         } catch PayCalendarError.invalidCloseDate {
             closeErrorMessage = payCalendar.map { PayMonthFormat.invalidCloseDateMessage(month, calendar: $0) } ?? "Pick a date inside \(PayMonthFormat.name(month))."
             return false

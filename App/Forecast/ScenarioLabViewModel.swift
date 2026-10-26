@@ -107,6 +107,10 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// The planned item sheets' Account picker; rebuilt on load.
     private(set) var accountOptions: PlanAccountOptions = .none
     private var snapshots: [BalanceSnapshot] = []
+    /// The pay-month closes the other person's devices published (`SharedActualsSource.publishedCloses`).
+    private var publishedCloses: [Date] = []
+    /// Whose actuals the lab shows, from the last read.
+    private var actuals = SharedActualsSource(viewer: SharingViewer(personId: nil), today: AppClock.now)
     private var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: AppClock.now)
     private var groups: [ForecastGroup] = []
     private var budgetPlan = PlanInput(entries: [], exceptions: [], groups: [])
@@ -228,6 +232,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         var transferCounterparts: [Int64: [TransferCounterpart]]
         var accounts: [Account]
         var snapshots: [BalanceSnapshot]
+        var publishedCloses: [Date]
+        var actuals: SharedActualsSource
         var rate: ExchangeRateSetting
         var groups: [ForecastGroup]
         var scenarios: [Scenario]
@@ -237,6 +243,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
 
     private func read() throws {
         let loaded = try dbQueue.read { db -> Loaded in
+            // As the person signed in sees them (`SharedActualsSource`), with the pay months the owner published.
+            let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
             let groups = try ForecastGroup.fetchAll(db)
             let scenarios = try Scenario.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db)
             let exceptions = Dictionary(grouping: try PlannedOccurrenceException.fetchAll(db), by: \.entryId)
@@ -248,8 +256,9 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
                 plans[scenario.id!] = plan(try ForecastEntry.inScenario(db, id: scenario.id!))
             }
             return Loaded(manualCloses: try PayMonthClose.fetchAll(db), categories: try Category.fetchAll(db),
-                          categoryGroups: try CategoryGroup.fetchAll(db), transactions: try LocalActualsSource().transactions(db),
-                          transferLinks: try TransferLink.fetchAll(db), transferCounterparts: try TransferLinks.counterparts(db: db), accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
+                          categoryGroups: try CategoryGroup.fetchAll(db), transactions: try actuals.transactions(db),
+                          transferLinks: try TransferLink.fetchAll(db), transferCounterparts: try TransferLinks.counterparts(db: db), accounts: try actuals.accounts(db),
+                          snapshots: try actuals.balanceSnapshots(db), publishedCloses: try actuals.publishedCloses(db), actuals: actuals,
                           rate: try ExchangeRateSetting.currentOrDefault(db: db), groups: groups, scenarios: scenarios,
                           budgetPlan: plan(try ForecastEntry.budget(db)), scenarioPlans: plans)
         }
@@ -260,6 +269,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         transferCounterparts = loaded.transferCounterparts
         accounts = loaded.accounts
         snapshots = loaded.snapshots
+        publishedCloses = loaded.publishedCloses
+        actuals = loaded.actuals
         rate = loaded.rate
         conversion = CurrencyConversion(accounts: accounts, rate: rate)
         groups = loaded.groups
@@ -268,7 +279,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         scenarioPlans = loaded.scenarioPlans
         today = AppClock.now
         // As the Dashboard builds it: today never earlier than the latest transaction.
-        payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
+        payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today,
+                                          publishedCloses: publishedCloses)
         gridActuals = ScenarioComparison.gridActuals(comparisonData)
         gridCache = [:]
         yearEndsCache = [:]
@@ -589,9 +601,12 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let calendar: PayCalendar
         do {
             let fresh = try dbQueue.read { db in
-                (closes: try PayMonthClose.fetchAll(db), transactions: try LocalActualsSource().transactions(db), categories: try Category.fetchAll(db))
+                let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
+                return (closes: try PayMonthClose.fetchAll(db), transactions: try actuals.transactions(db), categories: try Category.fetchAll(db),
+                        published: try actuals.publishedCloses(db))
             }
-            calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: AppClock.now)
+            calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: AppClock.now,
+                                           publishedCloses: fresh.published)
         } catch {
             errorMessage = "Couldn't reload the forecast before applying: \(error.localizedDescription)"
             return
@@ -680,6 +695,14 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     }
 
     // MARK: The Grid tab's side panel (`GridCellPanelModel`)
+
+    /// The other person's private accounts in a cell, one line each (`SharedActuals.privateLines`), off the main thread.
+    func privateLines(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) async -> [SharedActuals.PrivateLine] {
+        let (viewer, today) = (actuals.viewer, actuals.today)
+        return (try? await dbQueue.read { db in
+            try SharedActuals.privateLines(categoryIds: categoryIds, from: startDate, to: endDate, viewer: viewer, today: today, db: db)
+        }) ?? []
+    }
 
     /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end`
     /// (every account): what a cell's actual sums, whichever plan is shown.
@@ -790,7 +813,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     private func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.forecast) { db in try write(db) }
         } catch {
             return .failed(PlanFormat.errorMessage(for: error))
         }

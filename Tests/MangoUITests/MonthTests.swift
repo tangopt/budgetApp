@@ -299,6 +299,36 @@ final class MonthTests: XCTestCase {
         }
     }
 
+    /// Step 6: an iPhone whose iCloud user isn't named yet reads A's Category totals card as one line per row; the
+    /// list's transactions and the lines still add up to each row's actual, and the card's own rows aren't listed.
+    func testAnUnnamedViewersListAndPrivateLinesAddUpToTheRowsActual() async throws {
+        let queue = try demoDatabase()
+        let today = DemoDatabase.defaultAsOf
+        let viewer = PhoneViewer.iCloudUser(recordName: nil)
+        guard case let .loaded(page) = MonthViewModel.readNow(queue, today: today, viewer: viewer) else { return XCTFail("not loaded") }
+        let card = try await queue.read { db in
+            try XCTUnwrap(Account.filter(Column("name") == DemoSharing.categoryTotalsAccount).fetchOne(db)?.id)
+        }
+        var lines = 0
+        for row in page.review.rows {
+            let model = MonthTransactionsModel(dbQueue: queue, row: row, range: page.review.range, viewer: viewer, today: { today })
+            await model.load()
+            guard case let .loaded(days) = model.state else { return XCTFail("\(row.category.name): not loaded") }
+            let rows = days.flatMap(\.rows)
+            XCTAssertFalse(rows.contains { $0.transaction.accountId == card }, row.category.name)
+            XCTAssertTrue(model.privateLines.allSatisfy { $0.id == card && $0.text.contains("details private") })
+            lines += model.privateLines.count
+            XCTAssertEqual(rows.reduce(0) { $0 + $1.gbpMinorUnits } + model.privateLines.reduce(0) { $0 + $1.amountMinorUnits },
+                           row.actualMinorUnits, row.category.name)
+        }
+        XCTAssertGreaterThan(lines, 0, "the card has spending in the demo's month")
+        // As the demo's admin, nothing is private.
+        guard case let .loaded(adminPage) = MonthViewModel.readNow(queue, today: today, viewer: .demoAdmin) else { return XCTFail("not loaded") }
+        for row in adminPage.review.rows {
+            XCTAssertEqual(MonthTransactionsModel.privateLinesNow(queue, row: row, range: adminPage.review.range, viewer: .demoAdmin, today: today), [])
+        }
+    }
+
     /// A pending transaction, a euro one and the incoming leg of a linked transfer: the list is exactly what each
     /// row's figure counts (confirmed, budget-facing, in pounds), for expense, income and transfer rows.
     func testTheListIsExactlyWhatTheFigureCounts() async throws {

@@ -30,10 +30,12 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 @MainActor
 enum SnapshotCatalog {
     /// `importRoutes` then `kindRoutes` last: `imports-history` writes to the demo copy, the kind routes add custom kinds to it; the attribution check after them
-    /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
+    /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy; the sharing routes
+    /// before them (`SharingSnapshots`) add Person B as a member with no password, so she stays a member there. The
+    /// member's own-database routes (`SharingSnapshots.memberRoutes`) take A's private records out of the demo copy, so they come last.
     static var routes: [SnapshotRoute] {
-        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
+        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + SharingSnapshots.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
+            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute] + SharingSnapshots.memberRoutes + [AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -720,7 +722,7 @@ enum SnapshotCatalog {
             },
             SnapshotRoute(name: "settings-sync_demo", title: "Settings ▸ Sync, the demo syncing") { _ in
                 AnyView(SnapshotStandaloneCanvas(content: SyncSettingsPane(status: .syncing(.pulling), isRunning: true, report: nil,
-                                                                           onSyncNow: {})
+                                                                           onSyncNow: {}, isDemo: true)
                     .scenePadding().frame(width: 640)))
             }
         ]

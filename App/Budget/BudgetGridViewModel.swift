@@ -104,6 +104,10 @@ final class BudgetGridViewModel: ObservableObject {
     /// Inside `load()`: an account or rate change waits for the `transactions` rebuild.
     private var isLoading = false
     private var manualCloses: [PayMonthClose] = []
+    /// Whose actuals the grid shows, from the last load (`SharedActualsSource`).
+    private var actuals = SharedActualsSource(viewer: SharingViewer(personId: nil), today: AppClock.now)
+    /// The pay-month closes the other person's devices published (`SharedActualsSource.publishedCloses`).
+    private var publishedCloses: [Date] = []
     private var lastHorizon: Date?
     /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`) over every account:
     /// the plan's own figures (reserves' unforecast spend, locked occurrences) and the CSV export.
@@ -188,14 +192,19 @@ final class BudgetGridViewModel: ObservableObject {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         (transferLinks, transferCounterparts) = try dbQueue.read { db in (try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db)) }
+        // As the person signed in sees them (`SharedActualsSource`): the other person's accounts below Everything as
+        // their summaries, their Hidden ones not at all; the pay months follow the closes the owner published.
+        let source = try dbQueue.read { db in try SignedInActor.actuals(db: db, today: AppClock.now) }
+        actuals = source
         // Accounts and the rate before `transactions`: the actuals are converted to GBP with them.
-        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
+        accounts = try dbQueue.read { db in try source.accounts(db) }.sortedForDisplay()
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
-        transactions = try dbQueue.read { db in try LocalActualsSource().transactions(db) }
+        publishedCloses = try dbQueue.read { db in try source.publishedCloses(db) }
+        transactions = try dbQueue.read { db in try source.transactions(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
-        balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
+        balanceSnapshots = try dbQueue.read { db in try source.balanceSnapshots(db) }
         selectDefaultYearIfNeeded()
     }
 
@@ -211,7 +220,8 @@ final class BudgetGridViewModel: ObservableObject {
     /// load with all inputs fresh.
     private func rebuildPayMonths() {
         conversion = CurrencyConversion(accounts: accounts, rate: exchangeRate)
-        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: AppClock.now)
+        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories, publishedCloses: publishedCloses),
+                                  manualCloses: manualCloses, today: AppClock.now)
         allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
         itemAccountsCache = nil
         allAccountsGBPTransactions = conversion.toGBP(allAccountsBudgetTransactions)
@@ -299,8 +309,8 @@ final class BudgetGridViewModel: ObservableObject {
     func moveAccounts(fromOffsets: IndexSet, toOffset: Int) {
         let ids = accounts.compactMap(\.id)
         do {
-            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
-            accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
+            try dbQueue.write(.budgetAndAccounts) { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+            accounts = try dbQueue.read { db in try actuals.accounts(db) }.sortedForDisplay()
         } catch {
             errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
         }
@@ -538,6 +548,16 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
+    /// One line per private account of the other person's in the cell (`SharedActuals.privateLines`), read off the main
+    /// thread; the account filter's accounts only.
+    func privateLines(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) async -> [SharedActuals.PrivateLine] {
+        let (viewer, today, filter) = (actuals.viewer, actuals.today, accountFilter)
+        let lines = (try? await dbQueue.read { db in
+            try SharedActuals.privateLines(categoryIds: categoryIds, from: startDate, to: endDate, viewer: viewer, today: today, db: db)
+        }) ?? []
+        return filter.isEmpty ? lines : lines.filter { filter.contains($0.id) }
+    }
+
     /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end` (a
     /// cell's side panel: one category, or a group's or section's members) — what the cell sums.
     func transactions(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) -> [Transaction] {
@@ -607,7 +627,7 @@ final class BudgetGridViewModel: ObservableObject {
     func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: AppClock.now) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.close(db: db, month: month, on: date, today: AppClock.now) }
         } catch PayCalendarError.invalidCloseDate {
             errorMessage = PayMonthFormat.invalidCloseDateMessage(month, calendar: payCalendar)
             return false
@@ -623,7 +643,7 @@ final class BudgetGridViewModel: ObservableObject {
     func reopenMonth(_ month: PayMonth) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.reopen(db: db, month: month) }
+            try dbQueue.write(.budgetAndAccounts) { db in try PayCalendar.reopen(db: db, month: month) }
         } catch {
             errorMessage = "Couldn't reopen \(PayMonthFormat.name(month)): \(error.localizedDescription)"
             return false
@@ -922,7 +942,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// instead of inviting a retry that would save twice.
     private func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.forecast) { db in try write(db) }
         } catch {
             return .failed(PlanFormat.errorMessage(for: error))
         }
@@ -967,7 +987,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// A transaction write: readable refusals, then the reload and `onTransactionEdited`.
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
-            try dbQueue.write { db in try write(db) }
+            try dbQueue.write(.budgetAndAccounts) { db in try write(db) }
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
@@ -978,7 +998,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
     private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+        gate.run(dbQueue, area: .budgetAndAccounts, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }
@@ -998,7 +1018,7 @@ final class BudgetGridViewModel: ObservableObject {
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
-        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        let category = try dbQueue.write(.rulesAndCategories) { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         // Re-read rather than append, so the list keeps `load()`'s order; a failed re-read
         // falls back to appending (the category was created either way).
         if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {

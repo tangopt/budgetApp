@@ -402,7 +402,15 @@ public enum RentReceiptPDFs {
     /// each PDF as a rent receipt document (kind set on a reused one of another kind), linked
     /// to its receipt with the role "Receipt" (and to the credits paying it, `RentCreditEvidence`).
     /// The plan must come from the same `inputs`.
-    public static func apply(db: Database, plan: Plan, inputs: [Input], library: EvidenceLibrary, now: Date = Date()) throws -> Applied {
+    /// Written as `actor` (nil: the admin, as a tool), with Property's permission and the matching origin (step 6).
+    public static func apply(db: Database, plan: Plan, inputs: [Input], library: EvidenceLibrary, actor: AccessActor? = nil,
+                             now: Date = Date()) throws -> Applied {
+        try ActorWrite.perform(orAdmin: actor, area: .property, origin: .propertyMatching, db: db) {
+            try applyMatched(db: db, plan: plan, inputs: inputs, library: library, now: now)
+        }
+    }
+
+    private static func applyMatched(db: Database, plan: Plan, inputs: [Input], library: EvidenceLibrary, now: Date) throws -> Applied {
         var applied = Applied()
         let byHash = Dictionary(inputs.map { ($0.sha256, $0) }, uniquingKeysWith: { first, _ in first })
         do {

@@ -90,7 +90,7 @@ extension TaxYearsViewModel {
 
     func seedIncomeEvidenceRules() {
         do {
-            let added = try dbQueue.write { db in try PersonalIncomeEvidence.seedRules(db: db) }
+            let added = try dbQueue.write(.property) { db in try PersonalIncomeEvidence.seedRules(db: db) }
             infoMessage = added.isEmpty ? "The personal income evidence rules are already there."
                 : "Added \(added.count) evidence rule\(added.count == 1 ? "" : "s"): P60, P45 and P11D per employment, a proof per HMRC payment."
         } catch {

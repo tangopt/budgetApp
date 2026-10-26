@@ -68,6 +68,33 @@ final class AccountsTests: XCTestCase {
         XCTAssertTrue(try AccountsViewModel.figuresCheck(dbQueue: queue, today: today, shown: page).matches)
     }
 
+    /// Step 6: the demo's admin sees their figures in full and a lock badge on each own account below Everything;
+    /// an iPhone not yet named sees no badges and the same net worth (balance-only and totals accounts count).
+    func testTheOwnersBadgesAndAnUnnamedViewersAccounts() async throws {
+        let queue = try demoDatabase()
+        let today = DemoDatabase.defaultAsOf
+        let admin = AccountsViewModel(dbQueue: queue, today: { today }, viewer: .demoAdmin)
+        await admin.load()
+        let page = try loadedPage(admin)
+        XCTAssertEqual(page.overview, try macOverview(queue, today: today))
+        let levels = try await queue.read { db in
+            Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).map { ($0.displayName, $0.sharingLevel) })
+        }
+        let rows = page.sections.flatMap(\.rows)
+        for row in rows {
+            XCTAssertEqual(row.sharingBadge, levels[row.name].flatMap(SharingCopy.badge), row.name)
+        }
+        XCTAssertTrue(rows.contains { $0.name == DemoSharing.categoryTotalsAccount && $0.sharingBadge == "Shared as category totals" })
+        XCTAssertNil(rows.first { $0.name == DemoSharing.jointAccount }?.sharingBadge)
+        for row in rows { if let badge = row.sharingBadge { XCTAssertTrue(row.spoken.hasSuffix(badge), row.spoken) } }
+
+        let unnamed = AccountsViewModel(dbQueue: queue, today: { today }, viewer: .iCloudUser(recordName: nil))
+        await unnamed.load()
+        let seen = try loadedPage(unnamed)
+        XCTAssertTrue(seen.sections.flatMap(\.rows).allSatisfy { $0.sharingBadge == nil })
+        XCTAssertEqual(seen.overview.netWorthGBP, page.overview.netWorthGBP)
+    }
+
     /// Cash, Credit, Investments (iPhone spec §3.6), each with its group's subtotal and rows in the Mac's order.
     func testSectionsAreCashCreditInvestmentsWithTheGroupsSubtotals() async throws {
         let queue = try demoDatabase()

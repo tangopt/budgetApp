@@ -34,6 +34,14 @@ public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, Mu
     /// Added by hand (`ManualTransactions`), in its account's "Manual entries" batch; an
     /// imported row matching it later replaces it (spec §3).
     public var isManual: Bool
+    /// Only on an in-memory summary row (`SharedActuals.isSummary`): its total in GBP as the owner's device
+    /// converted it, transaction by transaction. `CurrencyConversion` uses it instead of converting the total.
+    /// Never stored.
+    public var gbpAmountMinorUnits: Int? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case id, importBatchId, accountId, date, rawDescription, amountMinorUnits, categoryId, status, categorizedBy, fingerprint, note, isManual
+    }
 
     public init(id: Int64? = nil, importBatchId: Int64, accountId: Int64, date: Date, rawDescription: String, amountMinorUnits: Int, categoryId: Int64?, status: TransactionStatus, categorizedBy: CategorizedBy, fingerprint: String, note: String? = nil, isManual: Bool = false) {
         self.id = id

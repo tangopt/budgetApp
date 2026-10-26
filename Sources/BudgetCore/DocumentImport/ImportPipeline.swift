@@ -466,13 +466,17 @@ public struct ImportPipeline: @unchecked Sendable {
         let linkRuleIds = Set((before.appliedRules + item.appliedRules).filter { $0.kind == .link }.map(\.ruleId))
         let figureRuleIds = Set((before.appliedRules + item.appliedRules).filter { $0.kind == .figurePosition }.map(\.ruleId))
         let copy = try session.current(from: dbQueue)
-        let (issuer, descriptions, linkRules, figureRules, learning) = try await copy.dbQueue.read {
-            db -> (IssuerKey?, [Int64: String], [Int64: LinkAction], [Int64: ImportFigureField], DraftContext) in
+        let (issuer, descriptions, transactionAccounts, linkRules, figureRules, learning) = try await copy.dbQueue.read {
+            db -> (IssuerKey?, [Int64: String], [Int64: Int64], [Int64: LinkAction], [Int64: ImportFigureField], DraftContext) in
             let learning = try Self.draftContext(of: before, db: db)
             let issuer = learning.issuer
             var descriptions: [Int64: String] = [:]
+            var transactionAccounts: [Int64: Int64] = [:]
             for transaction in try Transaction.fetchAll(db, keys: Set(ids)) {
-                if let id = transaction.id { descriptions[id] = transaction.rawDescription }
+                if let id = transaction.id {
+                    descriptions[id] = transaction.rawDescription
+                    transactionAccounts[id] = transaction.accountId
+                }
             }
             var linkRules: [Int64: LinkAction] = [:]
             for rule in try ImportRule.fetchAll(db, keys: linkRuleIds) {
@@ -482,7 +486,7 @@ public struct ImportPipeline: @unchecked Sendable {
             for rule in try ImportRule.fetchAll(db, keys: figureRuleIds) {
                 if let id = rule.id, let action = ImportLearning.decode(FigurePositionAction.self, rule.actionJSON) { figureRules[id] = action.field }
             }
-            return (issuer, descriptions, linkRules, figureRules, learning)
+            return (issuer, descriptions, transactionAccounts, linkRules, figureRules, learning)
         }
         func position(_ draft: ImportRuleDraft) -> ImportFigureField? {
             draft.kind == .figurePosition ? ImportLearning.decode(FigurePositionAction.self, draft.actionJSON)?.field : nil
@@ -497,7 +501,8 @@ public struct ImportPipeline: @unchecked Sendable {
         }, rules: learning.rules)
         if replaced.contains(.documentKind) || resolution == .acceptModelReading { item.notes.removeAll { $0 == ImportLearning.recognisesItselfNote } }
         // Accepting the model's reading drafts what an earlier correction may have drafted already: once.
-        let drafted = ImportLearning.drafts(for: item, resolution: resolution, issuer: issuer, transactionDescriptions: descriptions)
+        let drafted = ImportLearning.drafts(for: item, resolution: resolution, issuer: issuer, transactionDescriptions: descriptions,
+                                                  transactionAccounts: transactionAccounts)
         let added = ImportLearning.finishing(drafted, on: &item, recognisesItself: learning.recognisesItself, rules: learning.rules)
         item.ruleDrafts = kept + added.filter { !kept.contains($0) }
         if let figure {

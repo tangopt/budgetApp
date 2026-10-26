@@ -86,4 +86,65 @@ final class SyncActivationTests: XCTestCase {
         let accepted = decide(demo.path)
         XCTAssertEqual(accepted, SyncActivation.Decision(allowed: true, reason: nil))
     }
+
+    /// Step 6 Task 11: the iPhone's own database (read-only, its own) syncs in a Release build signed for iCloud;
+    /// demo data never does; `--sync-demo` keeps the rules above.
+    func testPhoneDecisionAllowsRealSyncOnlyWithEntitlementAndNeverDemoData() throws {
+        let allow = SyncActivation.Decision(allowed: true, reason: nil)
+        // Demo data never syncs, whatever else holds.
+        for syncDemo in [false, true] {
+            for entitled in [false, true] {
+                for debug in [false, true] {
+                    assertRefused(SyncActivation.phoneDecision(isDemoData: true, isSyncDemoLaunch: syncDemo, hasCloudKitEntitlement: entitled,
+                                                               isDebug: debug), "Demo data")
+                }
+            }
+        }
+        // The phone's own database: with the entitlement, in a Release build.
+        XCTAssertEqual(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true, isDebug: false), allow)
+        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: false, isDebug: false), "iCloud entitlement")
+        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true, isDebug: true),
+                      "Release build")
+
+        // `--sync-demo`: today's rules (a Debug launch on a demo database outside the app's data, entitled).
+        let demo = folder.appendingPathComponent("demo/budget.sqlite")
+        try database(demo, demo: true)
+        let real = folder.appendingPathComponent("real/budget.sqlite")
+        try database(real, demo: false)
+        func syncDemo(_ path: String?, debug: Bool = true, entitled: Bool = true) -> SyncActivation.Decision {
+            SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: true, hasCloudKitEntitlement: entitled, isDebug: debug,
+                                         databasePath: path, fileManager: files)
+        }
+        XCTAssertEqual(syncDemo(demo.path), allow)
+        assertRefused(syncDemo(real.path), "only the demo database")
+        assertRefused(syncDemo(demo.path, debug: false), "Debug build")
+        assertRefused(syncDemo(demo.path, entitled: false), "iCloud entitlement")
+        assertRefused(syncDemo(nil), "needs BUDGET_DB_PATH")
+    }
+
+    /// Step 6 Task 12: the Mac's real database syncs only as the app's own, non-demo database, once "Turn on sync…"
+    /// reached the upload on it, in an entitled Production build; Debug only with the developer's flag; never with
+    /// `--sync-demo`.
+    func testRealDecisionNeedsStageEntitlementProductionAndAppDatabase() {
+        let allow = SyncActivation.Decision(allowed: true, reason: nil)
+        func real(app: Bool = true, demo: Bool = false, stage: SyncTurnOn.Stage = .uploading, entitled: Bool = true, production: Bool = true,
+                  debug: Bool = false, arguments: [String] = ["Mango"]) -> SyncActivation.Decision {
+            SyncActivation.realDecision(isAppDatabase: app, isDemoDatabase: demo, stage: stage, hasCloudKitEntitlement: entitled,
+                                        isProduction: production, isDebug: debug, arguments: arguments)
+        }
+        XCTAssertEqual(real(), allow)
+        XCTAssertEqual(real(stage: .done), allow)
+        assertRefused(real(app: false), "app's own database")
+        assertRefused(real(demo: true), "demo database")
+        for stage in [SyncTurnOn.Stage.notStarted, .backedUp, .ownershipConfirmed] {
+            assertRefused(real(stage: stage), "Turn on sync")
+        }
+        assertRefused(real(entitled: false), "iCloud entitlement")
+        assertRefused(real(production: false), "development environment")
+        assertRefused(real(debug: true), SyncActivation.realInDebugArgument)
+        XCTAssertEqual(real(debug: true, arguments: ["Mango", SyncActivation.realInDebugArgument]), allow)
+        assertRefused(real(production: false, debug: true, arguments: ["Mango", SyncActivation.realInDebugArgument]), "development environment")
+        assertRefused(real(arguments: ["Mango", SyncActivation.demoArgument]), SyncActivation.demoArgument)
+        assertRefused(real(debug: true, arguments: ["Mango", SyncActivation.demoArgument, SyncActivation.realInDebugArgument]), SyncActivation.demoArgument)
+    }
 }

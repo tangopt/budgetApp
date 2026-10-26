@@ -459,7 +459,15 @@ public enum RentCreditEvidence {
     /// Adds (files not yet in the library) and links the plan's `.link` advices to their
     /// credits, inside the caller's transaction. A file is added as a bank transfer proof under
     /// the source folder holding it (when there is one), noted on that folder's scan record.
-    public static func applyAdvices(db: Database, plan: [AdvicePlanItem], library: EvidenceLibrary, now: Date = Date()) throws -> AdviceApplied {
+    /// Written as `actor` (nil: the admin, as a tool), with Property's permission and the matching origin (step 6).
+    public static func applyAdvices(db: Database, plan: [AdvicePlanItem], library: EvidenceLibrary, actor: AccessActor? = nil,
+                                    now: Date = Date()) throws -> AdviceApplied {
+        try ActorWrite.perform(orAdmin: actor, area: .property, origin: .propertyMatching, db: db) {
+            try applyMatchedAdvices(db: db, plan: plan, library: library, now: now)
+        }
+    }
+
+    private static func applyMatchedAdvices(db: Database, plan: [AdvicePlanItem], library: EvidenceLibrary, now: Date) throws -> AdviceApplied {
         var applied = AdviceApplied()
         let folders = try SourceFolder.fetchAll(db)
         do {
