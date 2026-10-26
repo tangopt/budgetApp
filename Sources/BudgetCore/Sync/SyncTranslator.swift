@@ -412,6 +412,12 @@ public enum SyncTranslator {
             } else if tombstone.zone != payload.zone {
                 // Deleted (or left) in another zone: this is the record moving (step 6), and it is taken.
                 try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            } else if AccessAreaMap.summaryTables.contains(schema.name),
+                      try !(Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ? AND kind = 'delete')", arguments: [uuid]) ?? false) {
+                // A summary made again under its derived name (`AccountSummaryBuilder`: its account's level went back
+                // down) after this device took its delete: the owner's device rebuilt it, so it is taken. A delete made
+                // here and not yet sent still wins.
+                try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
             } else if payload.resent == true {
                 takeBack = true
             } else {

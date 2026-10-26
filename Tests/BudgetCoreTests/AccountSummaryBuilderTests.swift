@@ -91,7 +91,7 @@ final class AccountSummaryBuilderTests: XCTestCase {
             XCTAssertEqual(found["2026-08"]?.balanceMinorUnits, 500)
             let now = try XCTUnwrap(NetWorthCalculator.balance(accountId: f.privateAccount, at: nil, snapshots: snapshots, transactions: transactions))
             XCTAssertEqual(found[AccountBalancePoint.currentPayMonth]?.balanceMinorUnits, now.native)
-            XCTAssertEqual(found[AccountBalancePoint.currentPayMonth]?.date, Self.day(2026, 10, 2))
+            XCTAssertEqual(found[AccountBalancePoint.currentPayMonth]?.date, today, "dated at the publish day, not the latest activity")
             // Balance only: no category totals; the Totals account has both.
             XCTAssertEqual(try totals(db, f.privateAccount), [:])
             XCTAssertFalse(try points(db, f.totals).isEmpty)
@@ -128,13 +128,12 @@ final class AccountSummaryBuilderTests: XCTestCase {
             XCTAssertEqual(totalsRows["2026-09/none"]?.amountMinorUnits, -100)
 
             let privateRows = try totals(db, f.privateAccount)
-            XCTAssertEqual(Set(privateRows.keys), ["2026-09/\(f.plainCategory)", "2026-09/none"])
+            XCTAssertEqual(Set(privateRows.keys), ["2026-09/\(f.plainCategory)"], "the linked transfer in is hidden, as the budget hides it")
             XCTAssertEqual(privateRows["2026-09/\(f.plainCategory)"]?.amountMinorUnits, -4_000, "the pinned one is shared, not counted")
             XCTAssertEqual(privateRows["2026-09/\(f.plainCategory)"]?.transactionCount, 1)
-            XCTAssertEqual(privateRows["2026-09/none"]?.amountMinorUnits, 10_000, "the transfer in stays private: counted")
 
-            // The other person's actuals: the shared transactions plus the summaries count every transaction once.
-            for account in [f.totals, f.privateAccount] {
+            // Without transfers, the shared transactions plus the summaries count every transaction once.
+            for account in [f.totals] {
                 let shared = try Int64.fetchAll(db, sql: "SELECT id FROM transaction_ WHERE accountId = ?", arguments: [account])
                     .filter { try router.assignment(table: "transaction_", localId: $0).zone == SyncZones.household }
                 let sharedTotal = try shared.reduce(0) { sum, id in
@@ -329,6 +328,288 @@ final class AccountSummaryBuilderTests: XCTestCase {
             print("AccountSummaryBuilderTests: rebuilt \(outcome.inserted) demo summaries in \(String(format: "%.3f", seconds)) s")
             XCTAssertGreaterThan(outcome.inserted, 0)
             XCTAssertLessThan(seconds, 0.5)
+        }
+    }
+
+    // MARK: Fix round 1
+
+    private struct Figure: Equatable { var amount = 0; var count = 0 }
+
+    /// The owner's budget figures per pay month and category: confirmed, budget-facing transactions of every account.
+    private func ownerBudget(_ db: Database) throws -> [String: Figure] {
+        let calendar = try PayCalendar.load(db: db, today: today)
+        var result: [String: Figure] = [:]
+        for t in try Transaction.budgetFacing.fetchAll(db) where t.status == .confirmed {
+            let key = "\(AccountSummaryBuilder.payMonthKey(calendar.month(containing: t.date)))/\(t.categoryId.map(String.init) ?? "none")"
+            result[key, default: Figure()].amount += t.amountMinorUnits
+            result[key, default: Figure()].count += 1
+        }
+        return result.filter { $0.value != Figure() }
+    }
+
+    /// What the other person counts: the household's transactions (less the incoming legs of the household's links)
+    /// plus the category totals.
+    private func memberBudget(_ db: Database) throws -> [String: Figure] {
+        let calendar = try PayCalendar.load(db: db, today: today)
+        let router = try SyncZoneRouter(db: db)
+        let sharedLinks = try TransferLink.active.fetchAll(db).filter { try !router.assignment(table: "transferLink", localId: $0.id!).isPrivate }
+        let hidden = Set(sharedLinks.map(\.inTransactionId))
+        var result: [String: Figure] = [:]
+        for t in try Transaction.fetchAll(db) where t.status == .confirmed && !hidden.contains(t.id!) {
+            guard try !router.assignment(table: "transaction_", localId: t.id!).isPrivate else { continue }
+            let key = "\(AccountSummaryBuilder.payMonthKey(calendar.month(containing: t.date)))/\(t.categoryId.map(String.init) ?? "none")"
+            result[key, default: Figure()].amount += t.amountMinorUnits
+            result[key, default: Figure()].count += 1
+        }
+        for row in try AccountSummaryMonth.fetchAll(db) {
+            let key = "\(row.payMonth)/\(row.categoryId.map(String.init) ?? "none")"
+            result[key, default: Figure()].amount += row.amountMinorUnits
+            result[key, default: Figure()].count += row.transactionCount
+        }
+        return result.filter { $0.value != Figure() }
+    }
+
+    func testTransfersCountOnceForTheOtherPersonInBothDirections() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            try SharingLevels.set(.categoryTotals, accountId: f.privateAccount, actor: f.admin, db: db)
+            // Shared → private is the fixture's transfer. Private → shared: sent from the private account, received on
+            // the shared one, linked (the link follows the private leg into the private zone).
+            let out = try addTransaction(db, account: f.privateAccount, on: Self.day(2026, 9, 12), -2_500, category: f.plainCategory)
+            let into = try addTransaction(db, account: f.shared, on: Self.day(2026, 9, 12), 2_500, category: nil)
+            var link = TransferLink(outTransactionId: out, inTransactionId: into, origin: .manual)
+            try link.insert(db)
+            let router = try SyncZoneRouter(db: db)
+            XCTAssertTrue(try router.assignment(table: "transferLink", localId: link.id!).isPrivate)
+            XCTAssertFalse(try router.assignment(table: "transaction_", localId: into).isPrivate)
+
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+
+            let rows = try totals(db, f.privateAccount)
+            XCTAssertEqual(rows["2026-09/\(f.plainCategory)"]?.amountMinorUnits, -6_500, "the sent leg counts")
+            XCTAssertEqual(rows["2026-09/none"]?.amountMinorUnits, -2_500, "the shared received leg, taken back out")
+            XCTAssertEqual(rows["2026-09/none"]?.transactionCount, -1)
+            XCTAssertEqual(try memberBudget(db), try ownerBudget(db))
+
+            // Unlinking (dismissing) counts both legs for both people: the summaries follow.
+            try db.execute(sql: "UPDATE transferLink SET isDismissed = 1 WHERE id = ?", arguments: [link.id!])
+            XCTAssertTrue(try AccountSummaryBuilder.isDirty(db: db))
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            XCTAssertNil(try totals(db, f.privateAccount)["2026-09/none"])
+            XCTAssertEqual(try memberBudget(db), try ownerBudget(db))
+        }
+    }
+
+    func testAMemberWhoOwnsAnAccountPublishesItsSummaries() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            // The member (View on Budget & accounts) owns a Balance only account.
+            try db.execute(sql: "UPDATE account SET ownerPersonId = ?, sharingLevel = 'balanceOnly' WHERE id = ?", arguments: [f.personB, f.totals])
+            let outcome = try AccountSummaryBuilder.rebuild(ownerPersonId: f.personB, db: db, today: today)
+            XCTAssertGreaterThan(outcome.inserted, 0)
+            XCTAssertFalse(try points(db, f.totals).isEmpty)
+            let member = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [f.personB])!
+            let memberUuid = try SyncRecordStore.uuid(for: "appUser", localId: member, db: db)
+            let stamps = try Row.fetchAll(db, sql: """
+                SELECT s.modifiedBy, s.origin FROM syncRecord s JOIN accountBalancePoint t ON s.tableName = 'accountBalancePoint' AND s.localId = t.id
+                WHERE t.accountId = ?
+                """, arguments: [f.totals])
+            XCTAssertFalse(stamps.isEmpty)
+            for stamp in stamps {
+                XCTAssertEqual(stamp["modifiedBy"] as String?, memberUuid)
+                XCTAssertEqual(stamp["origin"] as String?, WriteOrigin.system.rawValue)
+            }
+        }
+    }
+
+    func testCurrentBalanceIsRepublishedAtMostOnceADay() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            let before = try XCTUnwrap(points(db, f.privateAccount)[AccountBalancePoint.currentPayMonth])
+            try addTransaction(db, account: f.privateAccount, on: Self.day(2026, 10, 24), -900, category: f.plainCategory)
+
+            // Later the same day: not republished; the account stays dirty.
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today.addingTimeInterval(3_600))
+            XCTAssertEqual(try points(db, f.privateAccount)[AccountBalancePoint.currentPayMonth], before)
+            XCTAssertTrue(try AccountSummaryBuilder.isDirty(db: db))
+
+            // The next day: published, dated that day.
+            let tomorrow = today.addingTimeInterval(86_400 + 3_600)
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: tomorrow)
+            let after = try XCTUnwrap(points(db, f.privateAccount)[AccountBalancePoint.currentPayMonth])
+            XCTAssertEqual(after.balanceMinorUnits, before.balanceMinorUnits - 900)
+            XCTAssertEqual(after.date, Self.day(2026, 10, 26))
+            XCTAssertFalse(try AccountSummaryBuilder.isDirty(db: db))
+
+            // An unchanged balance keeps its day.
+            try db.execute(sql: "UPDATE account SET name = 'Synthetic private renamed' WHERE id = ?", arguments: [f.privateAccount])
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: tomorrow.addingTimeInterval(86_400))
+            XCTAssertEqual(try points(db, f.privateAccount)[AccountBalancePoint.currentPayMonth]?.date, Self.day(2026, 10, 26))
+        }
+    }
+
+    func testOnlyAccountsWhoseDataChangedAreRebuilt() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            // A stand-in for a stale value: the summary tables mark nothing dirty.
+            try db.execute(sql: "UPDATE accountBalancePoint SET balanceMinorUnits = 999 WHERE accountId = ? AND payMonth = '2026-09'",
+                           arguments: [f.privateAccount])
+            XCTAssertFalse(try AccountSummaryBuilder.isDirty(db: db))
+
+            try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -3500 WHERE id = ?", arguments: [f.totalsTransaction])
+            let keys = try String.fetchAll(db, sql: "SELECT key FROM syncState WHERE key LIKE 'summaries.dirty%'")
+            XCTAssertEqual(keys, ["summaries.dirty.\(f.totals)"])
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            XCTAssertEqual(try totals(db, f.totals)["2026-09/\(f.plainCategory)"]?.amountMinorUnits, -3_500)
+            XCTAssertEqual(try points(db, f.privateAccount)["2026-09"]?.balanceMinorUnits, 999, "the private account wasn't rebuilt")
+
+            // A transfer link marks both legs' accounts.
+            try db.execute(sql: "UPDATE transferLink SET isDismissed = 1 WHERE id = ?", arguments: [f.transferLink])
+            // (Totals is still dirty: its changed current balance waits for tomorrow.)
+            XCTAssertEqual(Set(try String.fetchAll(db, sql: "SELECT key FROM syncState WHERE key LIKE 'summaries.dirty%'")),
+                           ["summaries.dirty.\(f.shared)", "summaries.dirty.\(f.privateAccount)", "summaries.dirty.\(f.totals)"])
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            XCTAssertNotEqual(try points(db, f.privateAccount)["2026-09"]?.balanceMinorUnits, 999)
+
+            // A category change rebuilds every account.
+            try db.execute(sql: "UPDATE accountBalancePoint SET balanceMinorUnits = 999 WHERE accountId = ? AND payMonth = '2026-09'", arguments: [f.totals])
+            try db.execute(sql: "UPDATE category SET name = 'Synthetic food' WHERE id = ?", arguments: [f.plainCategory])
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            XCTAssertNotEqual(try points(db, f.totals)["2026-09"]?.balanceMinorUnits, 999)
+        }
+    }
+
+    func testTenYearsOfSixAccountsRebuildsInUnderASecond() throws {
+        let queue = try TestDatabase.migrated()
+        let (owner, accounts) = try queue.write { db -> (Int64, [Int64]) in
+            let f = try SharingFixture.build(db)
+            var accounts: [Int64] = []
+            for index in 0..<6 {
+                let account = try AccountEditing.add(db: db, name: "Synthetic ten-year \(index)", currency: .gbp, kind: .cash,
+                                                     openingBalanceEntered: 1_000_00, asOf: Self.day(2016, 10, 1), owner: f.admin).id!
+                try db.execute(sql: "UPDATE account SET sharingLevel = ? WHERE id = ?",
+                               arguments: [index % 2 == 0 ? "categoryTotals" : "balanceOnly", account])
+                accounts.append(account)
+            }
+            var batches: [Int64] = []
+            for account in accounts {
+                try db.execute(sql: "INSERT INTO importBatch(accountId, sourceFileName, importedAt) VALUES (?, 'synthetic.csv', ?)",
+                               arguments: [account, Self.day(2026, 10, 1)])
+                batches.append(db.lastInsertedRowID)
+            }
+            var year = 2016, month = 10
+            var serial = 0
+            let insert = try db.makeStatement(sql: """
+                INSERT INTO transaction_(importBatchId, accountId, date, rawDescription, amountMinorUnits, categoryId, status, categorizedBy, fingerprint)
+                VALUES (?, ?, ?, 'Synthetic', ?, ?, 'confirmed', 'rule', ?)
+                """)
+            for _ in 0..<120 {
+                try db.execute(sql: "INSERT INTO payMonthClose(year, month, closeDate) VALUES (?, ?, ?)", arguments: [year, month, Self.day(year, month, 25)])
+                for n in 0..<400 {
+                    serial += 1
+                    let index = n % 6
+                    try insert.execute(arguments: [batches[index], accounts[index], Self.day(year, month, 1 + n % 28), -(100 + n),
+                                                   n % 5 == 0 ? nil : f.plainCategory, "ten-\(serial)"])
+                }
+                month += 1
+                if month > 12 { month = 1; year += 1 }
+            }
+            return (f.personA, accounts)
+        }
+        try queue.write { db in
+            let started = Date()
+            let outcome = try AccountSummaryBuilder.rebuild(ownerPersonId: owner, db: db, today: today)
+            let seconds = Date().timeIntervalSince(started)
+            print("AccountSummaryBuilderTests: ten years, 48,000 transactions, \(outcome.inserted) summaries in \(String(format: "%.3f", seconds)) s")
+            XCTAssertGreaterThan(try AccountBalancePoint.filter(accounts.contains(Column("accountId"))).fetchCount(db), 6 * 119)
+            XCTAssertLessThan(seconds, 1)
+        }
+    }
+
+    func testRebuildErrorsNameTheSummaries() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            try db.execute(sql: "CREATE TEMP TRIGGER refuse BEFORE INSERT ON accountBalancePoint BEGIN SELECT RAISE(ABORT, 'refused'); END")
+            XCTAssertThrowsError(try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)) { error in
+                XCTAssertTrue(error is AccountSummaryBuilder.BuildError)
+                XCTAssertTrue((error as? LocalizedError)?.errorDescription?.contains("account summaries") == true)
+            }
+        }
+    }
+
+    // MARK: Two owner devices
+
+    /// Both owner devices' and the member's summary records: record name → synced fields.
+    private func summaryRecords(_ queue: DatabaseQueue) throws -> [String: [String: SyncValue]] {
+        try queue.read { db in try records(db) }
+    }
+
+    func testTwoOwnerDevicesConvergeAfterRaisingAndLoweringAgain() async throws {
+        for rebuildBeforePull in [false, true] {
+            let h = try TwoPersonHousehold.make()
+            let f = h.fixture
+            try await h.syncAll()
+            try await h.adminMac2.engine.pull()
+            let first = try summaryRecords(h.adminMac.db)
+            XCTAssertFalse(first.isEmpty)
+
+            // Raised to Everything on the Mac: its summaries are deleted everywhere.
+            try write(h.adminMac.db) { db in try SharingLevels.set(.everything, accountId: f.totals, actor: f.admin, db: db) }
+            try h.requeueEverythingOnTheMac()
+            try await h.adminMac.engine.pushPending()
+            try await h.adminMac2.engine.syncNow()
+            try await h.memberDevice.engine.pull()
+            let totalsUuid = try h.uuid("account", f.totals)
+            for device in [h.adminMac.db, h.adminMac2.db, h.memberDevice.db] {
+                let left = try read(device) { db -> Int in
+                    guard let id = try SyncRecordStore.localId(table: "account", uuid: totalsUuid, db: db) else { return -1 }
+                    return try Int.fetchOne(db, sql: "SELECT (SELECT COUNT(*) FROM accountBalancePoint WHERE accountId = ?) + (SELECT COUNT(*) FROM accountSummaryMonth WHERE accountId = ?)",
+                                            arguments: [id, id]) ?? -1
+                }
+                XCTAssertEqual(left, 0)
+            }
+
+            // Lowered again.
+            if rebuildBeforePull {
+                // On both owner devices before either hears of the other: the second rebuilds before it pulls.
+                for device in [h.adminMac, h.adminMac2] {
+                    try write(device.db) { db in
+                        try SharingLevels.set(.categoryTotals, accountId: try XCTUnwrap(SyncRecordStore.localId(table: "account", uuid: totalsUuid, db: db)),
+                                              actor: try AccessActor.admin(db: db), db: db)
+                    }
+                    try h.requeueEverything(on: device)
+                }
+                try await h.adminMac.engine.pushPending()
+                try await h.adminMac2.engine.pushPending()
+                try await h.adminMac2.engine.pull()
+            } else {
+                // On the Mac; the second Mac pulls first (its tombstones discard the records), then rebuilds.
+                try write(h.adminMac.db) { db in try SharingLevels.set(.categoryTotals, accountId: f.totals, actor: f.admin, db: db) }
+                try h.requeueEverythingOnTheMac()
+                try await h.adminMac.engine.pushPending()
+                try await h.adminMac2.engine.syncNow()
+            }
+            for _ in 0..<2 {
+                try await h.adminMac.engine.syncNow()
+                try await h.adminMac2.engine.syncNow()
+            }
+            try await h.memberDevice.engine.pull()
+
+            let label = rebuildBeforePull ? "rebuild before pull" : "pull before rebuild"
+            let mac = try summaryRecords(h.adminMac.db)
+            XCTAssertEqual(mac, first, label)
+            XCTAssertEqual(try summaryRecords(h.adminMac2.db), mac, label)
+            XCTAssertEqual(try summaryRecords(h.memberDevice.db), mac, label)
+            for device in [h.adminMac.db, h.adminMac2.db, h.memberDevice.db] {
+                XCTAssertEqual(try read(device) { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncStaging") }, 0, label)
+            }
+            for device in [h.adminMac.db, h.adminMac2.db] {
+                XCTAssertEqual(try read(device) { db in try SyncChangeTracker.pending(db: db) }, [], label)
+            }
+            XCTAssertEqual(h.audit.householdViolations(router: h.adminRouter()), [], label)
+            XCTAssertEqual(h.audit2.householdViolations(router: TwoPersonHousehold.router(h.adminMac2.db)), [], label)
         }
     }
 }
