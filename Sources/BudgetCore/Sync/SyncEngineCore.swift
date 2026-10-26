@@ -58,6 +58,9 @@ public struct SyncPullReport: Equatable, Sendable {
     public var documentsDownloaded = 0
     /// Downloaded files not saved because they don't open or don't match their record's hash (needs attention).
     public var documentsNeedingAttention = 0
+    /// The household, reached through this device's shared database (`householdIsShared`), is gone for it: the
+    /// admin removed this iCloud user from the share, or stopped sharing (step 7a). Nothing was made or queued.
+    public var leftHousehold = false
 
     public init() {}
 }
@@ -143,6 +146,9 @@ public actor SyncEngineCore {
     public nonisolated let viewer: SyncViewer
     /// Whether incoming changes are re-validated against the writer's permissions (the Mac; step 6 Task 9).
     public nonisolated let revalidatesAccess: Bool
+    /// The household is someone else's zone, reached through this device's shared database (a member's device, step
+    /// 7a): a missing household means this iCloud user is no longer in it (`SyncPullReport.leftHousehold`).
+    public nonisolated let householdIsShared: Bool
     /// Each zone's current key for the push under way.
     var pushKeys: [String: HouseholdKey] = [:]
     /// Tests only: an assignment that replaces the router's for a record (table, local id), to prove the guard.
@@ -163,8 +169,9 @@ public actor SyncEngineCore {
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
                 clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil, readOnly: Bool = false,
-                viewer: SyncViewer = .none, revalidatesAccess: Bool = false) {
+                viewer: SyncViewer = .none, revalidatesAccess: Bool = false, householdIsShared: Bool = false) {
         self.db = db
+        self.householdIsShared = householdIsShared
         self.readOnly = readOnly
         self.viewer = viewer
         self.revalidatesAccess = revalidatesAccess
@@ -285,6 +292,7 @@ public actor SyncEngineCore {
             report.unreadable += zoneReport.unreadable
             report.waitingForKey += zoneReport.waitingForKey
             report.reconciled += zoneReport.reconciled
+            report.leftHousehold = report.leftHousehold || zoneReport.leftHousehold
         }
         // The Mac keeps every file (sync spec §5.7).
         let files = try await downloadMissingDocuments()
@@ -337,6 +345,13 @@ public actor SyncEngineCore {
                 zoneKeys = [:]
                 continue
             } catch SyncTransportError.zoneNotFound {
+                // Someone else's household this device no longer reaches: it left (or was removed). Nothing is made
+                // or queued; the device drops the household's data (`SyncLocalData.dropZone`).
+                if zone == SyncZones.household, householdIsShared {
+                    var left = SyncPullReport()
+                    left.leftHousehold = true
+                    return left
+                }
                 // Read-only: the household hasn't been shared up yet; nothing to download, nothing made here.
                 if readOnly { return SyncPullReport() }
                 try await recoverMissingZone(zone)

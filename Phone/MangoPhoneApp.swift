@@ -115,6 +115,12 @@ struct PhoneRoot: View {
             default: break
             }
         }
+        .alert("Household", isPresented: Binding(get: { sync.householdNotice != nil },
+                                                 set: { if !$0 { sync.dismissHouseholdNotice() } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(sync.householdNotice ?? "")
+        }
         .onChange(of: sync.account) { _, account in
             // Signed in again: the explanation may show again if it goes once more.
             if account == .available { showsLocalData = false }

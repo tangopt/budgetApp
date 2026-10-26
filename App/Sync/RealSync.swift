@@ -104,7 +104,9 @@ final class RealSync: ObservableObject {
         }
     }
 
-    /// Stops the running sync, forgets the confirmed user and starts again through the full check.
+    /// Stops the running sync, forgets the confirmed user and starts again through the full check. The engine, and with
+    /// it its `CloudKitTransport` (which keeps the iCloud user it first read, for attributing writes), is made again by
+    /// `startEngine` for the user confirmed then: no transport outlives an account change (step 7a).
     private func accountChanged() async {
         guard identityConfirmed || scheduler != nil else { return }
         Self.log.notice("Real sync: the iCloud account changed; checking who is signed in again")
