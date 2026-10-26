@@ -196,4 +196,100 @@ final class DeletionAttributionTests: XCTestCase {
         }
         XCTAssertNil(try h.localId("transaction_", uuid: uuid, on: h.adminPhone), "no ghost row")
     }
+
+    // MARK: Fix round 1
+
+    /// Review I1: the admin's other Mac moves a household record out (its marker fails), then deletes it. The move ends
+    /// with a deletion marker in the household (the admin's), never a hard delete: the re-validating Mac, which still
+    /// holds the row there, takes the delete and doesn't send it back.
+    func testAMoveFinishedAfterADeleteLeavesADeletionMarker() async throws {
+        let h = try await household()
+        let f = h.fixture
+        try await h.adminMac2.engine.pull()
+        let moved = try h.uuid("transaction_", f.transferOut)
+        let shared = try local(h, "account", f.shared, on: h.adminMac2)
+        let adminUuid = try h.uuid("appUser", f.admin.appUserId)
+        try await h.adminMac2.db.write { db in
+            let admin = try AccessActor.load(appUserId: try XCTUnwrap(SyncRecordStore.localId(table: "appUser", uuid: adminUuid, db: db)), db: db)
+            _ = try SharingLevels.set(.balanceOnly, accountId: shared, actor: admin, db: db)
+        }
+        h.mac2Transport.failSaves(of: moved, in: SyncZones.household)
+        _ = try await h.adminMac2.engine.pushPending()
+        let unfinished = try await h.adminMac2.db.read { db in try SyncZoneMoves.unfinished(db: db) }
+        XCTAssertTrue(unfinished.contains { $0.uuid == moved && $0.markerPending }, "the move's marker is still to go")
+        h.mac2Transport.restore()
+        try delete("transaction_", try local(h, "transaction_", f.transferOut, on: h.adminMac2), on: h.adminMac2)
+        _ = try await h.adminMac2.engine.pushPending()
+
+        let left = try await serverPayload(h, moved)
+        XCTAssertEqual(left?.deleted, true, "a deletion marker over the old copy")
+        try await h.adminMac.engine.syncNow()
+        XCTAssertNil(try h.localId("transaction_", uuid: moved, on: h.adminMac), "the Mac takes the delete")
+        XCTAssertEqual(try reverts(h), [])
+        let after = try await serverPayload(h, moved)
+        XCTAssertEqual(after?.deleted, true, "nothing sent back")
+    }
+
+    /// Review M4: the tombstone keeps the record's server stamp, so its marker is saved in one go.
+    func testAHouseholdDeleteSavesItsMarkerOnce() async throws {
+        let h = try await household()
+        let uuid = try h.uuid("transaction_", h.fixture.sharedTransaction)
+        let before = await h.cloud.calls.count
+        try delete("transaction_", h.fixture.sharedTransaction, on: h.adminMac)
+        _ = try await h.adminMac.engine.pushPending()
+        let saves = await h.cloud.calls.dropFirst(before).filter { if case .save(let names, _) = $0 { return names.contains(uuid) } else { return false } }
+        XCTAssertEqual(saves.count, 1, "no refused first attempt")
+        let server = try await serverPayload(h, uuid)
+        XCTAssertEqual(server?.deleted, true)
+    }
+
+    /// Review M2: she deletes a document with a file while she may only view Documents: the Mac keeps it with its file and
+    /// sends it again carrying its file reference; every device has it back.
+    func testDeniedDeleteOfADocumentWithAFileIsUndoneWithItsFile() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("deletes-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = folder.appendingPathComponent("mac/Library", isDirectory: true)
+        let bytes = Data("Synthetic receipt \(UUID().uuidString)".utf8)
+        let sha = DocumentCrypto.sha256(bytes)
+        let path = EvidenceLibrary.storedRelativePath(sha256: sha, fileExtension: "pdf")
+        try FileManager.default.createDirectory(at: library.appendingPathComponent(path).deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: library.appendingPathComponent(path))
+        let h = try TwoPersonHousehold.make(macDocuments: SyncDocumentFiles(root: library, policy: .eager), revalidatesAccess: true)
+        let f = h.fixture
+        let (document, link) = try await h.adminMac.db.write { db -> (Int64, Int64) in
+            try db.execute(sql: "INSERT INTO document(sha256, storedRelativePath, originalFileName, byteCount, addedAt) VALUES (?, ?, 'r.pdf', ?, ?)",
+                           arguments: [sha, path, bytes.count, Date()])
+            let id = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO documentLink(documentId, entityType, entityId, createdAt) VALUES (?, 'transaction', ?, ?)",
+                           arguments: [id, f.sharedTransaction, Date()])
+            let member = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [f.personB])!
+            try db.execute(sql: "UPDATE memberPermission SET level = ? WHERE appUserId = ? AND area = ?",
+                           arguments: [PermissionLevel.view.rawValue, member, AccessArea.documents.storageKey])
+            return (id, db.lastInsertedRowID)
+        }
+        _ = link
+        try await h.syncAll()
+        let uuid = try h.uuid("document", document)
+        let fileBefore = try await h.adminMac.db.read { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
+        XCTAssertNotNil(fileBefore, "its file is on the server")
+
+        let held = try XCTUnwrap(h.localId("document", uuid: uuid, on: h.memberDevice))
+        try await h.memberDevice.db.write { db in
+            try db.execute(sql: "DELETE FROM documentLink WHERE documentId = ?", arguments: [held])
+            try db.execute(sql: "DELETE FROM document WHERE id = ?", arguments: [held])
+        }
+        try await round(h)
+        for device in [h.adminMac, h.memberDevice, h.adminPhone] {
+            XCTAssertNotNil(try h.localId("document", uuid: uuid, on: device))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.appendingPathComponent(path).path), "the Mac's file stays")
+        let fileAfter = try await h.adminMac.db.read { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
+        XCTAssertEqual(fileAfter, fileBefore)
+        let server = try await serverPayload(h, uuid)
+        XCTAssertNil(server?.deleted)
+        XCTAssertEqual(server?.resent, true)
+        XCTAssertEqual(server?.documentFile, fileBefore, "sent again with its file")
+        let logged = try reverts(h)
+        XCTAssertTrue(logged.contains("Reverted a delete by B: no permission for Documents"), "\(logged)")
+    }
 }

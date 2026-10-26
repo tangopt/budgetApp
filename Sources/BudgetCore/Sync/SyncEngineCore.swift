@@ -691,7 +691,10 @@ public actor SyncEngineCore {
                             try await transport.delete(names, zone: zone)
                             continue
                         }
-                        for result in try await saveDeletionMarkers(names, of: chunk, limits: limits, guardian: guardian) {
+                        let tables = Dictionary(chunk.map { ($0.uuid, $0.table) }, uniquingKeysWith: { first, _ in first })
+                        let records = names.compactMap { name in tables[name].map { (name: name, table: $0) } }
+                        let stamps = try await db.read { db in try Self.deletedStamps(names, zone: zone, db: db) }
+                        for result in try await saveDeletionMarkers(records, stamps: stamps, limits: limits, guardian: guardian) {
                             markerResults[result.recordName] = result
                             if case .zoneNotFound = result.outcome { missingZones.insert(zone) }
                         }
@@ -1289,31 +1292,32 @@ public actor SyncEngineCore {
         try SyncMerge.queue(uuid: uuid, table: "account", localId: id, kind: .update, db: db)
     }
 
-    /// Saves the deletion markers (step 7a) of the household records `names` (deleted here, `chunk`'s pending deletes):
-    /// sealed with the household key, checked by the guard, each over the version this device last saw (its tombstone's
-    /// stamp; none at first, so the server's version comes back as `.changed` and the marker goes again over it).
-    private func saveDeletionMarkers(_ names: [String], of chunk: [PendingChange], limits: SyncOperationLimits,
+    /// Saves the deletion markers (step 7a) of the household records `records` (deleted here): sealed with the household
+    /// key, checked by the guard, each over the version this device last saw there (`stamps`; without one, the server's
+    /// version comes back as `.changed` and the marker goes again over it).
+    private func saveDeletionMarkers(_ records: [(name: String, table: String)], stamps: [String: Data], limits: SyncOperationLimits,
                                      guardian: SyncZoneGuard?) async throws -> [SaveResult] {
         let zone = SyncZones.household
-        let tables = Dictionary(chunk.map { ($0.uuid, $0.table) }, uniquingKeysWith: { first, _ in first })
-        let markers = names.compactMap { name in tables[name].map { SyncPayload.deletionMarker(uuid: name, tableName: $0, zone: zone) } }
+        let markers = records.map { SyncPayload.deletionMarker(uuid: $0.name, tableName: $0.table, zone: zone) }
         guard !markers.isEmpty else { return [] }
         try await review(markers, guardian: guardian)
         let key = try await sealingKey(zone: zone)
         let wires = try markers.map { try SyncLargePayload.wire(for: $0, key: key.key).0 }
-        let stamps = try await db.read { db in
-            try markers.reduce(into: [String: Data]()) { result, marker in
-                if let stamp = try Data.fetchOne(db, sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ? AND mergedInto IS NULL",
-                                                 arguments: [marker.recordName]) {
-                    result[marker.recordName] = stamp
-                }
-            }
-        }
         var results: [SaveResult] = []
         for operation in Self.operations(wires, limits: limits) {
             results += try await save(operation, ifUnchanged: stamps)
         }
         return results
+    }
+
+    /// The server versions deleted records were last seen at in `zone` (their tombstones' stamps, kept at delete time).
+    static func deletedStamps(_ names: [String], zone: String, db: Database) throws -> [String: Data] {
+        try names.reduce(into: [String: Data]()) { result, name in
+            if let stamp = try Data.fetchOne(db, sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ? AND zone = ? AND mergedInto IS NULL",
+                                             arguments: [name, zone]) {
+                result[name] = stamp
+            }
+        }
     }
 
     /// Finishes the moves this device knows of (`SyncZoneMoves.unfinished`), each judged against where the record is
@@ -1402,14 +1406,39 @@ public actor SyncEngineCore {
         }
         // The deletes go once no marker is still pending there (the marker covers the old copy first).
         var deletes: [String: [String]] = [:]
+        // Step 7a: a record deleted here whose old copy is in the household gets a deletion marker there, not a hard
+        // delete (the server says who deleted it), over the old copy's version.
+        var deletionMarkers: [(name: String, table: String)] = []
+        var deletionStamps: [String: Data] = [:]
         for plan in plans {
             let name = ZonedName(zone: plan.move.zone, name: plan.move.uuid)
             var markerDone = plan.marker == nil
             if case .saved? = results[name]?.outcome { markerDone = true }
             if case .deleted? = results[name]?.outcome { markerDone = true }
-            if markerDone, !plan.deletes.isEmpty { deletes[plan.move.zone, default: []] += plan.deletes }
+            guard markerDone, !plan.deletes.isEmpty else { continue }
+            var planDeletes = plan.deletes
+            if plan.move.zone == SyncZones.household, plan.current == nil, planDeletes.contains(plan.move.uuid),
+               try await db.read({ db in try SyncPresence.isIn(uuid: plan.move.uuid, zone: SyncZones.household, db: db) }) {
+                planDeletes.removeAll { $0 == plan.move.uuid }
+                deletionMarkers.append((plan.move.uuid, plan.move.tableName))
+                if let stamp = try await db.read({ db in try SyncZoneMoves.markerStamp(uuid: plan.move.uuid, zone: SyncZones.household, db: db) }) {
+                    deletionStamps[plan.move.uuid] = stamp
+                }
+            }
+            if !planDeletes.isEmpty { deletes[plan.move.zone, default: []] += planDeletes }
         }
         var deleted: Set<ZonedName> = []
+        var markedDeleted: [String: SaveResult] = [:]
+        if !deletionMarkers.isEmpty {
+            for result in try await saveDeletionMarkers(deletionMarkers, stamps: deletionStamps, limits: limits, guardian: guardian) {
+                markedDeleted[result.recordName] = result
+                switch result.outcome {
+                case .saved, .deleted: deleted.insert(ZonedName(zone: SyncZones.household, name: result.recordName))
+                case .zoneNotFound: missing.insert(SyncZones.household)
+                default: break
+                }
+            }
+        }
         for (zone, names) in deletes.sorted(by: { $0.key < $1.key }) {
             do {
                 try await transport.delete(names, zone: zone)
@@ -1420,7 +1449,16 @@ public actor SyncEngineCore {
         }
         let taken = results
         let removed = deleted
+        let marked = markedDeleted
         try await db.write { db in
+            for (name, result) in marked {
+                guard let plan = plans.first(where: { $0.move.uuid == name && $0.move.zone == SyncZones.household }) else { continue }
+                if case .changed(let server) = result.outcome {
+                    // Edited there meanwhile: the deletion marker goes again over that version.
+                    try SyncZoneMoves.markerAgain(uuid: name, tableName: plan.move.tableName, zone: SyncZones.household,
+                                                  systemFields: server.stamp.systemFields, db: db)
+                }
+            }
             for plan in plans {
                 let move = plan.move
                 let name = ZonedName(zone: move.zone, name: move.uuid)
