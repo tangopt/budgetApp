@@ -30,19 +30,23 @@ public final class HomeViewModel: ObservableObject {
 
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
+    /// Whose figures Home shows (step 6): the next load reads with it.
+    public var viewer: PhoneViewer
     /// The `reloadKey` the last `reload(for:)` loaded for.
     private var loadedKey: Date?
 
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.state = .idle
     }
 
     /// Already loaded (the snapshot harness: a route renders its first frame with the data in it).
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, preloaded state: State) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone, preloaded state: State) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.state = state
     }
 
@@ -50,8 +54,9 @@ public final class HomeViewModel: ObservableObject {
     public func load() async {
         let day = today()
         let reader = dbQueue
+        let viewer = viewer
         do {
-            let loaded = try await reader.read { db in try Self.read(db, today: day) }
+            let loaded = try await reader.read { db in try Self.read(db, today: day, viewer: viewer) }
             state = loaded
             errorMessage = nil
         } catch {
@@ -60,9 +65,9 @@ public final class HomeViewModel: ObservableObject {
     }
 
     /// The same read, now (the snapshot routes, which can't await before their first frame).
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date) -> State {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date, viewer: PhoneViewer = .everyone) -> State {
         do {
-            return try dbQueue.read { db in try read(db, today: today) }
+            return try dbQueue.read { db in try read(db, today: today, viewer: viewer) }
         } catch {
             return .failed(loadFailureMessage)
         }
@@ -77,8 +82,8 @@ public final class HomeViewModel: ObservableObject {
         }
     }
 
-    nonisolated private static func read(_ db: Database, today: Date) throws -> State {
-        let input = try DashboardInput.load(db: db, today: today)
+    nonisolated private static func read(_ db: Database, today: Date, viewer: PhoneViewer) throws -> State {
+        let input = try DashboardInput.load(db: db, today: today, actuals: try viewer.actuals(db: db, today: today))
         guard !isEmpty(input) else { return .empty }
         return .loaded(try HomeSummary.make(input, db: db))
     }

@@ -5,11 +5,16 @@ import GRDB
 /// in full their own accounts, joint accounts and accounts at Everything; the other person's accounts below
 /// Everything only through their summaries, and Hidden ones not at all.
 public struct SharingViewer: Equatable, Sendable {
-    /// The viewer's local `person` id; nil sees everything (tools, tests, a device with no one signed in).
+    /// The viewer's local `person` id; nil sees everything (tools, tests, a device with no one signed in), unless
+    /// `strict`.
     public var personId: Int64?
+    /// A nil person sees in full only Everything and joint accounts (the iPhone before its iCloud user is named:
+    /// it shows the household's data only, step 6 Task 11).
+    public var strict: Bool
 
-    public init(personId: Int64?) {
+    public init(personId: Int64?, strict: Bool = false) {
         self.personId = personId
+        self.strict = strict
     }
 
     /// The viewer signed in as the `appUser` with this local id; nil (or an unknown user) sees everything.
@@ -19,8 +24,15 @@ public struct SharingViewer: Equatable, Sendable {
     }
 
     public func seesInFull(_ account: Account) -> Bool {
-        guard let personId else { return true }
+        guard personId != nil || strict else { return true }
         return account.sharingLevel == .everything || account.ownerPersonId == nil || account.ownerPersonId == personId
+    }
+
+    /// The iPhone's viewer: the person of the `appUser` whose `cloudKitUserRecordName` is `recordName` (this iPhone's
+    /// iCloud user, `CloudKitAccountStatus.userRecordName`). Nobody named yet (no record name, or no such app user
+    /// here before the household pull brings it): a strict nil viewer, who sees the household's data only.
+    public static func forCloudKitUser(recordName: String?, db: Database) throws -> SharingViewer {
+        SharingViewer(personId: try AppUser.forCloudKitUser(recordName: recordName, db: db)?.personId, strict: true)
     }
 
     /// Whether the account is on the viewer's screens at all: the other person's Hidden accounts aren't.
@@ -160,7 +172,8 @@ private struct SharedView {
     var publishedCloses: [Date] = []
 
     init?(viewer: SharingViewer, today: Date, db: Database) throws {
-        guard let personId = viewer.personId else { return nil }
+        guard viewer.personId != nil || viewer.strict else { return nil }
+        let personId = viewer.personId
         accounts = try Account.fetchAll(db)
         var summarised: Set<Int64> = [], hidden: Set<Int64> = []
         for account in accounts where !viewer.seesInFull(account) {
@@ -262,3 +275,50 @@ private struct SharedView {
         return PayMonth(year: year, month: month)
     }
 }
+
+extension AppUser {
+    /// The app user signed in with the iCloud user `recordName`; nil for nil or none here.
+    static func forCloudKitUser(recordName: String?, db: Database) throws -> AppUser? {
+        guard let recordName, !recordName.isEmpty else { return nil }
+        return try AppUser.filter(Column("cloudKitUserRecordName") == recordName).fetchOne(db)
+    }
+}
+
+extension SyncViewer {
+    /// The iPhone engine's viewer (step 6 Task 11): the private zone of the person the iCloud user `recordName` is
+    /// (`SharingViewer.forCloudKitUser`), once the household pull has brought that app user and person; `.none`
+    /// (household only) until then. Reads only.
+    public static func forCloudKitUser(recordName: String?, db: Database) throws -> SyncViewer {
+        guard let personId = try AppUser.forCloudKitUser(recordName: recordName, db: db)?.personId,
+              let uuid = try SyncRecordStore.existingUUID(table: "person", localId: personId, db: db) else { return .none }
+        return SyncViewer(personUuid: uuid)
+    }
+}
+
+/// Whose figures the iPhone's screens show (step 6 Task 11), resolved against the database at each read, so a
+/// household pull that names the viewer changes what the next read shows.
+public enum PhoneViewer: Equatable, Sendable {
+    /// Every account in full: tests and tools (a nil, non-strict `SharingViewer`).
+    case everyone
+    /// Demo data ("Try with demo data", the snapshot harness): the demo's admin, as the Mac's demo shows it.
+    case demoAdmin
+    /// The phone's own database: this iPhone's iCloud user (`SharingViewer.forCloudKitUser`); nil before it is read.
+    case iCloudUser(recordName: String?)
+
+    public func resolve(db: Database) throws -> SharingViewer {
+        switch self {
+        case .everyone:
+            return SharingViewer(personId: nil)
+        case .demoAdmin:
+            return SharingViewer(personId: try AppUser.filter(Column("isAdmin") == true).order(Column("id")).fetchOne(db)?.personId, strict: true)
+        case .iCloudUser(let recordName):
+            return try SharingViewer.forCloudKitUser(recordName: recordName, db: db)
+        }
+    }
+
+    /// The viewer's actuals at `today` (`DashboardInput.load(db:today:actuals:)`).
+    public func actuals(db: Database, today: Date) throws -> SharedActualsSource {
+        SharedActualsSource(viewer: try resolve(db: db), today: today)
+    }
+}
+

@@ -13,7 +13,8 @@ public struct MonthTransactionDay: Equatable, Sendable, Identifiable {
 
 /// A category row's transactions in its pay month (iPhone spec §3.3, "tapping a row opens its transactions"):
 /// exactly the ones its figure sums (`PayMonthReview.transactions`: confirmed, budget-facing, in GBP), newest
-/// first, grouped by day. Read-only.
+/// first, grouped by day, then one line per account of the other person's that the viewer reads only as category
+/// totals (`SharedActuals.privateLines`, step 6). Read-only.
 @MainActor
 public final class MonthTransactionsModel: ObservableObject {
     public enum State: Equatable, Sendable {
@@ -27,14 +28,23 @@ public final class MonthTransactionsModel: ObservableObject {
     @Published public private(set) var state: State
     /// The row as the month last showed it (a sync can change its figures).
     @Published public private(set) var row: PayMonthReview.Row
+    /// After the days: the other person's private accounts' lines for this row (step 6), read with the list.
+    @Published public private(set) var privateLines: [SharedActuals.PrivateLine]
     public let range: PayMonthReview.DayRange
+    /// Whose transactions the list shows (step 6): the next load reads with it.
+    public var viewer: PhoneViewer
     private let dbQueue: any DatabaseReader
+    private let today: () -> Date
 
-    public init(dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange, preloaded: State = .idle) {
+    public init(dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange, viewer: PhoneViewer = .everyone,
+                today: @escaping () -> Date = { Date() }, preloaded: State = .idle, privateLines: [SharedActuals.PrivateLine] = []) {
         self.dbQueue = dbQueue
         self.row = row
         self.range = range
+        self.viewer = viewer
+        self.today = today
         self.state = preloaded
+        self.privateLines = privateLines
     }
 
     /// Reads the list off the main actor; a failed read keeps a list already shown.
@@ -42,8 +52,15 @@ public final class MonthTransactionsModel: ObservableObject {
         let reader = dbQueue
         let categoryId = row.id
         let range = range
+        let viewer = viewer
+        let day = today()
         do {
-            state = .loaded(try await reader.read { db in try Self.read(db, categoryId: categoryId, range: range) })
+            let (days, lines) = try await reader.read { db in
+                (try Self.read(db, categoryId: categoryId, range: range, viewer: viewer, today: day),
+                 try Self.privateLines(db, categoryId: categoryId, range: range, viewer: viewer, today: day))
+            }
+            state = .loaded(days)
+            privateLines = lines
         } catch {
             if case .loaded = state { return }
             state = .failed(Self.loadFailureMessage)
@@ -58,16 +75,30 @@ public final class MonthTransactionsModel: ObservableObject {
     }
 
     /// The same read, now (the snapshot routes).
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange) -> State {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange,
+                                           viewer: PhoneViewer = .everyone, today: Date = Date()) -> State {
         do {
-            return .loaded(try dbQueue.read { db in try read(db, categoryId: row.id, range: range) })
+            return .loaded(try dbQueue.read { db in try read(db, categoryId: row.id, range: range, viewer: viewer, today: today) })
         } catch {
             return .failed(loadFailureMessage)
         }
     }
 
-    nonisolated static func read(_ db: Database, categoryId: Int64, range: PayMonthReview.DayRange) throws -> [MonthTransactionDay] {
-        days(try PayMonthReview.transactions(db: db, categoryId: categoryId, range: range))
+    /// The row's private lines, now (the snapshot routes); none when the read fails.
+    public nonisolated static func privateLinesNow(_ dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange,
+                                                   viewer: PhoneViewer, today: Date) -> [SharedActuals.PrivateLine] {
+        (try? dbQueue.read { db in try privateLines(db, categoryId: row.id, range: range, viewer: viewer, today: today) }) ?? []
+    }
+
+    nonisolated static func read(_ db: Database, categoryId: Int64, range: PayMonthReview.DayRange, viewer: PhoneViewer = .everyone,
+                                 today: Date = Date()) throws -> [MonthTransactionDay] {
+        days(try PayMonthReview.transactions(db: db, categoryId: categoryId, range: range, viewer: try viewer.resolve(db: db), today: today))
+    }
+
+    nonisolated static func privateLines(_ db: Database, categoryId: Int64, range: PayMonthReview.DayRange, viewer: PhoneViewer,
+                                         today: Date) throws -> [SharedActuals.PrivateLine] {
+        try SharedActuals.privateLines(categoryIds: [categoryId], from: range.start, to: range.end, viewer: try viewer.resolve(db: db),
+                                       today: today, db: db)
     }
 
     /// Rows (newest first) grouped by their day, newest day first.
@@ -146,7 +177,7 @@ public struct MonthTransactionsView: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
         case .failed(let message):
             EmptyState(symbol: "exclamationmark.triangle", title: "Transactions couldn't load", message: message)
-        case .loaded(let days) where days.isEmpty:
+        case .loaded(let days) where days.isEmpty && model.privateLines.isEmpty:
             // A row with a plan and no spending yet.
             EmptyState(symbol: "tray", title: "No transactions yet",
                        message: "Nothing in \(model.row.category.name) in this pay month so far.")
@@ -158,6 +189,16 @@ public struct MonthTransactionsView: View {
                     ForEach(day.rows) { row in
                         let amount = MonthTransactionsModel.amount(row.gbpMinorUnits, type: model.row.category.type)
                         AmountRow(label: row.description, secondary: MonthTransactionsModel.secondary(row),
+                                  amount: MoneyText(minorUnits: amount.minorUnits, currency: .gbp, role: amount.role))
+                    }
+                }
+            }
+            if !model.privateLines.isEmpty {
+                // The other person's accounts read only as category totals: one line each, after the shared ones.
+                Card {
+                    ForEach(model.privateLines) { line in
+                        let amount = MonthTransactionsModel.amount(line.amountMinorUnits, type: model.row.category.type)
+                        AmountRow(label: line.text, secondary: nil,
                                   amount: MoneyText(minorUnits: amount.minorUnits, currency: .gbp, role: amount.role))
                     }
                 }

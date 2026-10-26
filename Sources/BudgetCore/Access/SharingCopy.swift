@@ -86,6 +86,13 @@ public enum SharingCopy {
     /// When the household has nobody else yet.
     public static let otherPersonFallback = "The other person"
 
+    // MARK: Settings ▸ Sharing (iPhone, read-only in step 6)
+
+    /// Under the iPhone's levels: they're shown, not changed, here.
+    public static let changedOnTheMac = "Levels are changed on the Mac."
+    /// The iPhone before the household has named its iCloud user: it shows the household's shared data only.
+    public static let phoneNotNamedYet = "Mango doesn't know whose iPhone this is yet, so it shows only what the household shares. Your own accounts show here once your Mac has synced your sign-in."
+
     // MARK: The ownership sheet's table
 
     public static let accountColumn = "Account"

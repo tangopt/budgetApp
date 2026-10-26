@@ -24,6 +24,14 @@ public enum SharingLevel: String, Codable, CaseIterable, Comparable, Sendable {
 /// The level of a person's "tax years and income" area: shared in full or not at all.
 public enum TaxIncomeLevel: String, Codable, CaseIterable, Sendable {
     case everything, hidden
+
+    /// As the levels read: "Everything", "Hidden".
+    public var title: String {
+        switch self {
+        case .everything: return SharingLevel.everything.title
+        case .hidden: return SharingLevel.hidden.title
+        }
+    }
 }
 
 /// One person's sharing settings (synced, household zone). `ownershipConfirmedAt` is set on the

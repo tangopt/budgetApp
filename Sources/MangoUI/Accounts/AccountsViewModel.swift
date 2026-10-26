@@ -16,7 +16,9 @@ public struct AccountsPage: Equatable, Sendable {
     /// Cash, Credit, Investments (iPhone spec §3.6), empty ones left out.
     public let sections: [AccountsSection]
 
-    public init(overview: AccountsOverview, sinceYearEnd: NetWorthSinceYearEnd?, importedThrough: [Int64: Date], today: Date) {
+    /// `badges`: the viewer's own accounts shared below Everything and their level (`SharingViewer.badgeLevel`).
+    public init(overview: AccountsOverview, sinceYearEnd: NetWorthSinceYearEnd?, importedThrough: [Int64: Date], today: Date,
+                badges: [Int64: SharingLevel] = [:]) {
         self.overview = overview
         self.sinceYearEnd = sinceYearEnd
         self.importedThrough = importedThrough
@@ -24,7 +26,7 @@ public struct AccountsPage: Equatable, Sendable {
         sections = AccountsSection.order.compactMap { kind in
             overview.groups.first { $0.kind == kind }.map { group in
                 AccountsSection(kind: kind, subtotalGBP: group.subtotalGBP, rows: group.rows.map { row in
-                    AccountRowPresentation(row, importedThrough: importedThrough[row.id], today: today)
+                    AccountRowPresentation(row, importedThrough: importedThrough[row.id], today: today, sharing: badges[row.id])
                 })
             }
         }
@@ -96,6 +98,10 @@ public final class AccountsViewModel: ObservableObject {
 
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
+    /// Whose accounts these are (step 6): the next load reads with it, and so do the pushed details.
+    public var viewer: PhoneViewer {
+        didSet { for model in detailModels.values { model.viewer = viewer } }
+    }
     /// The `reloadKey` the last `reload(for:)` loaded for.
     private var loadedKey: Date?
     /// The pushed details' models, so going back and forth (or relocking) doesn't read them again.
@@ -103,16 +109,18 @@ public final class AccountsViewModel: ObservableObject {
     /// Counts reads, so a slower earlier read never replaces a later one.
     private var generation = 0
 
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.state = .idle
     }
 
     /// Already loaded (the snapshot harness: a route renders its first frame with the data in it).
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, preloaded state: State) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, viewer: PhoneViewer = .everyone, preloaded state: State) {
         self.dbQueue = dbQueue
         self.today = today
+        self.viewer = viewer
         self.state = state
     }
 
@@ -122,8 +130,9 @@ public final class AccountsViewModel: ObservableObject {
         let mine = generation
         let day = today()
         let reader = dbQueue
+        let viewer = viewer
         do {
-            let loaded = try await reader.read { db in try Self.read(db, today: day) }
+            let loaded = try await reader.read { db in try Self.read(db, today: day, viewer: viewer) }
             guard mine == generation else { return }
             state = loaded
             errorMessage = nil
@@ -137,16 +146,17 @@ public final class AccountsViewModel: ObservableObject {
     }
 
     /// The same read, now (the snapshot routes, which can't await before their first frame).
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date) -> State {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, today: Date, viewer: PhoneViewer = .everyone) -> State {
         do {
-            return try dbQueue.read { db in try read(db, today: today) }
+            return try dbQueue.read { db in try read(db, today: today, viewer: viewer) }
         } catch {
             return .failed(loadFailureMessage)
         }
     }
 
-    nonisolated static func read(_ db: Database, today: Date) throws -> State {
-        let input = try DashboardInput.load(db: db, today: today)
+    nonisolated static func read(_ db: Database, today: Date, viewer: PhoneViewer = .everyone) throws -> State {
+        let seer = try viewer.resolve(db: db)
+        let input = try DashboardInput.load(db: db, today: today, actuals: SharedActualsSource(viewer: seer, today: today))
         guard !input.accounts.isEmpty else { return .empty }
         let overview = AccountsOverview.make(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions,
                                              rate: input.rate, today: today)
@@ -156,7 +166,10 @@ public final class AccountsViewModel: ObservableObject {
                                                                       categories: builtIns)
         return .loaded(AccountsPage(overview: overview,
                                     sinceYearEnd: DashboardCalculator.changeSinceLastYearEnd(input, netWorthMinorUnits: overview.netWorthGBP),
-                                    importedThrough: importedThrough, today: today))
+                                    importedThrough: importedThrough, today: today,
+                                    badges: Dictionary(uniqueKeysWithValues: input.accounts.compactMap { account in
+                                        account.id.flatMap { id in seer.badgeLevel(account).map { (id, $0) } }
+                                    })))
     }
 
     // MARK: Reloading after a sync
@@ -191,7 +204,8 @@ public final class AccountsViewModel: ObservableObject {
     /// The model of the detail `destination` pushes: made once, read when it first shows.
     public func detailModel(for destination: AccountDestination) -> AccountDetailModel {
         if let model = detailModels[destination] { return model }
-        let model = AccountDetailModel(dbQueue: dbQueue, accountId: destination.accountId, row: row(for: destination), today: today)
+        let model = AccountDetailModel(dbQueue: dbQueue, accountId: destination.accountId, row: row(for: destination), today: today,
+                                       viewer: viewer)
         detailModels[destination] = model
         return model
     }

@@ -475,6 +475,71 @@ final class SharedActualsSourceTests: XCTestCase {
         }
     }
 
+    /// Step 6 Task 11: the iPhone's viewer is its iCloud user's app user. Before the household has named it, the
+    /// phone sees in full only Everything and joint accounts (strict), never "everything" as a tool's nil viewer does.
+    func testStrictNilViewerSeesOnlyShared() async throws {
+        let (h, extras) = try await Self.household()
+        let f = h.fixture
+        let member = try Self.viewer(h.memberDevice, admin: false)
+        // On a device holding the household's data only, an unnamed viewer reads exactly what B (who owns nothing) reads.
+        try await h.memberDevice.db.read { db in
+            let unnamed = try SharingViewer.forCloudKitUser(recordName: "_unknownRecord", db: db)
+            XCTAssertNil(unnamed.personId)
+            XCTAssertTrue(unnamed.strict)
+            let seen = SharedActualsSource(viewer: unnamed, today: Self.today), asB = SharedActualsSource(viewer: member, today: Self.today)
+            XCTAssertEqual(try seen.transactions(db), try asB.transactions(db))
+            XCTAssertEqual(try seen.balanceSnapshots(db), try asB.balanceSnapshots(db))
+            XCTAssertEqual(try seen.accounts(db), try asB.accounts(db))
+            XCTAssertEqual(try seen.publishedCloses(db), try asB.publishedCloses(db))
+            XCTAssertTrue(try seen.transactions(db).contains(where: SharedActuals.isSummary))
+        }
+
+        try await h.adminMac.db.write { db in
+            try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = '_adminRecord' WHERE isAdmin = 1")
+        }
+        try await h.adminMac.db.read { db in
+            // Unnamed, even where every row is held: only Everything and joint in full; Hidden absent; no badges.
+            let unnamed = try SharingViewer.forCloudKitUser(recordName: nil, db: db)
+            XCTAssertEqual(unnamed, SharingViewer(personId: nil, strict: true))
+            let source = SharedActualsSource(viewer: unnamed, today: Self.today)
+            for account in try Account.fetchAll(db) {
+                XCTAssertEqual(unnamed.seesInFull(account), account.sharingLevel == .everything || account.ownerPersonId == nil)
+                XCTAssertNil(unnamed.badgeLevel(account))
+            }
+            let transactions = try source.transactions(db)
+            XCTAssertFalse(transactions.contains { $0.accountId == extras.hidden })
+            XCTAssertFalse(try source.accounts(db).contains { $0.id == extras.hidden })
+            XCTAssertFalse(transactions.contains { $0.accountId == extras.card && !SharedActuals.isSummary($0) })
+            XCTAssertTrue(transactions.contains { $0.accountId == extras.card && SharedActuals.isSummary($0) })
+            XCTAssertFalse(try SharedActuals.privateLines(categoryIds: [f.plainCategory], from: .distantPast, to: .distantFuture,
+                                                          viewer: unnamed, today: Self.today, db: db).isEmpty)
+            // Month's drill-down on the phone lists only what the viewer reads; the card shows as its private line.
+            let year = PayMonthReview.DayRange(start: Self.day(2026, 1, 1), end: Self.day(2026, 12, 31))
+            let listed = try PayMonthReview.transactions(db: db, categoryId: f.plainCategory, range: year, viewer: unnamed, today: Self.today)
+            XCTAssertFalse(listed.contains { $0.transaction.accountId == extras.card })
+            XCTAssertTrue(try PayMonthReview.transactions(db: db, categoryId: f.plainCategory, range: year).contains { $0.transaction.accountId == extras.card })
+            XCTAssertNil(try SharingOverview.load(viewer: unnamed, db: db), "nobody's settings before the viewer is named")
+            // A tool's nil viewer still sees everything.
+            XCTAssertEqual(try SharedActualsSource(viewer: SharingViewer(personId: nil), today: Self.today).transactions(db),
+                           try LocalActualsSource().transactions(db))
+
+            // Named: the app user with that iCloud record, its person, and its private zone for the engine.
+            let named = try SharingViewer.forCloudKitUser(recordName: "_adminRecord", db: db)
+            XCTAssertEqual(named.personId, f.personA)
+            XCTAssertEqual(try SharedActualsSource(viewer: named, today: Self.today).transactions(db), try LocalActualsSource().transactions(db))
+            let overview = try XCTUnwrap(SharingOverview.load(viewer: named, db: db))
+            XCTAssertTrue(overview.isAdmin)
+            XCTAssertTrue(overview.own.contains { $0.id == extras.card && $0.level == .categoryTotals })
+            XCTAssertEqual(try SyncViewer.forCloudKitUser(recordName: "_adminRecord", db: db), SyncViewer(personUuid: f.personAUuid))
+            XCTAssertEqual(try SyncViewer.forCloudKitUser(recordName: "_unknownRecord", db: db), .none)
+            XCTAssertEqual(try SyncViewer.forCloudKitUser(recordName: nil, db: db), .none)
+            // Demo data: the demo's admin.
+            XCTAssertEqual(try PhoneViewer.demoAdmin.resolve(db: db).personId, f.personA)
+            XCTAssertEqual(try PhoneViewer.iCloudUser(recordName: "_adminRecord").resolve(db: db).personId, f.personA)
+            XCTAssertEqual(try PhoneViewer.everyone.resolve(db: db), SharingViewer(personId: nil))
+        }
+    }
+
     /// The owner reads through the shared source at no extra cost: on the demo, the same rows as the local source,
     /// in about the same time.
     func testOwnerReadOnDemoIsAsFastAsLocal() throws {

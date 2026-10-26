@@ -74,5 +74,57 @@ public enum DemoRoutes {
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
     ] + HomeRoutes.all + MonthRoutes.all + AccountsRoutes.all + PropertyRoutes.all
-        + SearchRoutes.all + SyncRoutes.all
+        + SearchRoutes.all + SyncRoutes.all + SharingRoutes.all
+}
+
+/// Step 6's routes (Task 11): Settings' read-only Sharing section as the demo's admin (A); Accounts with A's lock
+/// badges; and a Month row's list ending with a private account's line, as an iPhone reads it before the household
+/// has named its iCloud user (only Everything and joint accounts in full: A's Category totals card is a line).
+public enum SharingRoutes {
+    static let all: [DemoRoute] = [
+        DemoRoute(name: "settings-sharing", minimumFigures: 0) { context in
+            let today = context.today
+            let sharing = (try? context.dbQueue.read { db in try SharingSectionState.read(db, viewer: .demoAdmin) }) ?? .notNamed
+            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+                                         iCloud: .available, keyHeld: true,
+                                         status: .idle(lastSync: today.addingTimeInterval(-300)),
+                                         version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
+                                         onLockNow: {}, onSyncNow: {}, sharing: sharing))
+        },
+        // The `accounts` route's 17 figures, with A's badges.
+        DemoRoute(name: "accounts-sharing_badges", minimumFigures: 17, figuresBelowFold: 6) { context in
+            let today = context.today
+            let model = AccountsViewModel(dbQueue: context.dbQueue, today: { today }, viewer: .demoAdmin,
+                                          preloaded: AccountsViewModel.readNow(context.dbQueue, today: today, viewer: .demoAdmin))
+            return AnyView(AccountsView(model: model, syncStatus: context.syncStatus))
+        },
+        // In the demo the card is the only account in its spending rows, so the list is the line's one figure.
+        DemoRoute(name: "month-private_lines", minimumFigures: 1) { context in
+            privateLines(context)
+        },
+    ]
+
+    /// The current month's spending row with a private line and the most transactions, and its list, for a viewer
+    /// not yet named.
+    @MainActor
+    private static func privateLines(_ context: PhoneDemoContext) -> AnyView {
+        let viewer = PhoneViewer.iCloudUser(recordName: nil)
+        guard case let .loaded(page) = MonthViewModel.readNow(context.dbQueue, today: context.today, viewer: viewer) else {
+            return AnyView(Text("The demo's month didn't load"))
+        }
+        let lists = page.rows(.spending).map { row in
+            (row: row, state: MonthTransactionsModel.readNow(context.dbQueue, row: row, range: page.review.range, viewer: viewer, today: context.today),
+             lines: MonthTransactionsModel.privateLinesNow(context.dbQueue, row: row, range: page.review.range, viewer: viewer, today: context.today))
+        }.filter { !$0.lines.isEmpty }
+        func count(_ state: MonthTransactionsModel.State) -> Int {
+            if case let .loaded(days) = state { days.reduce(0) { $0 + $1.rows.count } } else { 0 }
+        }
+        guard let chosen = lists.max(by: { count($0.state) < count($1.state) }) else {
+            return AnyView(Text("The demo's month has no private line"))
+        }
+        let today = context.today
+        let model = MonthTransactionsModel(dbQueue: context.dbQueue, row: chosen.row, range: page.review.range, viewer: viewer,
+                                           today: { today }, preloaded: chosen.state, privateLines: chosen.lines)
+        return AnyView(NavigationStack { MonthTransactionsView(model: model) })
+    }
 }

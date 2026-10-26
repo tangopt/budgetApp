@@ -26,14 +26,19 @@ public final class PhoneTabsModel: ObservableObject {
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
 
+    /// Whose figures the tabs show (step 6): demo data's admin, or this iPhone's iCloud user.
+    public private(set) var viewer: PhoneViewer
+
     /// `hasProperty`: what `hasProperty(_:)` read when the database opened. `home`: an already loaded Home (the
     /// snapshot harness's `tabs` route).
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, hasProperty: Bool, home: HomeViewModel? = nil) {
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, hasProperty: Bool, viewer: PhoneViewer = .everyone,
+                home: HomeViewModel? = nil) {
         self.dbQueue = dbQueue
         self.hasProperty = hasProperty
-        self.home = home ?? HomeViewModel(dbQueue: dbQueue, today: today)
-        month = MonthViewModel(dbQueue: dbQueue, today: today)
-        accounts = AccountsViewModel(dbQueue: dbQueue, today: today)
+        self.viewer = viewer
+        self.home = home ?? HomeViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
+        month = MonthViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
+        accounts = AccountsViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         property = PropertyViewModel(dbQueue: dbQueue, today: today)
         search = SearchViewModel(dbQueue: dbQueue, today: today)
     }
@@ -55,6 +60,18 @@ public final class PhoneTabsModel: ObservableObject {
 
     public nonisolated static func reloadKey(_ status: SyncStatus) -> Date? {
         HomeViewModel.reloadKey(status)
+    }
+
+    /// This iPhone's iCloud user became known (or changed): the screens that read through the viewer read again.
+    public func setViewer(_ viewer: PhoneViewer) async {
+        guard viewer != self.viewer else { return }
+        self.viewer = viewer
+        home.viewer = viewer
+        month.viewer = viewer
+        accounts.viewer = viewer
+        await home.load()
+        await month.load()
+        await accounts.load()
     }
 
     /// On a lock: closes the tabs' sheets in their state too (the cover window dismisses them in UIKit, which a

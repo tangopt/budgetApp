@@ -45,18 +45,30 @@ public struct SharingOverview: Equatable, Sendable {
     public var canSetOwners: Bool { isAdmin && !isConfirmed }
 
     public static func load(actor: AccessActor, db: Database) throws -> SharingOverview {
+        try load(personId: actor.personId, isAdmin: actor.isAdmin, db: db)
+    }
+
+    /// The iPhone's read-only Sharing section (step 6 Task 11): the viewer's overview, read without writing (the
+    /// phone's database is read-only); nil while the viewer has no person (not named yet).
+    public static func load(viewer: SharingViewer, db: Database) throws -> SharingOverview? {
+        guard let personId = viewer.personId else { return nil }
+        let isAdmin = try AppUser.filter(Column("personId") == personId && Column("isAdmin") == true).fetchCount(db) > 0
+        return try load(personId: personId, isAdmin: isAdmin, db: db)
+    }
+
+    static func load(personId: Int64, isAdmin: Bool, db: Database) throws -> SharingOverview {
         let confirmed = try SharingSetup.isConfirmed(db: db)
         var own: [AccountRow] = [], joint: [AccountRow] = []
         if confirmed {
             for account in AccountOrdering.sorted(try Account.fetchAll(db)) {
                 guard let id = account.id else { continue }
                 let row = AccountRow(id: id, displayName: account.displayName, bankName: account.bankName, level: account.sharingLevel)
-                if account.ownerPersonId == nil { joint.append(row) } else if account.ownerPersonId == actor.personId { own.append(row) }
+                if account.ownerPersonId == nil { joint.append(row) } else if account.ownerPersonId == personId { own.append(row) }
             }
         }
-        let taxIncome = try PersonSharing.filter(Column("personId") == actor.personId).fetchOne(db)?.taxIncomeLevel ?? SharingDefaults.taxIncomeLevel
-        return SharingOverview(isConfirmed: confirmed, isAdmin: actor.isAdmin, own: own, joint: joint, taxIncomeLevel: taxIncome,
-                               otherName: try otherName(besides: actor.personId, db: db))
+        let taxIncome = try PersonSharing.filter(Column("personId") == personId).fetchOne(db)?.taxIncomeLevel ?? SharingDefaults.taxIncomeLevel
+        return SharingOverview(isConfirmed: confirmed, isAdmin: isAdmin, own: own, joint: joint, taxIncomeLevel: taxIncome,
+                               otherName: try otherName(besides: personId, db: db))
     }
 
     /// The other person as the app shows them: their app user's display name, else their name; "The other person"

@@ -59,6 +59,8 @@ struct PhoneRoot: View {
     @State private var showingSettings = false
     /// "Show what's here" on the iCloud explanation, for this run of the app.
     @State private var showsLocalData = false
+    /// Settings' read-only Sharing section, read each time Settings opens.
+    @State private var sharing: SharingSectionState?
     @AppStorage("phone.appearance") private var appearanceValue = PhoneAppearance.system.rawValue
     @AppStorage("phone.theme") private var themeId = PhoneTheme.classic.id
     @Environment(\.scenePhase) private var scenePhase
@@ -83,7 +85,12 @@ struct PhoneRoot: View {
             case .ready(let environment, let tabs):
                 content(environment, tabs)
                     .sheet(isPresented: $showingSettings) {
-                        settings(environment)
+                        settings(environment, tabs)
+                    }
+                    .onChange(of: sync.viewerRecordName) { _, name in
+                        // This iPhone's iCloud user became known: the screens read as them.
+                        guard !environment.isDemo else { return }
+                        Task { await tabs.setViewer(.iCloudUser(recordName: name)) }
                     }
             case .failed(let message):
                 ContentUnavailableView("Mango couldn't open its data", systemImage: "exclamationmark.triangle",
@@ -124,8 +131,10 @@ struct PhoneRoot: View {
             let environment = PhoneDemoData.isOn ? try await PhoneEnvironment.loadDemo() : try await PhoneEnvironment.load()
             // Property is absent only when the database has no property row; an unreadable answer keeps it.
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
+            // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
+            let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
             stage = .ready(environment, PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today,
-                                                       hasProperty: hasProperty))
+                                                       hasProperty: hasProperty, viewer: viewer))
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
             stage = .failed(error.localizedDescription)
@@ -192,11 +201,12 @@ struct PhoneRoot: View {
 
     /// Settings; its demo row offers demo data only while none of the household's data is here, and the way out
     /// while demo data is shown.
-    private func settings(_ environment: PhoneEnvironment) -> some View {
+    private func settings(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
         return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
-                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo)
+                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing)
+            .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))
             .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)

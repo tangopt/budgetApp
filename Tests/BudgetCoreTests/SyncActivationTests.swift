@@ -86,4 +86,39 @@ final class SyncActivationTests: XCTestCase {
         let accepted = decide(demo.path)
         XCTAssertEqual(accepted, SyncActivation.Decision(allowed: true, reason: nil))
     }
+
+    /// Step 6 Task 11: the iPhone's own database (read-only, its own) syncs in a Release build signed for iCloud;
+    /// demo data never does; `--sync-demo` keeps the rules above.
+    func testPhoneDecisionAllowsRealSyncOnlyWithEntitlementAndNeverDemoData() throws {
+        let allow = SyncActivation.Decision(allowed: true, reason: nil)
+        // Demo data never syncs, whatever else holds.
+        for syncDemo in [false, true] {
+            for entitled in [false, true] {
+                for debug in [false, true] {
+                    assertRefused(SyncActivation.phoneDecision(isDemoData: true, isSyncDemoLaunch: syncDemo, hasCloudKitEntitlement: entitled,
+                                                               isDebug: debug), "Demo data")
+                }
+            }
+        }
+        // The phone's own database: with the entitlement, in a Release build.
+        XCTAssertEqual(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true), allow)
+        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: false), "iCloud entitlement")
+        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true, isDebug: true),
+                      "Release build")
+
+        // `--sync-demo`: today's rules (a Debug launch on a demo database outside the app's data, entitled).
+        let demo = folder.appendingPathComponent("demo/budget.sqlite")
+        try database(demo, demo: true)
+        let real = folder.appendingPathComponent("real/budget.sqlite")
+        try database(real, demo: false)
+        func syncDemo(_ path: String?, debug: Bool = true, entitled: Bool = true) -> SyncActivation.Decision {
+            SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: true, hasCloudKitEntitlement: entitled, isDebug: debug,
+                                         databasePath: path, fileManager: files)
+        }
+        XCTAssertEqual(syncDemo(demo.path), allow)
+        assertRefused(syncDemo(real.path), "only the demo database")
+        assertRefused(syncDemo(demo.path, debug: false), "Debug build")
+        assertRefused(syncDemo(demo.path, entitled: false), "iCloud entitlement")
+        assertRefused(syncDemo(nil), "needs BUDGET_DB_PATH")
+    }
 }

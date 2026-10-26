@@ -54,4 +54,25 @@ public enum SyncActivation {
         }
         return .allow
     }
+
+    /// Whether the iPhone may sync (step 6 Task 11). Demo data (`PhoneDemoMode.syncRefusal`: demo mode on, the demo
+    /// folder, a demo database outside `--sync-demo`) never syncs. A `--sync-demo` launch keeps `decision`'s rules
+    /// (`databasePath`: `BUDGET_DB_PATH`). Otherwise the phone's own database syncs in a Release build (TestFlight)
+    /// signed with the iCloud entitlement: it is the phone's own and read-only (pulls only), so it can't change the
+    /// household's data.
+    public static func phoneDecision(isDemoData: Bool, isSyncDemoLaunch: Bool, hasCloudKitEntitlement: Bool, isDebug: Bool = false,
+                                     databasePath: String? = nil, fileManager: FileManager = .default) -> Decision {
+        if isDemoData { return .refuse("Demo data never syncs.") }
+        if isSyncDemoLaunch {
+            return decision(databasePath: databasePath, arguments: [demoArgument], isDebug: isDebug,
+                            hasCloudKitEntitlement: hasCloudKitEntitlement, fileManager: fileManager)
+        }
+        guard !isDebug else {
+            return .refuse("This iPhone's own data syncs only in a Release build (TestFlight); a Debug build syncs only with \(demoArgument).")
+        }
+        guard hasCloudKitEntitlement else {
+            return .refuse("This build isn't signed with the iCloud entitlement for Mango's container, so it syncs nothing.")
+        }
+        return .allow
+    }
 }
