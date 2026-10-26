@@ -396,6 +396,17 @@ final class ImportMultiLinkTests: XCTestCase {
         XCTAssertEqual(try library.document(id: bill)?.docDate, Self.day(2025, 3, 31))
     }
 
+    /// Missing evidence's Change kind… goes through the same guard: filing the linked bill as Other would
+    /// move the 2025/26 payment out of the filed 2024/25 year, so it's refused and nothing is written.
+    func testChangingTheKindOfALinkedBillThatWouldChangeAFiledYearIsRefused() throws {
+        let (bill, _, _, _) = try filedYearLinks()
+        let stored = try XCTUnwrap(try library.document(id: bill))
+        XCTAssertThrowsError(try library.changeKind(bill, to: .builtIn(.other))) {
+            XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, .detailsChangeFiledYear(years: ["2024/25"]))
+        }
+        XCTAssertEqual(try library.document(id: bill), stored, "nothing written")
+    }
+
     /// Missing evidence's Link on a transaction is guarded like the others.
     func testMissingEvidenceLinkThatWouldChangeAFiledYearIsRefused() throws {
         let legal = try filedYearProperty()
