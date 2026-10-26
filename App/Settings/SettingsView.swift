@@ -4,11 +4,12 @@ import BudgetCore
 
 /// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid) —
 /// both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`) — and
-/// Evidence (the source folders scanned for documents), Sign-in (auth spec §6), Sharing (who owns each account and
-/// how much of it the other person sees, sharing spec §7) and Sync (off for the real database in this build).
+/// Evidence (the source folders scanned for documents), Sign-in (auth spec §6), Sharing (my tax years and income; each
+/// account's owner and level are set in the account itself) and Sync (turning sync on, its status).
 struct SettingsView: View {
     enum Pane: Hashable { case appearance, theme, evidence, signIn, sharing, sync }
     @State private var pane: Pane
+    @ObservedObject private var navigation = SettingsNavigation.shared
     private let signInModel: SignInSettingsModel?
     private let sharingModel: SharingSettingsModel?
 
@@ -42,6 +43,37 @@ struct SettingsView: View {
         }
         .scenePadding()
         .frame(width: 640)
+        // Opened for a pane (the sidebar's sync row): show it.
+        .onChange(of: navigation.request, initial: true) { _, request in
+            guard let request else { return }
+            pane = request.pane
+            navigation.done(request)
+        }
+    }
+}
+
+/// Asks the Settings window for a pane (the sidebar's "Sync needs attention" opens Settings ▸ Sync).
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    struct Request: Equatable {
+        let pane: SettingsView.Pane
+        /// Tells apart two requests for the same pane.
+        let serial: Int
+    }
+
+    static let shared = SettingsNavigation()
+    @Published private(set) var request: Request?
+
+    private var serial = 0
+
+    func show(_ pane: SettingsView.Pane) {
+        serial += 1
+        request = Request(pane: pane, serial: serial)
+    }
+
+    /// The Settings window showed it: a later opening keeps the pane it was on.
+    func done(_ shown: Request) {
+        if request == shown { request = nil }
     }
 }
 

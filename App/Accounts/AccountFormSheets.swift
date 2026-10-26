@@ -82,8 +82,8 @@ struct AddAccountSheet: View {
     }
 }
 
-/// "Edit…": name, kind (credit transitions disabled once the account has history), alias
-/// and bank details; currency is read-only.
+/// "Edit…": name, kind (credit transitions disabled once the account has history), sharing
+/// (`AccountSharingSection`), alias and bank details; currency is read-only.
 struct EditAccountSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     let account: Account
@@ -95,13 +95,18 @@ struct EditAccountSheet: View {
     @State private var isMain: Bool
     @State private var includeInNetWorth: Bool
     @State private var hasHistory = true
+    @StateObject private var sharing = AccountSharingDraft()
+    @State private var isSaving = false
     /// Set when Save is pressed with invalid details: every field shows its error.
     @State private var revealErrors = false
     @State private var error: String?
+    /// A sharing choice made as the sheet opens (snapshot routes: a change already picked).
+    private let sharingPreset: AccountSharingDraft.Preset?
 
-    init(viewModel: AccountsViewModel, account: Account) {
+    init(viewModel: AccountsViewModel, account: Account, sharingPreset: AccountSharingDraft.Preset? = nil) {
         self.viewModel = viewModel
         self.account = account
+        self.sharingPreset = sharingPreset
         _name = State(initialValue: account.name)
         _kind = State(initialValue: account.kind)
         _details = State(initialValue: AccountDetailsDraft(account))
@@ -117,11 +122,11 @@ struct EditAccountSheet: View {
     private var canSave: Bool { canPressSave && details.isValid }
     /// Save stays pressable while only the bank details are invalid, so pressing it can say why.
     private var canPressSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind))
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind)) && sharing.canSave && !isSaving
     }
 
     var body: some View {
-        SheetScaffold(title: "Edit account", error: error, onCancel: { dismiss() },
+        SheetScaffold(title: "Edit account", error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: canPressSave, action: save)) {
             SheetForm {
                 LabeledContent("Name") { TextField("Name", text: $name) }
@@ -137,11 +142,17 @@ struct EditAccountSheet: View {
                         .sheetFieldNote(Self.mainAccountHelp)
                 }
                 NetWorthToggle(isOn: $includeInNetWorth)
+                AccountSharingSection(draft: sharing, viewModel: viewModel)
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
         .onAppear {
             if let id = account.id { hasHistory = viewModel.hasHistory(id) }
+        }
+        .task {
+            guard let id = account.id else { return }
+            await sharing.load(accountId: id, viewModel: viewModel)
+            if let sharingPreset { sharing.apply(sharingPreset, viewModel: viewModel) }
         }
     }
 
@@ -151,7 +162,19 @@ struct EditAccountSheet: View {
             return
         }
         guard let id = account.id else { return }
-        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain, includeInNetWorth: includeInNetWorth), error: $error, dismiss: dismiss)
+        guard let change = sharing.change else {
+            finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain, includeInNetWorth: includeInNetWorth),
+                   error: $error, dismiss: dismiss)
+            return
+        }
+        isSaving = true
+        error = nil
+        Task {
+            let outcome = await viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain,
+                                                        includeInNetWorth: includeInNetWorth, sharing: change)
+            isSaving = false
+            finish(outcome, error: $error, dismiss: dismiss)
+        }
     }
 
     static let mainAccountHelp = "Planned items with no account of their own go to this account"

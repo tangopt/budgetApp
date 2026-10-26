@@ -6,17 +6,14 @@ import GRDB
 import MangoSync
 
 /// "Turn on sync…" (step 6 Task 13, sharing spec §10, sync spec §8): Settings ▸ Sync's sheet for the real database.
-/// Three steps, each a section with its state, the blockers listed above them (`SyncTurnOnFlow`, every word from
-/// BudgetCore): **1 Back up** (`SyncTurnOn.backUp`, the file name shown), **2 Who owns each account?** (the ownership
-/// sheet, only once backed up), **3 Upload** (only the person's Start upload begins it, with no blocker left; then the
-/// progress, "paused" while offline, done). Closing the sheet never stops a running upload; reopening it reads the
+/// Two steps, each a section with its state, the blockers listed above them (`SyncTurnOnFlow`, every word from
+/// BudgetCore): **1 Back up** (`SyncTurnOn.backUp`, the file name shown), **2 Upload** (only the person's Start upload
+/// begins it, with no blocker left; it confirms each account's owner with the defaults first, then the progress,
+/// "paused" while offline, done). Owners and levels are changed per account, in Accounts. Closing the sheet never stops a running upload; reopening it reads the
 /// stage again from the database.
 @MainActor
 final class TurnOnSyncModel: ObservableObject {
     @Published private(set) var facts: SyncTurnOnFlow.Facts
-    /// The ownership sheet's rows while it is open.
-    @Published var ownershipRows: [SharingSetup.Row]?
-    @Published private(set) var adminName = ""
     @Published var error: String?
 
     private let environment: AppEnvironment
@@ -25,7 +22,7 @@ final class TurnOnSyncModel: ObservableObject {
     init(environment: AppEnvironment) {
         self.environment = environment
         facts = SyncTurnOnFlow.Facts(progress: SyncTurnOn.Progress(stage: .notStarted, backupPath: nil, total: 0, sent: 0),
-                                     ownershipConfirmed: false, blockers: [], checked: false, syncStatus: .off, work: .checking)
+                                     blockers: [], checked: false, syncStatus: .off, work: .checking)
         // The running upload's progress and status, live.
         watch = environment.realSync.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.followRealSync() }
@@ -49,11 +46,7 @@ final class TurnOnSyncModel: ObservableObject {
         if facts.work == .none { facts.work = .checking }
         defer { if facts.work == .checking { facts.work = .none } }
         do {
-            try await TurnOnSteps.noteOwnersIfConfirmed(dbQueue)
             let local = try await TurnOnSteps.localFacts(dbQueue, signedInAppUserId: environment.session.currentAppUserId)
-            adminName = try await dbQueue.read { db in
-                try String.fetchOne(db, sql: "SELECT displayName FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1") ?? ""
-            }
             let opened = environment.databasePath
             // The snapshot harness never asks iCloud or the Keychain.
             let entitled = !SnapshotMode.isActive && MacBuild.hasCloudKitEntitlement()
@@ -75,7 +68,6 @@ final class TurnOnSyncModel: ObservableObject {
                 iCloudUser: SyncTurnOn.iCloudUserCheck(signedIn: recordName, recorded: local.adminICloudUser),
                 stage: local.progress.stage, turnOnKeyIds: local.turnOnKeyIds, keys: keys)
             facts.progress = local.progress
-            facts.ownershipConfirmed = local.ownershipConfirmed
             facts.blockers = blockers
             facts.checked = checked
             if checked, error == SyncTurnOnFlow.checkFailed { error = nil }
@@ -102,32 +94,8 @@ final class TurnOnSyncModel: ObservableObject {
         await refresh()
     }
 
-    func openOwnership() async {
-        guard screen.canSetOwners else { return }
-        error = nil
-        do {
-            guard let actor = try await dbQueue.loadSignedInActor() else { throw SharingError.notAdmin }
-            ownershipRows = try await dbQueue.read { db in try SharingSetup.proposal(admin: actor, db: db) }
-        } catch let failure as SharingError {
-            error = SharingCopy.error(failure)
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    /// The ownership sheet's Save: refused before the backup; the sheet shows any error itself.
-    func saveOwners(_ rows: [SharingSetup.Row]) async throws {
-        facts.work = .savingOwners
-        defer { facts.work = .none }
-        try await TurnOnSteps.saveOwners(rows, dbQueue: dbQueue)
-        ownershipRows = nil
-        NotificationCenter.default.post(name: .sharingChanged, object: nil)
-        facts.work = .none
-        await refresh()
-    }
-
-    /// The person's Start upload: the blockers checked again first; then the keys, the upload's start and the real
-    /// sync. Nothing else ever starts it.
+    /// The person's Start upload: the blockers checked again first; then the owners confirmed with the defaults (when
+    /// not yet), the keys, the upload's start and the real sync. Nothing else ever starts it.
     func startUpload() async {
         await refresh()
         guard screen.canStartUpload, !SnapshotMode.isActive else { return }
@@ -137,9 +105,12 @@ final class TurnOnSyncModel: ObservableObject {
         do {
             let recordName = try await CloudKitAccountName.current()
             try await TurnOnSteps.beginUpload(dbQueue, cloudKitUserRecordName: recordName)
+            NotificationCenter.default.post(name: .sharingChanged, object: nil)
             await environment.realSync.startIfAllowed()
         } catch let failure as SyncTurnOn.TurnOnError {
             error = failure.errorDescription
+        } catch let failure as SharingError {
+            error = SharingCopy.error(failure)
         } catch {
             self.error = error.localizedDescription
         }
@@ -171,19 +142,10 @@ struct TurnOnSyncSheet: View {
     var body: some View {
         TurnOnSyncSheetContent(screen: model.screen, error: model.error,
                                onBackUp: { Task { await model.backUp() } },
-                               onSetOwners: { Task { await model.openOwnership() } },
                                onStartUpload: { Task { await model.startUpload() } },
                                onCheckAgain: { Task { await model.refresh() } },
                                onClose: { dismiss() })
             .task { await model.refresh() }
-            .sheet(item: Binding(get: { model.ownershipRows.map(OwnershipRows.init) }, set: { if $0 == nil { model.ownershipRows = nil } })) { rows in
-                OwnershipSheet(rows: rows.rows, adminName: model.adminName, onSave: { try await model.saveOwners($0) })
-            }
-    }
-
-    private struct OwnershipRows: Identifiable {
-        let rows: [SharingSetup.Row]
-        var id: Int { 0 }
     }
 }
 
@@ -192,7 +154,6 @@ struct TurnOnSyncSheetContent: View {
     let screen: SyncTurnOnFlow.Screen
     var error: String?
     let onBackUp: () -> Void
-    let onSetOwners: () -> Void
     let onStartUpload: () -> Void
     var onCheckAgain: () -> Void = {}
     let onClose: () -> Void
@@ -219,13 +180,7 @@ struct TurnOnSyncSheetContent: View {
                     }
                 }
                 Divider()
-                step(2, SyncTurnOnFlow.ownershipTitle, state: screen.ownership, line: screen.ownershipLine, tone: .neutral) {
-                    if screen.ownership != .done {
-                        Button(SyncTurnOnFlow.setOwners, action: onSetOwners).disabled(!screen.canSetOwners)
-                    }
-                }
-                Divider()
-                step(3, SyncTurnOnFlow.uploadTitle, state: screen.upload, line: screen.uploadLine, tone: screen.uploadTone) {
+                step(2, SyncTurnOnFlow.uploadTitle, state: screen.upload, line: screen.uploadLine, tone: screen.uploadTone) {
                     if screen.showsCheckAgain {
                         Button(SyncTurnOnFlow.checkAgain, action: onCheckAgain)
                     }

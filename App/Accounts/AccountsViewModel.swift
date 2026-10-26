@@ -114,6 +114,49 @@ final class AccountsViewModel: ObservableObject {
         }
     }
 
+    // MARK: Sharing (sync-ui: set in the account itself)
+
+    /// The account's Sharing section as the signed-in person sees it; nil when nobody is signed in (no section).
+    func sharingState(_ accountId: Int64) async -> AccountSharing.State? {
+        do {
+            guard let actor = try await dbQueue.loadSignedInActor() else { return nil }
+            return try await dbQueue.read { db in try AccountSharing.load(accountId: accountId, actor: actor, db: db) }
+        } catch {
+            return nil
+        }
+    }
+
+    /// What saving the section would move, read off the main thread; nil when it can't be read.
+    func sharingPreview(_ accountId: Int64, owner: SharingSetup.Owner, level: SharingLevel) async -> AccountSharing.Preview? {
+        try? await dbQueue.read { db in try AccountSharing.preview(accountId: accountId, owner: owner, level: level, db: db) }
+    }
+
+    /// Edit account's Save with a sharing change: the details (Budget & accounts) and the owner or level (the account's
+    /// owner, or the admin, `AccountSharing.apply`) in one transaction, off the main thread: both or neither.
+    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails, isMain: Bool, includeInNetWorth: Bool,
+                       sharing: (owner: SharingSetup.Owner, level: SharingLevel)) async -> SaveOutcome {
+        let wasMain = accounts.first { $0.id == id }?.isMain ?? false
+        do {
+            try await dbQueue.writeAsSignedInUser { db, actor in
+                try ActorWrite.perform(actor, area: .budgetAndAccounts, db: db) {
+                    try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, details: details, includeInNetWorth: includeInNetWorth)
+                    if isMain != wasMain { try AccountEditing.setMain(db: db, accountId: isMain ? id : nil) }
+                }
+                try AccountSharing.apply(owner: sharing.owner, level: sharing.level, accountId: id, actor: actor, db: db, now: AppClock.now)
+            }
+        } catch let error as SharingError {
+            return .failed(SharingCopy.error(error))
+        } catch {
+            return .failed(Self.message(for: error))
+        }
+        NotificationCenter.default.post(name: .sharingChanged, object: nil)
+        guard load() else {
+            errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
+            return .savedButReloadFailed
+        }
+        return .saved
+    }
+
     /// The row menu's Set as main account / Unset main account (`AccountEditing.setMain`);
     /// a failure shows in the banner.
     func setMain(_ id: Int64?) {

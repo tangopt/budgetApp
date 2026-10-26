@@ -333,7 +333,7 @@ final class AccountSharingTests: XCTestCase {
         XCTAssertEqual(Row.syncing(sent: 1_248, total: 3_006).detail, "1,248 of 3,006")
         XCTAssertEqual(Row.syncing(sent: 1_248, total: 3_006).fraction ?? 0, 1_248.0 / 3_006.0, accuracy: 1e-9)
         XCTAssertNil(Row.syncing(sent: nil, total: nil).detail)
-        XCTAssertEqual(Row.synced(now.addingTimeInterval(-120)).text(now: now), "Synced 2 minutes ago")
+        XCTAssertEqual(Row.synced(now.addingTimeInterval(-120)).text(now: now), "Synced 2 min ago")
         XCTAssertEqual(Row.paused.text(now: now), "Sync paused")
         XCTAssertEqual(Row.attention.text(now: now), "Sync needs attention")
         XCTAssertTrue(Row.attention.opensSettings)

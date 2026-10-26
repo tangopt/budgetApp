@@ -38,11 +38,20 @@ public enum SyncSidebarStatus: Equatable, Sendable {
     public func text(now: Date) -> String {
         switch self {
         case .syncing: return "Syncing…"
-        case .synced(let date?): return "Synced \(SyncStatusCopy.relative(date, now: now))"
+        case .synced(let date?): return "Synced \(Self.shortRelative(date, now: now))"
         case .synced(nil): return "Not synced yet"
         case .paused: return "Sync paused"
         case .attention: return "Sync needs attention"
         }
+    }
+
+    /// "2 min ago", "yesterday": the sidebar is narrow.
+    static func shortRelative(_ date: Date, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 
     /// "1,248 of 3,006" during the first upload.

@@ -294,8 +294,8 @@ final class RealSync: ObservableObject {
 }
 
 /// The turn-on sheet's steps on the database (step 6 Task 13), each a write of its own and in this order: the backup
-/// before anything else; the owners (only once backed up); then the keys (committed by themselves, so a quit leaves
-/// them known as this turn-on's), then the upload's start. Each refuses out of order (`SyncTurnOn`).
+/// before anything else; then, on Start upload, the owners confirmed with the defaults (when not yet) and the keys
+/// (committed by themselves, so a quit leaves them known as this turn-on's), then the upload's start. Each refuses out of order (`SyncTurnOn`).
 enum TurnOnSteps {
     /// Step 1: the timestamped copy of the open database, beside it.
     static func backUp(_ dbQueue: DatabaseQueue) async throws -> URL {
@@ -304,32 +304,15 @@ enum TurnOnSteps {
         }.value
     }
 
-    /// Step 2: the ownership sheet's rows, saved as the signed-in admin, only after the backup; the stage follows.
-    static func saveOwners(_ rows: [SharingSetup.Row], dbQueue: DatabaseQueue) async throws {
-        try await dbQueue.writeAsSignedInUser { db, actor in
-            let stage = try SyncTurnOn.stage(db: db)
-            guard stage >= .backedUp else { throw SyncTurnOn.TurnOnError.wrongStage(stage) }
-            try SharingSetup.save(rows, admin: actor, db: db, now: Date())
-            try SyncTurnOn.markOwnershipConfirmed(db: db, now: Date())
-        }
-    }
-
-    /// Owners saved before the backup (Settings ▸ Sharing): the stage follows once backed up. Local bookkeeping only.
-    static func noteOwnersIfConfirmed(_ dbQueue: DatabaseQueue) async throws {
-        try await dbQueue.write { db in
-            guard try SyncTurnOn.stage(db: db) == .backedUp, try SharingSetup.isConfirmed(db: db) else { return }
-            try SyncTurnOn.markOwnershipConfirmed(db: db, now: Date())
-        }
-    }
-
-    /// Step 3, on the person's Start upload: the keys for the household and the admin's private zone in iCloud
+    /// Step 2, on the person's Start upload: each account's owner confirmed with the defaults when not yet (owners and
+    /// levels already set in Accounts are kept, `SyncTurnOn.confirmOwnershipAtStart`), the keys for the household and the admin's private zone in iCloud
     /// Keychain (real scope), then the upload's start as the admin with this Mac's iCloud user.
     static func beginUpload(_ dbQueue: DatabaseQueue, cloudKitUserRecordName: String) async throws {
         let keyStore = KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: false))
         try await dbQueue.writeAsSignedInUser { db, actor in
             // Only the household's admin makes keys (their own private zone's, never another person's).
             guard actor.isAdmin, try AccessActor.admin(db: db).appUserId == actor.appUserId else { throw SyncTurnOn.TurnOnError.notAdmin }
-            try SyncTurnOn.markOwnershipConfirmed(db: db, now: Date())
+            try SyncTurnOn.confirmOwnershipAtStart(admin: actor, db: db, now: Date())
             try SyncTurnOn.prepareKeys(zones: try SyncTurnOn.turnOnZones(admin: actor, db: db), keyStore: keyStore, db: db, now: Date())
         }
         _ = try await dbQueue.writeAsSignedInUser { db, actor in
@@ -338,12 +321,11 @@ enum TurnOnSteps {
     }
 
     /// What the sheet's blockers need from the database, read only (nothing is written before the backup): the
-    /// stage and progress, the owners, whether the signed-in user is the admin, the zones the turn-on makes keys for
+    /// stage and progress, whether the signed-in user is the admin, the zones the turn-on makes keys for
     /// (the household alone while the admin's person has no sync identity yet: no key can name it), the turn-on's
     /// keys, and the admin's iCloud user.
     struct LocalFacts: Sendable {
         var progress: SyncTurnOn.Progress
-        var ownershipConfirmed: Bool
         var isAdmin: Bool
         var zones: [String]
         var turnOnKeyIds: [String: String]
@@ -354,7 +336,7 @@ enum TurnOnSteps {
         try await dbQueue.read { db in
             let adminId = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")
             let zones = (try? SyncTurnOn.turnOnZones(admin: try AccessActor.admin(db: db), db: db)) ?? [SyncZones.household]
-            return LocalFacts(progress: try SyncTurnOn.progress(db: db), ownershipConfirmed: try SharingSetup.isConfirmed(db: db),
+            return LocalFacts(progress: try SyncTurnOn.progress(db: db),
                               isAdmin: adminId != nil && adminId == signedInAppUserId, zones: zones,
                               turnOnKeyIds: try SyncTurnOn.turnOnKeyIds(db: db), adminICloudUser: try SyncTurnOn.adminICloudUser(db: db))
         }
