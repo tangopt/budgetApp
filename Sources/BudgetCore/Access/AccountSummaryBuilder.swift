@@ -160,6 +160,8 @@ public enum AccountSummaryBuilder {
         let propertyMoney: Set<Int64>
         let links: [TransferLink]
         let hiddenLegs: Set<Int64>
+        /// The budget's conversion to GBP (same accounts and rate).
+        let conversion: CurrencyConversion
         private var loadedRouter: SyncZoneRouter?
 
         init(db: Database, calendar: PayCalendar, today: Date) throws {
@@ -169,6 +171,7 @@ public enum AccountSummaryBuilder {
             propertyMoney = try AccountSummaryBuilder.propertyMoneyCandidates(db: db)
             links = try TransferLink.active.fetchAll(db)
             hiddenLegs = Set(links.map(\.inTransactionId))
+            conversion = try CurrencyConversion.current(db: db)
         }
 
         /// Whether the household gets the record as a row of its own.
@@ -203,15 +206,16 @@ public enum AccountSummaryBuilder {
             return published
         }
         var months = MonthIndex(calendar: context.calendar)
-        var totals: [TotalKey: (amount: Int, count: Int)] = [:]
+        var totals: [TotalKey: Total] = [:]
         for transaction in transactions where transaction.isConfirmed {
             let id = transaction.id
             guard !context.hiddenLegs.contains(id) else { continue }
             // §10: shared as a row of its own, so not counted again here.
             if context.propertyMoney.contains(id), try context.isShared("transaction_", id) { continue }
             let key = TotalKey(month: months.month(containing: transaction.date), categoryId: transaction.categoryId)
-            totals[key, default: (0, 0)].amount += transaction.amount
-            totals[key, default: (0, 0)].count += 1
+            totals[key, default: Total()].amount += transaction.amount
+            totals[key, default: Total()].gbp += context.conversion.gbp(transaction.amount, accountId: accountId)
+            totals[key, default: Total()].count += 1
         }
         // Sent from here to a shared leg whose link stays private: the other person counts that leg, which the owner's
         // budget hides; taken back out here, in its month and category.
@@ -221,8 +225,9 @@ public enum AccountSummaryBuilder {
                   try context.isShared("transaction_", link.inTransactionId),
                   let linkId = link.id, try !context.isShared("transferLink", linkId) else { continue }
             let key = TotalKey(month: months.month(containing: leg.date), categoryId: leg.categoryId)
-            totals[key, default: (0, 0)].amount -= leg.amountMinorUnits
-            totals[key, default: (0, 0)].count -= 1
+            totals[key, default: Total()].amount -= leg.amountMinorUnits
+            totals[key, default: Total()].gbp -= context.conversion.gbp(leg)
+            totals[key, default: Total()].count -= 1
         }
         try upsertTotals(totals, accountId: accountId, accountUuid: accountUuid, db: db, outcome: &outcome)
         return published
@@ -396,18 +401,25 @@ public enum AccountSummaryBuilder {
         return published
     }
 
-    private static func upsertTotals(_ totals: [TotalKey: (amount: Int, count: Int)], accountId: Int64, accountUuid: String,
+    /// One summary row's figures.
+    struct Total: Equatable {
+        var amount = 0
+        var gbp = 0
+        var count = 0
+    }
+
+    private static func upsertTotals(_ totals: [TotalKey: Total], accountId: Int64, accountUuid: String,
                                      db: Database, outcome: inout Outcome) throws {
         var existing = Dictionary(uniqueKeysWithValues: try AccountSummaryMonth.filter(Column("accountId") == accountId).fetchAll(db)
             .map { ($0.payMonth + "/" + ($0.categoryId.map(String.init) ?? ""), $0) })
-        let ordered = totals.filter { $0.value != (0, 0) }
+        let ordered = totals.filter { $0.value != Total() }
             .sorted { ($0.key.month, $0.key.categoryId ?? 0) < ($1.key.month, $1.key.categoryId ?? 0) }
         for (key, total) in ordered {
             let payMonth = payMonthKey(key.month)
             if let row = existing.removeValue(forKey: payMonth + "/" + (key.categoryId.map(String.init) ?? "")) {
-                guard row.amountMinorUnits != total.amount || row.transactionCount != total.count else { continue }
-                try db.execute(sql: "UPDATE accountSummaryMonth SET amountMinorUnits = ?, transactionCount = ? WHERE id = ?",
-                               arguments: [total.amount, total.count, row.id])
+                guard row.amountMinorUnits != total.amount || row.gbpAmountMinorUnits != total.gbp || row.transactionCount != total.count else { continue }
+                try db.execute(sql: "UPDATE accountSummaryMonth SET amountMinorUnits = ?, gbpAmountMinorUnits = ?, transactionCount = ? WHERE id = ?",
+                               arguments: [total.amount, total.gbp, total.count, row.id])
                 outcome.updated += 1
             } else {
                 let categoryUuid = try key.categoryId.map { try SyncRecordStore.uuid(for: "category", localId: $0, db: db) }
@@ -415,7 +427,7 @@ public enum AccountSummaryBuilder {
                                                                 payMonth: payMonth, categoryUuid: categoryUuid))
                 try insertIdentified(table: AccountSummaryMonth.databaseTableName, uuid: uuid, db: db) { id in
                     var row = AccountSummaryMonth(id: id, accountId: accountId, payMonth: payMonth, categoryId: key.categoryId,
-                                                  amountMinorUnits: total.amount, transactionCount: total.count)
+                                                  amountMinorUnits: total.amount, gbpAmountMinorUnits: total.gbp, transactionCount: total.count)
                     try row.insert(db)
                 }
                 outcome.inserted += 1

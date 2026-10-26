@@ -203,18 +203,12 @@ final class SharedActualsSourceTests: XCTestCase {
         return (owner, others)
     }
 
-    /// A summarised account in euros. Months and categories without a transfer to a pound account match the owner's
-    /// to the penny where the euro amounts convert exactly; two known gaps remain open (task-7-report.md, fix round 2):
-    /// a transfer correction is stored on the euro account but cancels a pound transaction, and a month's euro total
-    /// is converted once where the owner converts (and rounds) each transaction.
+    /// A summarised account in euros, with transfers to and from a pound account: the summaries' GBP totals (converted
+    /// and rounded per transaction on the owner's device, corrections in their own leg's currency) give the owner's
+    /// figures to the penny.
     func testEuroTotalsAccountMatchesTheOwner() async throws {
         let (owner, others) = try await gridTotalsOnBothSides(salaryInBalanceOnly: false, totalsInEuros: true)
-        XCTAssertEqual(others["Income"], owner["Income"])
-        XCTAssertEqual(others["Synthetic flat rent"], owner["Synthetic flat rent"])
-        XCTAssertEqual(others["Synthetic groceries"]?["2026-11"], owner["Synthetic groceries"]?["2026-11"])
-        XCTExpectFailure("Known gap: euro corrections and per-transaction rounding (fix round 2 concern)") {
-            XCTAssertEqual(others, owner)
-        }
+        XCTAssertEqual(others, owner)
     }
 
     /// The pay months are the admin's: a member-owned account's closes (her own calendar) never move them.

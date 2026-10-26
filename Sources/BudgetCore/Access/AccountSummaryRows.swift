@@ -39,15 +39,22 @@ public struct AccountSummaryMonth: Codable, Equatable, Identifiable, FetchableRe
     /// "YYYY-MM".
     public var payMonth: String
     public var categoryId: Int64?
+    /// In the account's currency.
     public var amountMinorUnits: Int
+    /// The same total in GBP, the household's reporting currency: each transaction converted and rounded as the
+    /// owner's budget converts it (`CurrencyConversion`), corrections in their own leg's currency. Equal to
+    /// `amountMinorUnits` for a GBP account without corrections from other currencies.
+    public var gbpAmountMinorUnits: Int
     public var transactionCount: Int
 
-    public init(id: Int64? = nil, accountId: Int64, payMonth: String, categoryId: Int64?, amountMinorUnits: Int, transactionCount: Int) {
+    public init(id: Int64? = nil, accountId: Int64, payMonth: String, categoryId: Int64?, amountMinorUnits: Int, gbpAmountMinorUnits: Int? = nil,
+                transactionCount: Int) {
         self.id = id
         self.accountId = accountId
         self.payMonth = payMonth
         self.categoryId = categoryId
         self.amountMinorUnits = amountMinorUnits
+        self.gbpAmountMinorUnits = gbpAmountMinorUnits ?? amountMinorUnits
         self.transactionCount = transactionCount
     }
 

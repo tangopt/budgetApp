@@ -400,6 +400,35 @@ final class AccountSummaryBuilderTests: XCTestCase {
         }
     }
 
+    /// A euro account's totals also carry GBP, converted and rounded per transaction; a new rate rebuilds them.
+    func testRateChangeRebuildsTheGBPTotals() throws {
+        let (queue, f) = try household()
+        try queue.write { db in
+            try db.execute(sql: "UPDATE account SET currency = 'eur' WHERE id = ?", arguments: [f.totals])
+            for amount in [-20, -20, -20] { try addTransaction(db, account: f.totals, on: Self.day(2026, 9, 10), amount, category: f.plainCategory) }
+            var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: today)
+            try rate.insert(db)
+            try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            func september() throws -> AccountSummaryMonth { try XCTUnwrap(totals(db, f.totals)["2026-09/\(f.plainCategory)"]) }
+            func perTransaction(_ rate: Double) -> Int {
+                [-3_000, -20, -20, -20].map { Int((Double($0) * rate).rounded()) }.reduce(0, +)
+            }
+            XCTAssertEqual(try september().amountMinorUnits, -3_060)
+            XCTAssertEqual(try september().gbpAmountMinorUnits, perTransaction(0.87))
+            XCTAssertNotEqual(perTransaction(0.87), Int((Double(-3_060) * 0.87).rounded()), "the fixture rounds differently per transaction")
+
+            try db.execute(sql: "DELETE FROM syncPending")
+            var newer = ExchangeRateSetting(eurToGbpRate: 0.91, updatedAt: today.addingTimeInterval(60))
+            try newer.insert(db)
+            XCTAssertTrue(try AccountSummaryBuilder.isDirty(db: db))
+            let outcome = try AccountSummaryBuilder.rebuild(ownerPersonId: f.personA, db: db, today: today)
+            XCTAssertGreaterThan(outcome.updated, 0)
+            XCTAssertEqual(try september().amountMinorUnits, -3_060)
+            XCTAssertEqual(try september().gbpAmountMinorUnits, perTransaction(0.91))
+            XCTAssertGreaterThan(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncPending WHERE tableName = 'accountSummaryMonth'")!, 0, "the new totals go up")
+        }
+    }
+
     func testAMemberWhoOwnsAnAccountPublishesItsSummaries() throws {
         let (queue, f) = try household()
         try queue.write { db in

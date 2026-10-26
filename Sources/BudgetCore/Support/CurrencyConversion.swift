@@ -45,9 +45,10 @@ public struct CurrencyConversion: Equatable, Sendable {
         NetWorthCalculator.gbp(amountMinorUnits, currency: currency(ofAccount: accountId), eurToGbpRate: eurToGbpRate)
     }
 
-    /// The transaction's amount in GBP minor units.
+    /// The transaction's amount in GBP minor units (a summary row's own GBP total when it carries one).
     public func gbp(_ transaction: Transaction) -> Int {
-        gbp(transaction.amountMinorUnits, accountId: transaction.accountId)
+        if let total = transaction.gbpAmountMinorUnits { return total }
+        return gbp(transaction.amountMinorUnits, accountId: transaction.accountId)
     }
 
     /// `transactions` with each non-GBP one's amount replaced by its GBP equivalent (everything
@@ -55,7 +56,7 @@ public struct CurrencyConversion: Equatable, Sendable {
     public func toGBP(_ transactions: [Transaction]) -> [Transaction] {
         guard !currencyByAccount.isEmpty else { return transactions }
         return transactions.map { transaction in
-            guard currencyByAccount[transaction.accountId] != nil else { return transaction }
+            guard currencyByAccount[transaction.accountId] != nil || transaction.gbpAmountMinorUnits != nil else { return transaction }
             var converted = transaction
             converted.amountMinorUnits = gbp(transaction)
             return converted

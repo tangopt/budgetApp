@@ -51,8 +51,14 @@ enum SharingMigration {
             t.column("payMonth", .text).notNull()
             t.column("categoryId", .integer).references("category", onDelete: .cascade)
             t.column("amountMinorUnits", .integer).notNull()
+            // The same total in GBP, converted and rounded per transaction as the owner's budget does.
+            t.column("gbpAmountMinorUnits", .integer).notNull().defaults(to: 0)
             t.column("transactionCount", .integer).notNull()
             t.uniqueKey(["accountId", "payMonth", "categoryId"])
+        }
+        // A database from earlier on this (unreleased) branch: the table without the GBP total.
+        if !(try db.columns(in: "accountSummaryMonth").map(\.name).contains("gbpAmountMinorUnits")) {
+            try db.alter(table: "accountSummaryMonth") { t in t.add(column: "gbpAmountMinorUnits", .integer).notNull().defaults(to: 0) }
         }
         // SQLite's UNIQUE treats NULLs as distinct: one uncategorised row per account and month needs its own index.
         try db.execute(sql: """
@@ -164,10 +170,10 @@ extension SharingMigration {
     }
 
     /// What a summary reads (`AccountSummaryBuilder`): the transactions, balances and accounts, transfer links (a
-    /// linked incoming leg is hidden from the budget), categories and pay-month closes, and what decides which
+    /// linked incoming leg is hidden from the budget), categories, pay-month closes, the exchange rate (the GBP totals), and what decides which
     /// transactions are shared on their own (§10: property groups, the pinning tables).
     static let summarySourceTables = ["transaction_", "balanceSnapshot", "account", "transferLink", "category", "payMonthClose",
-                                      "propertyCategoryGroup"] + SyncZoneRouter.pinningTables
+                                      "propertyCategoryGroup", ExchangeRateSetting.databaseTableName] + SyncZoneRouter.pinningTables
 
     /// Triggers that mark summaries dirty on any write to what they read, also an incoming sync apply: the written
     /// row's accounts (`summaries.dirty.<id>`), or every account (`summaries.dirty`). The owner's device rebuilds

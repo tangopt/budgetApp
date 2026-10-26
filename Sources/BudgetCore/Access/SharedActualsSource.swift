@@ -32,7 +32,8 @@ public struct SharingViewer: Equatable, Sendable {
 /// Hidden accounts of the other person contribute nothing. Nothing synthetic is dated after `today`.
 ///
 /// - Synthetic transactions (`SharedActuals.isSummary`): id `-summaryRow.id`, the row's account, category and
-///   signed amount, status confirmed, no description, a manual entry (so it never moves "data through"), never a
+///   signed amount (and its GBP total, `gbpAmountMinorUnits`, which the budget's conversion uses as it is), status
+///   confirmed, no description, a manual entry (so it never moves "data through"), never a
 ///   payday. Dated at the end of its pay month: for the calendar owner's accounts, the end of the day of their
 ///   balance point for that month (their close date); otherwise the end of the month in this device's calendar
 ///   (its own paydays and the published closes). A month that ends after `today` (the open month) is dated no
@@ -75,6 +76,7 @@ public enum SharedActuals {
         public var id: Int64
         /// `SharingCopy.privateLine`: "Card (Name) · 7 transactions · details private".
         public var text: String
+        /// In GBP, like the budget cell it sits in.
         public var amountMinorUnits: Int
 
         public init(id: Int64, text: String, amountMinorUnits: Int) {
@@ -92,7 +94,7 @@ public enum SharedActuals {
         var sums: [Int64: (amount: Int, count: Int)] = [:]
         for (transaction, count) in zip(view.summaries, view.counts) {
             guard let category = transaction.categoryId, categoryIds.contains(category), transaction.date >= from, transaction.date <= to else { continue }
-            sums[transaction.accountId, default: (0, 0)].amount += transaction.amountMinorUnits
+            sums[transaction.accountId, default: (0, 0)].amount += transaction.gbpAmountMinorUnits ?? transaction.amountMinorUnits
             sums[transaction.accountId, default: (0, 0)].count += count
         }
         let owners = try ownerNames(db: db)
@@ -214,9 +216,11 @@ private struct SharedView {
 
         for (row, date) in zip(rows, rowDates) {
             guard let date else { continue }
-            summaries.append(Transaction(id: -(row.id ?? 0), importBatchId: 0, accountId: row.accountId, date: date, rawDescription: "",
-                                         amountMinorUnits: row.amountMinorUnits, categoryId: row.categoryId, status: .confirmed,
-                                         categorizedBy: .manual, fingerprint: "summary-\(row.id ?? 0)", isManual: true))
+            var summary = Transaction(id: -(row.id ?? 0), importBatchId: 0, accountId: row.accountId, date: date, rawDescription: "",
+                                      amountMinorUnits: row.amountMinorUnits, categoryId: row.categoryId, status: .confirmed,
+                                      categorizedBy: .manual, fingerprint: "summary-\(row.id ?? 0)", isManual: true)
+            summary.gbpAmountMinorUnits = row.gbpAmountMinorUnits
+            summaries.append(summary)
             counts.append(row.transactionCount)
         }
         for (point, date) in zip(points, pointDates) {

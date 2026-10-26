@@ -75,7 +75,7 @@ public enum SyncSchema {
                         synced: ["accountId", "payMonth", "date", "balanceMinorUnits"],
                         foreignKeys: ["accountId": "account"]),
         SyncTableSchema("accountSummaryMonth",
-                        synced: ["accountId", "payMonth", "categoryId", "amountMinorUnits", "transactionCount"],
+                        synced: ["accountId", "payMonth", "categoryId", "amountMinorUnits", "gbpAmountMinorUnits", "transactionCount"],
                         foreignKeys: ["accountId": "account", "categoryId": "category"]),
         SyncTableSchema("importRun",
                         synced: ["confirmedAt", "entryPoint", "summary", "reasonsJSON", "undoneAt", "undoSummary", "appUserId"],
