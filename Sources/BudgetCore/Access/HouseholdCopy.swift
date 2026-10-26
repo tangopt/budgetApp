@@ -42,6 +42,8 @@ public enum HouseholdCopy {
     public static let notNowButton = "Not now"
     public static func showCode(_ admin: String, _ code: String) -> String { "Show this code to \(admin) on the Mac: \(code)" }
     public static let waitingForKey = "Waiting for the household key…"
+    /// The Mac stopped answering her requests for a while (`SyncKeyExchange.Granter.lockedUntil`).
+    public static let tooManyAttempts = "Too many attempts — try again in 15 minutes."
 
     // MARK: Why the invite can't go yet
 

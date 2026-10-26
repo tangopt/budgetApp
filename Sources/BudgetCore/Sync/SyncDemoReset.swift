@@ -109,7 +109,9 @@ public enum SyncDemoReset {
 /// - each synced table, each `accountDetails` companion and the `importLease`: `sealed` + `keyId`, with the large-payload
 ///   asset (`payload`) as well (any record may be packed into it);
 /// - `zoneKey`: exactly a key marker (`keyId`, `createdAt`);
-/// - `documentFile`: exactly its `file` asset.
+/// - `documentFile`: exactly its `file` asset;
+/// - the key exchange's `keyOffer` (exactly `publicKey`) and `keyGrant` (exactly `sealed` + `keyId`), and, on the public
+///   database when a board is given, its `keyRequest` (plain `requestId`, `commitment`, `publicKey`, `nonce`).
 /// Move markers are records of their table's type, so the tables cover them.
 public enum SyncSchemaSeed {
     public static let argument = "--seed-schema"
@@ -120,7 +122,17 @@ public enum SyncSchemaSeed {
     /// Every record type the engine can save.
     public static var recordTypes: [String] {
         SyncSchema.tables.map(\.name) + [SyncZoneRouter.companionRecordType, TransportLeaseStore.recordType,
-                                          SyncZoneKeys.recordType, SyncDocumentFile.recordType]
+                                          SyncZoneKeys.recordType, SyncDocumentFile.recordType,
+                                          SyncKeyExchange.offerRecordType, SyncKeyExchange.grantRecordType]
+    }
+
+    /// The public database's placeholders: the key exchange's request, with every field it ever carries (none secret;
+    /// placeholders hold zeros).
+    public static var publicRecords: [SyncPublicRecord] {
+        [SyncPublicRecord(recordType: SyncKeyExchange.requestRecordType, recordName: "schema-seed-" + SyncKeyExchange.requestRecordType,
+                          fields: [SyncKeyExchange.requestIdField: Data("00000000-0000-0000-0000-000000000000".utf8),
+                                   SyncKeyExchange.commitmentField: Data(count: 32), SyncKeyExchange.publicKeyField: Data(count: 32),
+                                   SyncKeyExchange.nonceField: Data(count: 32)])]
     }
 
     /// One placeholder record of each of `recordTypes` in `zone`, sealed under `keys`' key for that zone (made and
@@ -145,6 +157,11 @@ public enum SyncSchemaSeed {
         let box = try DocumentCrypto.seal(Data("schema seed".utf8), zoneKey: key)
         records.append(SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: "schema-seed-" + SyncDocumentFile.recordType,
                                       zone: zone, assets: [SyncDocumentFile.assetField: box.ciphertext]))
+        records.append(SyncWireRecord(recordType: SyncKeyExchange.offerRecordType, recordName: "schema-seed-" + SyncKeyExchange.offerRecordType,
+                                      zone: zone, encryptedFields: [SyncKeyExchange.publicKeyField: Data(count: 32)]))
+        records.append(SyncWireRecord(recordType: SyncKeyExchange.grantRecordType, recordName: "schema-seed-" + SyncKeyExchange.grantRecordType,
+                                      zone: zone, encryptedFields: [SyncKeyExchange.sealedField: Data(count: 32 + 12 + 16 + 32),
+                                                                    SyncKeyExchange.keyIdField: Data(SyncKeyExchange.keyId.utf8)]))
         return records
     }
 
@@ -153,11 +170,25 @@ public enum SyncSchemaSeed {
         case notSaved([String])
     }
 
-    /// Makes `zone`, saves `records(keys:)` there, then deletes the zone (also when a save failed). Returns how many
-    /// record types were saved; throws `notSaved` naming the types the server refused.
+    /// Makes `zone`, saves `records(keys:)` there, then deletes the zone (also when a save failed); with `board`, also
+    /// posts `publicRecords` to the public database and deletes them again. Returns how many record types were saved;
+    /// throws `notSaved` naming the types the server refused.
     @discardableResult
-    public static func run(transport: any SyncTransport, keys: any SyncKeyStore,
+    public static func run(transport: any SyncTransport, keys: any SyncKeyStore, board: (any SyncPublicBoard)? = nil,
                            deleteZone: @Sendable (String) async throws -> Void) async throws -> Int {
+        var publicSaved = 0
+        var publicRefused: [String] = []
+        if let board {
+            for record in publicRecords {
+                do {
+                    try await board.postPublic(record)
+                    try await board.deletePublic(record.recordName)
+                    publicSaved += 1
+                } catch {
+                    publicRefused.append(record.recordType)
+                }
+            }
+        }
         let records = try records(keys: keys)
         try await transport.createZone(zone)
         let results: [SaveResult]
@@ -171,9 +202,9 @@ public enum SyncSchemaSeed {
         let saved = Set(results.compactMap { result -> String? in
             if case .saved = result.outcome { return result.recordName } else { return nil }
         })
-        let refused = records.filter { !saved.contains($0.recordName) }.map(\.recordType)
-        log.info("Schema seed: \(records.count - refused.count, privacy: .public) of \(records.count, privacy: .public) record types saved")
+        let refused = records.filter { !saved.contains($0.recordName) }.map(\.recordType) + publicRefused
+        log.info("Schema seed: \(records.count - refused.count + publicSaved + publicRefused.count, privacy: .public) of \(records.count + publicSaved + publicRefused.count, privacy: .public) record types saved")
         guard refused.isEmpty else { throw SeedError.notSaved(refused) }
-        return records.count
+        return records.count + publicSaved
     }
 }

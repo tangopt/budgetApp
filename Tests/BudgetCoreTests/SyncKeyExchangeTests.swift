@@ -18,6 +18,7 @@ final class SyncKeyExchangeTests: XCTestCase {
 
     private struct Setup {
         let cloud: FakeCloud
+        let macDb: DatabaseQueue
         let adminKeys: InMemorySyncKeyStore
         let memberKeys: InMemorySyncKeyStore
         let granter: SyncKeyExchange.Granter
@@ -34,8 +35,9 @@ final class SyncKeyExchangeTests: XCTestCase {
         for _ in 0..<keyCount { try adminKeys.store(DocumentCrypto.newZoneKey(), zone: household) }
         let memberKeys = InMemorySyncKeyStore()
         let session = cloud.session(as: member)
-        return Setup(cloud: cloud, adminKeys: adminKeys, memberKeys: memberKeys,
-                     granter: SyncKeyExchange.Granter(board: cloud, transport: cloud, member: member),
+        let macDb = try TestDatabase.migrated()
+        return Setup(cloud: cloud, macDb: macDb, adminKeys: adminKeys, memberKeys: memberKeys,
+                     granter: SyncKeyExchange.Granter(board: cloud, transport: cloud, member: member, db: macDb),
                      requester: SyncKeyExchange.Requester(board: session, transport: session, keys: memberKeys, member: member,
                                                           householdOwner: owner))
     }
@@ -55,6 +57,8 @@ final class SyncKeyExchangeTests: XCTestCase {
     }
 
     private func raw(_ key: SymmetricKey) -> Data { key.withUnsafeBytes { Data($0) } }
+
+    private var requestName: String { SyncKeyExchange.requestName(owner: owner, member: member) }
 
     // MARK: Tests
 
@@ -92,7 +96,7 @@ final class SyncKeyExchangeTests: XCTestCase {
         try await s.requester.start(now: at(1))
         let attackerKey = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
         let attackerNonce = Data(repeating: 7, count: 32)
-        let name = "keyRequest-" + member
+        let name = requestName
         let rid = try await requestId(s.cloud)
         let attackerCommitment = SyncKeyExchange.commitment(requestId: rid, publicKey: attackerKey, nonce: attackerNonce)
         await s.cloud.rewritePublicRecord(named: name, fields: ["requestId": Data(rid.utf8), "commitment": attackerCommitment])
@@ -104,12 +108,13 @@ final class SyncKeyExchangeTests: XCTestCase {
         let adminCode = try XCTUnwrap(request?.code)
         XCTAssertNotEqual(adminCode, memberCode, "a substituted key shows a different code on the Mac")
 
-        // The server swaps the Mac's nonce on its way to her device: her code isn't the Mac's either.
+        // The server swaps the Mac's key on its way to her device: her code isn't the Mac's either.
         let t = try setup()
         try await t.requester.start(now: at(1))
         _ = try await t.granter.poll(now: at(2))
         let offered = try await requestId(t.cloud)
-        await t.cloud.rewrite(recordName: "keyOffer-" + offered, encryptedFields: ["nonce": Data(repeating: 9, count: 32)])
+        await t.cloud.rewrite(recordName: "keyOffer-" + offered,
+                              encryptedFields: ["publicKey": Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation])
         guard case .showCode(let herCode) = try await t.requester.poll(now: at(3)) else { return XCTFail("no code on her device") }
         let macRequest = try await t.granter.poll(now: at(4))
         let macCode = try XCTUnwrap(macRequest?.code)
@@ -120,7 +125,7 @@ final class SyncKeyExchangeTests: XCTestCase {
         let s = try setup()
         try await s.requester.start(now: at(1))
         _ = try await s.granter.poll(now: at(2))
-        let name = "keyRequest-" + member
+        let name = requestName
         let id = try await requestId(s.cloud)
         let key = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
         let nonce = Data(repeating: 3, count: 32)
@@ -142,7 +147,8 @@ final class SyncKeyExchangeTests: XCTestCase {
         XCTAssertNil(listed)
         let offers = await s.cloud.storedRecords().filter { $0.recordType == SyncKeyExchange.offerRecordType }
         XCTAssertEqual(offers, [], "no nonce is offered to a stranger's request")
-        // She can't overwrite or remove the stranger's record, and the Mac never answers it.
+        // Someone who knows both the admin's and her record names can still take the name first: she can't overwrite or
+        // remove it (only the share's identity keeps strangers out, `testSquatterCannotLockHerOut`).
         do {
             try await s.requester.start(now: at(3))
             XCTFail("her post over a record she didn't create succeeded")
@@ -240,11 +246,16 @@ final class SyncKeyExchangeTests: XCTestCase {
         let key = DocumentCrypto.newZoneKey()
         let device = Curve25519.KeyAgreement.PrivateKey()
         let transcript = Data(repeating: 4, count: 32)
-        let sealed = try SyncKeyExchange.seal([key], to: device.publicKey, requestId: "r1", transcript: transcript)
-        XCTAssertEqual(try SyncKeyExchange.open(sealed, with: device, requestId: "r1", transcript: transcript).map(raw), [raw(key)])
-        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: Curve25519.KeyAgreement.PrivateKey(), requestId: "r1", transcript: transcript))
-        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: device, requestId: "r2", transcript: transcript))
-        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: device, requestId: "r1", transcript: Data(repeating: 5, count: 32)))
+        let mac = Curve25519.KeyAgreement.PrivateKey()
+        let sealed = try SyncKeyExchange.seal([key], to: device.publicKey, from: mac, requestId: "r1", transcript: transcript)
+        XCTAssertEqual(try SyncKeyExchange.open(sealed, with: device, from: mac.publicKey, requestId: "r1", transcript: transcript).map(raw), [raw(key)])
+        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: Curve25519.KeyAgreement.PrivateKey(), from: mac.publicKey, requestId: "r1",
+                                                      transcript: transcript))
+        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: device, from: mac.publicKey, requestId: "r2", transcript: transcript))
+        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: device, from: mac.publicKey, requestId: "r1",
+                                                      transcript: Data(repeating: 5, count: 32)))
+        XCTAssertThrowsError(try SyncKeyExchange.open(sealed, with: device, from: Curve25519.KeyAgreement.PrivateKey().publicKey, requestId: "r1",
+                                                      transcript: transcript), "a grant from another key than the Mac's doesn't open")
     }
 
     func testGrantRecordCarriesExactlySealedAndKeyId() async throws {
@@ -260,7 +271,7 @@ final class SyncKeyExchangeTests: XCTestCase {
         XCTAssertEqual(grant.unencryptedFields, [:])
         XCTAssertEqual(grant.assets, [:])
         let offer = try XCTUnwrap(records.first { $0.recordType == SyncKeyExchange.offerRecordType })
-        XCTAssertEqual(Set(offer.encryptedFields.keys), ["nonce"])
+        XCTAssertEqual(Set(offer.encryptedFields.keys), ["publicKey"])
         // No household key's bytes appear in any record, in either database.
         let secrets = try s.adminKeys.allKeys(zone: household).values.map(raw)
         let publicRecords = await s.cloud.publicRecords()
@@ -276,7 +287,7 @@ final class SyncKeyExchangeTests: XCTestCase {
         try await h.syncAll()
         let requester = SyncKeyExchange.Requester(board: h.cloud.session(as: member), transport: h.memberAudit, keys: h.memberKeys,
                                                   member: member, householdOwner: owner)
-        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.macTransport, member: member)
+        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.macTransport, member: member, db: h.adminMac.db)
         try await requester.start(now: Date())
         _ = try await granter.poll(now: Date())
         _ = try await requester.poll(now: Date())
@@ -305,7 +316,7 @@ final class SyncKeyExchangeTests: XCTestCase {
 
         let requester = SyncKeyExchange.Requester(board: h.cloud.session(as: member), transport: h.memberAudit, keys: h.memberKeys,
                                                   member: member, householdOwner: owner)
-        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.macTransport, member: member)
+        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.macTransport, member: member, db: h.adminMac.db)
         try await requester.start(now: Date())
         _ = try await granter.poll(now: Date())
         guard case .showCode(let code) = try await requester.poll(now: Date()) else { return XCTFail("no code on her device") }
@@ -322,6 +333,151 @@ final class SyncKeyExchangeTests: XCTestCase {
         XCTAssertEqual(h.memberAudit.householdViolations(router: TwoPersonHousehold.router(h.memberDevice.db)), [])
     }
 
+    // MARK: Fix round 1
+
+    /// I1: a grant the server makes itself (sealed to her key, with the right transcript, but not from the Mac's answer
+    /// key) is refused: she never reaches `.received`, and nothing is stored.
+    func testForgedGrantFromTheServerIsRefused() async throws {
+        let s = try setup()
+        _ = try await toCodes(s)
+        let id = try await requestId(s.cloud)
+        let postedRequest = await s.cloud.publicRecord(named: requestName)
+        let storedOffer = await s.cloud.record(named: "keyOffer-" + id)
+        let request = try XCTUnwrap(postedRequest)
+        let offer = try XCTUnwrap(storedOffer)
+        let herKey = try XCTUnwrap(request.fields["publicKey"])
+        // Everything the transcript needs is public to the server.
+        let transcript = SyncKeyExchange.transcript(owner: owner, member: member, requestId: id, publicKey: herKey,
+                                                    memberNonce: try XCTUnwrap(request.fields["nonce"]),
+                                                    adminPublicKey: try XCTUnwrap(offer.wire.encryptedFields["publicKey"]))
+        let forged = try SyncKeyExchange.seal([DocumentCrypto.newZoneKey()], to: Curve25519.KeyAgreement.PublicKey(rawRepresentation: herKey),
+                                              from: Curve25519.KeyAgreement.PrivateKey(), requestId: id, transcript: transcript)
+        _ = await s.cloud.save(wire: SyncWireRecord(recordType: SyncKeyExchange.grantRecordType, recordName: "keyGrant-" + id, zone: household,
+                                                    encryptedFields: ["sealed": forged, "keyId": Data("exchange-v1".utf8)]), ifUnchanged: nil)
+        let status = try await s.requester.poll(now: at(5))
+        XCTAssertEqual(status, .refused)
+        XCTAssertEqual(try s.memberKeys.allKeys(zone: household).count, 0)
+    }
+
+    /// M1: the request's name is a hash of the share's identity and her iCloud user; a stranger who takes her record
+    /// name (or guesses the owner wrong) doesn't stop her.
+    func testSquatterCannotLockHerOut() async throws {
+        let s = try setup()
+        XCTAssertFalse(requestName.contains(member), requestName)
+        XCTAssertFalse(requestName.contains(owner), requestName)
+        let stranger = s.cloud.session(as: "fake-stranger")
+        try await stranger.postPublic(SyncPublicRecord(recordType: SyncKeyExchange.requestRecordType, recordName: "keyRequest-" + member,
+                                                       fields: [:]))
+        try await stranger.postPublic(SyncPublicRecord(recordType: SyncKeyExchange.requestRecordType,
+                                                       recordName: SyncKeyExchange.requestName(owner: "fake-guess", member: member), fields: [:]))
+        let (request, code) = try await toCodes(s)
+        XCTAssertEqual(request.code, code)
+        try await s.granter.grant(request, keys: s.adminKeys, now: at(5))
+        let status = try await s.requester.poll(now: at(6))
+        XCTAssertEqual(status, .received)
+    }
+
+    /// M3: "Not now" holds after the Mac relaunches: the same request isn't answered again.
+    func testNotNowSurvivesARelaunch() async throws {
+        let s = try setup()
+        let (request, _) = try await toCodes(s)
+        try await s.granter.decline(request, now: at(5))
+        let relaunched = SyncKeyExchange.Granter(board: s.cloud, transport: s.cloud, member: member, db: s.macDb)
+        let again = try await relaunched.poll(now: at(6))
+        XCTAssertNil(again)
+        let offers = await s.cloud.storedRecords().filter { $0.recordType == SyncKeyExchange.offerRecordType }
+        XCTAssertEqual(offers, [], "the declined request gets no new answer")
+        // A new request of hers is answered.
+        try await s.requester.start(now: at(7))
+        _ = try await relaunched.poll(now: at(8))
+        guard case .showCode(let code) = try await s.requester.poll(now: at(9)) else { return XCTFail("no code") }
+        let next = try await relaunched.poll(now: at(10))
+        XCTAssertEqual(next?.code, code)
+    }
+
+    /// M4: a second device of hers replaces the first's request; the first gives up without writing over it.
+    func testReplacedDeviceGivesUpWithoutTramplingTheOther() async throws {
+        let s = try setup()
+        try await s.requester.start(now: at(1))
+        _ = try await s.granter.poll(now: at(2))
+        let firstId = try await requestId(s.cloud)
+        let session = s.cloud.session(as: member)
+        let otherKeys = InMemorySyncKeyStore()
+        let second = SyncKeyExchange.Requester(board: session, transport: session, keys: otherKeys, member: member, householdOwner: owner)
+        try await second.start(now: at(3))
+        let secondId = try await requestId(s.cloud)
+        XCTAssertNotEqual(secondId, firstId)
+        let first = try await s.requester.poll(now: at(4))
+        XCTAssertEqual(first, .expired, "the first device sees its request replaced")
+        let stillSecond = try await requestId(s.cloud)
+        XCTAssertEqual(stillSecond, secondId, "and didn't write over the second's")
+        _ = try await s.granter.poll(now: at(5))
+        guard case .showCode(let code) = try await second.poll(now: at(6)) else { return XCTFail("no code on the second device") }
+        let polled = try await s.granter.poll(now: at(7))
+        let request = try XCTUnwrap(polled)
+        XCTAssertEqual(request.code, code)
+        try await s.granter.grant(request, keys: s.adminKeys, now: at(8))
+        let status = try await second.poll(now: at(9))
+        XCTAssertEqual(status, .received)
+        XCTAssertEqual(try otherKeys.allKeys(zone: household).count, 1)
+    }
+
+    /// M5: three declined or refused codes in a row: the Mac answers no request of hers for 15 minutes, across a
+    /// relaunch; then it answers again.
+    func testThreeFailedAttemptsLockTheMacOut() async throws {
+        let s = try setup()
+        var clock: TimeInterval = 0
+        for attempt in 0..<3 {
+            try await s.requester.start(now: at(clock + 1))
+            _ = try await s.granter.poll(now: at(clock + 2))
+            if attempt == 2 {
+                // The third: a changed commitment (a refused code), not a decline.
+                let id = try await requestId(s.cloud)
+                await s.cloud.rewritePublicRecord(named: requestName, fields: ["requestId": Data(id.utf8), "commitment": Data(repeating: 1, count: 32)])
+                let refused = try await s.granter.poll(now: at(clock + 3))
+                XCTAssertNil(refused)
+            } else {
+                guard case .showCode = try await s.requester.poll(now: at(clock + 3)) else { return XCTFail("no code") }
+                let polled = try await s.granter.poll(now: at(clock + 4))
+                let request = try XCTUnwrap(polled)
+                try await s.granter.decline(request, now: at(clock + 5))
+            }
+            clock += 10
+        }
+        let lockedAt = at(clock)
+        let locked = try await s.granter.lockedUntil(now: lockedAt)
+        XCTAssertNotNil(locked)
+        XCTAssertEqual(HouseholdCopy.tooManyAttempts, "Too many attempts — try again in 15 minutes.")
+        let relaunched = SyncKeyExchange.Granter(board: s.cloud, transport: s.cloud, member: member, db: s.macDb)
+        try await s.requester.start(now: at(clock + 1))
+        let whileLocked = try await relaunched.poll(now: at(clock + 2))
+        XCTAssertNil(whileLocked)
+        let offers = await s.cloud.storedRecords().filter { $0.recordType == SyncKeyExchange.offerRecordType }
+        XCTAssertEqual(offers, [], "no answer while locked")
+        // Fifteen minutes later, a new request is answered.
+        let later = clock + SyncKeyExchange.lockout + 5
+        await s.cloud.advanceClock(by: SyncKeyExchange.lockout + 5)
+        let unlocked = try await relaunched.lockedUntil(now: at(later))
+        XCTAssertNil(unlocked)
+        try await s.requester.start(now: at(later + 1))
+        _ = try await relaunched.poll(now: at(later + 2))
+        guard case .showCode = try await s.requester.poll(now: at(later + 3)) else { return XCTFail("no answer after the lockout") }
+    }
+
+    /// M6: more keys than one grant carries: a clear error, nothing saved.
+    func testTooManyKeysIsAClearError() async throws {
+        let s = try setup(keyCount: SyncKeyExchange.maxKeys + 1)
+        let (request, _) = try await toCodes(s)
+        do {
+            try await s.granter.grant(request, keys: s.adminKeys, now: at(5))
+            XCTFail("granted too many keys")
+        } catch let error as SyncKeyExchange.ExchangeError {
+            XCTAssertEqual(error, .tooManyKeys)
+        }
+        let grants = await s.cloud.storedRecords().filter { $0.recordType == SyncKeyExchange.grantRecordType }
+        XCTAssertEqual(grants, [])
+    }
+
     func testCopy() {
         XCTAssertEqual(HouseholdCopy.keyRequestTitle("Person B"), "Person B's device is asking for the household key.")
         XCTAssertEqual(HouseholdCopy.keyRequestCheck("123 456"), "Check that it shows this code: 123 456")
@@ -334,7 +490,7 @@ final class SyncKeyExchangeTests: XCTestCase {
     // MARK: Helpers
 
     private func requestId(_ cloud: FakeCloud) async throws -> String {
-        let posted = await cloud.publicRecord(named: "keyRequest-" + member)
+        let posted = await cloud.publicRecord(named: requestName)
         let record = try XCTUnwrap(posted)
         return String(decoding: try XCTUnwrap(record.fields["requestId"]), as: UTF8.self)
     }

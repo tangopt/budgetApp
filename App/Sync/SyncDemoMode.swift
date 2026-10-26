@@ -136,7 +136,7 @@ enum SyncDemoMode {
         Task.detached {
             let transport = CloudKitTransport()
             do {
-                let count = try await SyncSchemaSeed.run(transport: transport, keys: InMemorySyncKeyStore(),
+                let count = try await SyncSchemaSeed.run(transport: transport, keys: InMemorySyncKeyStore(), board: CloudKitPublicBoard(),
                                                          deleteZone: { zone in try await transport.deleteZone(zone) })
                 FileHandle.standardError.write(Data("Seeded \(count) record types\n".utf8))
                 exit(0)

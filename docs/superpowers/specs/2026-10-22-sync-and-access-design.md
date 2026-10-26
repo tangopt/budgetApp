@@ -208,7 +208,25 @@ syncRecord                          -- one row per synced local row (local only,
   6. The device's `syncState` no longer holds key material: a step 3 keyring (`zoneKeys.<zone>`) moves into
      the key store once, at engine start, and is deleted; only the marker (key id, its server version) stays.
   7. Sharing (steps 5–6) isn't designed here; the key store is per zone so a shared zone can later receive
-     its key by a key exchange with the other person's devices.
+     its key by a key exchange with the other person's devices. *Step 7a (Task 8, `SyncKeyExchange`):* the member's
+     device gets the household keys through a key exchange that the admin confirms by comparing a 6-digit code that
+     both screens show.
+     - **Her request goes on the container's public database.** The household share is read-only for her. Its record
+       name is a hash of the share's identity (zone, owner, share record) and her iCloud user. The server stamps the
+       writer; only she can change or delete it. It holds a request id, a commitment, her X25519 public key and a
+       nonce, none of them secret.
+     - **The code is commit-then-reveal.** Her device first posts `SHA-256(request id, public key, nonce)`. The Mac
+       answers in `household` (`keyOffer`) with an ephemeral X25519 public key A. Only then does she reveal her key
+       and nonce. Both derive the code from a transcript hash over the zone, owner, member, request id, her key, her
+       nonce and A. A server that swaps any of these matches the codes only by chance (one in a million).
+     - **The grant is authenticated to the Mac.** After the admin confirms the code, the Mac seals every household key
+       in `keyGrant` (exactly `sealed` + `keyId`, create-only). The box key is HKDF-SHA256 over X25519(A's private
+       half, her key) and X25519(a fresh ephemeral, her key), salted with the request id. Its info is
+       `mango-household-key-v1/grant` and the transcript, and AES-GCM authenticates both public keys and the
+       transcript. Only the Mac that answered can make a grant her device opens; one the server makes is refused.
+     - **Limits.** Her private key and the Mac's answer key live in memory only. Requests expire after 10 minutes. A
+       declined or refused request is never answered again, even after a relaunch. After three failed codes in a row,
+       the Mac answers nothing for 15 minutes.
   8. The import lease record is sealed too (it names a device). The rehearsal checks that every data record
      carries exactly `sealed` and `keyId`, that no source value's bytes appear in it, and that record names
      stay opaque.

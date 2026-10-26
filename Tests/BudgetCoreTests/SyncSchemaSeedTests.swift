@@ -49,6 +49,7 @@ final class SyncSchemaSeedTests: XCTestCase {
         XCTAssertTrue(Set(seedTypes).isSuperset(of: sentTypes), "missing: \(sentTypes.subtracting(seedTypes).sorted())")
         XCTAssertEqual(Set(seedTypes), Set(SyncSchema.tables.map(\.name)).union([
             SyncZoneRouter.companionRecordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType, TransportLeaseStore.recordType,
+            SyncKeyExchange.offerRecordType, SyncKeyExchange.grantRecordType,
         ]))
         XCTAssertEqual(Set(seedTypes), Set(SyncSchemaSeed.recordTypes))
 
@@ -73,6 +74,8 @@ final class SyncSchemaSeedTests: XCTestCase {
             case SyncDocumentFile.recordType:
                 XCTAssertTrue(wire.encryptedFields.isEmpty)
                 XCTAssertEqual(Set(wire.assets.keys), [SyncDocumentFile.assetField])
+            case SyncKeyExchange.offerRecordType, SyncKeyExchange.grantRecordType:
+                XCTAssertEqual(ZoneAuditingTransport.exchangeFindings(wire), [], wire.recordType)
             default:
                 XCTAssertEqual(Set(wire.encryptedFields.keys), [FieldSealing.sealedField, FieldSealing.keyIdField], wire.recordType)
                 XCTAssertEqual(Set(wire.assets.keys), [SyncLargePayload.assetField], wire.recordType)
@@ -105,6 +108,19 @@ final class SyncSchemaSeedTests: XCTestCase {
         let calls = await cloud.calls
         XCTAssertEqual(calls.first, .createZone(SyncSchemaSeed.zone))
         XCTAssertEqual(calls.filter { if case .createZone = $0 { true } else { false } }.count, 1, "no other zone is made")
+    }
+
+    /// With a board, the key exchange's request is posted to the public database (every field, plain) and taken down.
+    func testSeedRunPostsThePublicRequestAndTakesItDown() async throws {
+        let cloud = FakeCloud()
+        let saved = try await SyncSchemaSeed.run(transport: cloud, keys: InMemorySyncKeyStore(), board: cloud, deleteZone: { zone in
+            await cloud.deleteZone(zone)
+        })
+        XCTAssertEqual(saved, SyncSchemaSeed.recordTypes.count + 1)
+        XCTAssertEqual(SyncSchemaSeed.publicRecords.map(\.recordType), [SyncKeyExchange.requestRecordType])
+        XCTAssertEqual(Set(SyncSchemaSeed.publicRecords[0].fields.keys), ["requestId", "commitment", "publicKey", "nonce"])
+        let left = await cloud.publicRecords()
+        XCTAssertEqual(left, [])
     }
 
     /// A refused save names the types, still deletes the zone.

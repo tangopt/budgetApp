@@ -9,7 +9,10 @@
 - **Household deletes become deletion markers.** A marker is a save, so the server attributes it. A bare hard delete in `household` that this Mac didn't send is undone.
 - **Placement is re-checked when any of its inputs change.** A content fingerprint of the router's inputs runs a full sweep that queues every misplaced record. The same read is one of the invite's gates, and the invite also audits the household zone on the server.
 - **Sharing is a second transport protocol** (`SyncShareTransport`). `FakeCloud` models it with per-user sessions, a zone share, participants, accept and remove, and stamps `lastModifiedBy`. A member device uses `SyncZoneSplitTransport`: `household` goes to the admin's zone through her shared database, everything else to her own private database.
-- **The household key reaches her device by a short key exchange:** an ECDH grant, confirmed by a 6-digit code that the admin and the member compare side by side.
+- **The household key reaches her device by a short key exchange**, confirmed by a 6-digit code that the admin and the member compare side by side (sync spec R15.7, Task 8).
+  - Her request (a commitment, then her key) goes on the container's public database, under a name hashed from the share and her iCloud user.
+  - The Mac answers in `household` with an ephemeral key, which goes into the code's transcript (commit-then-reveal).
+  - The grant is sealed from that Mac key to hers, so only the Mac that answered can make one that opens.
 
 **Tech Stack:** Swift 6, GRDB 6.29, SwiftUI (macOS 26, iOS 26), CloudKit (`CKDatabase` operations, `CKShare(recordZoneID:)`, `CKAcceptSharesOperation`), CryptoKit (Curve25519, HKDF, AES-GCM), XCTest, XcodeGen.
 

@@ -117,14 +117,15 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
         return all
     }
 
-    /// A key exchange record in `household` (step 7a Task 8) carries no data and no key in the clear: the Mac's nonce is
-    /// exactly `nonce` (32 bytes), a grant exactly `sealed` and `keyId`; a request never goes there.
-    static func exchangeFindings(_ wire: SyncWireRecord) -> [String] {
+    /// A key exchange record in `household` (step 7a Task 8) carries no data and no key in the clear: the Mac's answer is
+    /// exactly `publicKey` (32 bytes, an ephemeral X25519 public key), a grant exactly `sealed` and `keyId`; a request
+    /// never goes there.
+    public static func exchangeFindings(_ wire: SyncWireRecord) -> [String] {
         let fields = Set(wire.encryptedFields.keys)
         let clean = wire.unencryptedFields.isEmpty && wire.assets.isEmpty
         switch wire.recordType {
-        case SyncKeyExchange.offerRecordType where clean && fields == [SyncKeyExchange.nonceField]
-            && wire.encryptedFields[SyncKeyExchange.nonceField]?.count == 32:
+        case SyncKeyExchange.offerRecordType where clean && fields == [SyncKeyExchange.publicKeyField]
+            && wire.encryptedFields[SyncKeyExchange.publicKeyField]?.count == 32:
             return []
         case SyncKeyExchange.grantRecordType where clean && fields == [FieldSealing.sealedField, FieldSealing.keyIdField]:
             return []
