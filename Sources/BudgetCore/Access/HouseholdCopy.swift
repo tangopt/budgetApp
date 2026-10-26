@@ -28,6 +28,14 @@ public enum HouseholdCopy {
         "More than one person accepted the invitation, so Mango didn't link anyone to \(name). Remove them from the household, then invite \(name) again."
     }
 
+    /// After "Remove from household…" (the share has no one on it; invite again to bring them back).
+    public static let removedStatus = "Removed from the household"
+    public static let pickPerson = "Someone already in Mango"
+    public static let newPerson = "Someone new"
+    public static let doTheseMatch = "Do these match?"
+    public static let shareFailed = "Couldn't open the sharing sheet. Try again."
+    public static func syncingNotice(_ name: String) -> String { "Mango checks for \(name)'s acceptance each time it syncs." }
+
     public static let removeButton = "Remove from household…"
 
     public static func removeTitle(_ name: String) -> String { "Remove \(name) from the household?" }
@@ -37,7 +45,9 @@ public enum HouseholdCopy {
     // MARK: The household key (Mac and member device, side by side)
 
     public static func keyRequestTitle(_ name: String) -> String { "\(name)'s device is asking for the household key." }
-    public static func keyRequestCheck(_ code: String) -> String { "Check that it shows this code: \(code)" }
+    /// The sentence before the large code on the Mac; `keyRequestCheck` is the same sentence with the code in it.
+    public static let keyRequestCheckLead = "Check that it shows this code:"
+    public static func keyRequestCheck(_ code: String) -> String { "\(keyRequestCheckLead) \(code)" }
     public static let giveKeyButton = "Give the key"
     public static let notNowButton = "Not now"
     public static func showCode(_ admin: String, _ code: String) -> String { "Show this code to \(admin) on the Mac: \(code)" }

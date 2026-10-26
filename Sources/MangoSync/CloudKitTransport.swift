@@ -47,7 +47,7 @@ public final class CloudKitTransport: SyncTransport {
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     let database: CKDatabase
-    private let container: CKContainer
+    let container: CKContainer
     /// The zones' owner (the shared database); nil: the current user's own zones.
     private let zoneOwnerName: String?
     /// The current user's record name, once fetched.

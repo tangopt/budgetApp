@@ -42,7 +42,7 @@ enum SharingSnapshots {
                 model.snapshotShowRefusal(refusal, for: member.id)
                 return AnyView(LockScreen(model: model))
             },
-        ] + turnOnRoutes + sidebarRoutes + [
+        ] + turnOnRoutes + householdRoutes + sidebarRoutes + [
             SnapshotCatalog.screen("accounts", "sharing_badges", "Accounts: lock badges on A's accounts below Everything", .accounts) { models, context in
                 models.accounts.selectedAccountId = context.accountId("Travel Card")
             },
@@ -77,6 +77,40 @@ enum SharingSnapshots {
                 try await signInMember(context)
                 return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
             },
+        ]
+    }
+
+    /// Settings ▸ Household in each state (step 7a Task 9), from given values; nothing here touches iCloud. Synthetic names.
+    static var householdRoutes: [SnapshotRoute] {
+        func route(_ name: String, _ title: String, _ state: HouseholdPaneState) -> SnapshotRoute {
+            SnapshotRoute(name: "settings-household" + name, title: "Settings ▸ Household: " + title) { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .household, householdState: state).scenePadding().frame(width: 640)))
+            }
+        }
+        let member = "Person B"
+        func added(_ status: HouseholdMemberState) -> HouseholdPaneState { HouseholdPaneState(member: member, status: status) }
+        var blocked = added(.notInvited)
+        blocked.blockers = [HouseholdCopy.blocker(.pendingUpload(3)), HouseholdCopy.blocker(.misplaced(2)),
+                            HouseholdCopy.blocker(.householdAudit(1), alreadyShared: false)]
+        var request = added(.joined)
+        request.keyCode = "482 019"
+        var locked = added(.joined)
+        locked.locked = true
+        var longName = added(.invited)
+        longName.member = "Person B with a very long synthetic name that goes on and on and on and on and on"
+        var ambiguous = added(.notInvited)
+        ambiguous.ambiguous = HouseholdCopy.ambiguousParticipants(member)
+        return [
+            route("", "nobody added, a pick or a new name", HouseholdPaneState(unclaimed: ["Person C", "Person D"])),
+            route("-added", "member added, not invited", added(.notInvited)),
+            route("-blocked", "the invite is blocked, with the reasons", blocked),
+            route("-invited", "invited, waiting", added(.invited)),
+            route("-joined", "joined", added(.joined)),
+            route("-key_request", "her device asks for the key, with the code", request),
+            route("-locked", "too many attempts", locked),
+            route("-removed", "removed", added(.removed)),
+            route("-long_name", "a long name truncates in the middle", longName),
+            route("-ambiguous", "two people accepted", ambiguous),
         ]
     }
 

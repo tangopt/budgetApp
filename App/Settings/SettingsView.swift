@@ -1,4 +1,5 @@
 // App/Settings/SettingsView.swift
+import Combine
 import SwiftUI
 import BudgetCore
 
@@ -7,14 +8,19 @@ import BudgetCore
 /// Evidence (the source folders scanned for documents), Sign-in (auth spec §6), Sharing (my tax years and income; each
 /// account's owner and level are set in the account itself) and Sync (turning sync on, its status).
 struct SettingsView: View {
-    enum Pane: Hashable { case appearance, theme, evidence, signIn, sharing, sync }
+    enum Pane: Hashable { case appearance, theme, evidence, signIn, sharing, sync, household }
     @State private var pane: Pane
     @ObservedObject private var navigation = SettingsNavigation.shared
     private let signInModel: SignInSettingsModel?
     private let sharingModel: SharingSettingsModel?
+    /// Snapshot routes: the Household pane from values (always shown).
+    private let householdState: HouseholdPaneState?
+    @StateObject private var admin = SettingsAdminWatch()
 
     /// `signInModel`, `sharingModel`: snapshot routes only.
-    init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil, sharingModel: SharingSettingsModel? = nil) {
+    init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil, sharingModel: SharingSettingsModel? = nil,
+         householdState: HouseholdPaneState? = nil) {
+        self.householdState = householdState
         _pane = State(initialValue: pane)
         self.signInModel = signInModel
         self.sharingModel = sharingModel
@@ -40,6 +46,16 @@ struct SettingsView: View {
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud", value: Pane.sync) {
                 SyncSettings()
             }
+            // Admin only.
+            if admin.isAdmin || householdState != nil {
+                Tab(HouseholdCopy.paneTitle, systemImage: "person.2.circle", value: Pane.household) {
+                    if let householdState {
+                        HouseholdPane(state: householdState)
+                    } else {
+                        HouseholdSettings()
+                    }
+                }
+            }
         }
         .scenePadding()
         .frame(width: 640)
@@ -49,6 +65,28 @@ struct SettingsView: View {
             pane = request.pane
             navigation.done(request)
         }
+    }
+}
+
+/// Whether the person signed in on this Mac is the household's admin (Settings ▸ Household is theirs).
+@MainActor
+final class SettingsAdminWatch: ObservableObject {
+    @Published private(set) var isAdmin = false
+    private var environmentWatch: AnyCancellable?
+    private var sessionWatch: AnyCancellable?
+
+    init() {
+        environmentWatch = AppEnvironment.Current.shared.$environment.sink { [weak self] environment in
+            self?.watch(environment)
+        }
+    }
+
+    private func watch(_ environment: AppEnvironment?) {
+        guard let session = environment?.session else { isAdmin = false; sessionWatch = nil; return }
+        sessionWatch = session.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self, weak session] _ in
+            self?.isAdmin = session?.currentUser?.isAdmin == true
+        }
+        isAdmin = session.currentUser?.isAdmin == true
     }
 }
 

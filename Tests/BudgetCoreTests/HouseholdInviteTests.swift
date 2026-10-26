@@ -449,6 +449,7 @@ final class HouseholdInviteTests: XCTestCase {
         let after = try await h.cloud.zoneShare(household)
         XCTAssertEqual(after?.participants, [], "nobody left on the share")
         XCTAssertEqual(try read(h.adminMac.db) { db in try HouseholdInvite.removed(db: db) }, ["fake-member", "fake-pending"])
+        XCTAssertTrue(try read(h.adminMac.db) { db in try HouseholdInvite.wasRemoved(db: db) }, "the pane shows Removed")
         do {
             _ = try await h.cloud.session(as: member).changes(since: nil, zone: household)
             XCTFail("the household is out of her reach")
@@ -463,6 +464,7 @@ final class HouseholdInviteTests: XCTestCase {
         // Invited again: the record clears, and her acceptance binds.
         _ = try share(try await invite(h))
         XCTAssertEqual(try read(h.adminMac.db) { db in try HouseholdInvite.removed(db: db) }, [])
+        XCTAssertFalse(try read(h.adminMac.db) { db in try HouseholdInvite.wasRemoved(db: db) }, "invited again: no longer removed")
         h.cloud.invite(member, zone: household)
         h.cloud.accept(zone: household, as: member)
         let accepted = try await h.cloud.zoneShare(household)!

@@ -464,6 +464,65 @@ final class SyncKeyExchangeTests: XCTestCase {
         guard case .showCode = try await s.requester.poll(now: at(later + 3)) else { return XCTFail("no answer after the lockout") }
     }
 
+    /// R1 (Task 8 re-review): declined codes more than an hour apart never add up to a lockout.
+    func testFailuresOlderThanAnHourDoNotCount() async throws {
+        let s = try setup()
+        var clock: TimeInterval = 0
+        func declineOne() async throws {
+            try await s.requester.start(now: at(clock + 1))
+            _ = try await s.granter.poll(now: at(clock + 2))
+            guard case .showCode = try await s.requester.poll(now: at(clock + 3)) else { return XCTFail("no code") }
+            let polled = try await s.granter.poll(now: at(clock + 4))
+            let request = try XCTUnwrap(polled)
+            try await s.granter.decline(request, now: at(clock + 5))
+        }
+        try await declineOne()
+        clock += 10
+        try await declineOne()
+        // Over an hour later: the first two are forgotten, so this is one failure, not the third.
+        let gap = SyncKeyExchange.failureWindow + 100
+        await s.cloud.advanceClock(by: gap)
+        clock += gap
+        try await declineOne()
+        let notLocked = try await s.granter.lockedUntil(now: at(clock + 6))
+        XCTAssertNil(notLocked, "failures an hour apart don't lock the Mac out")
+        // Two more within the hour: three in the window now.
+        clock += 10
+        try await declineOne()
+        clock += 10
+        try await declineOne()
+        let locked = try await s.granter.lockedUntil(now: at(clock + 6))
+        XCTAssertNotNil(locked, "three failures within the hour lock it")
+    }
+
+    /// R3: a lockout read from the ledger never reaches further than 15 minutes from now.
+    func testLockoutReadIsClampedToFifteenMinutes() async throws {
+        let s = try setup()
+        var planted = SyncKeyExchange.Ledger()
+        planted.lockedUntil = at(0).addingTimeInterval(10 * 24 * 3600)
+        let ledger = planted
+        let member = member
+        try await s.macDb.write { db in try ledger.save(member: member, db: db, now: self.at(0)) }
+        let until = try await s.granter.lockedUntil(now: at(0))
+        XCTAssertEqual(until, at(0).addingTimeInterval(SyncKeyExchange.lockout))
+        // A request seen meanwhile pins the lock at 15 minutes, so it ends.
+        try await s.requester.start(now: at(1))
+        _ = try await s.granter.poll(now: at(2))
+        let after = try await s.granter.lockedUntil(now: at(SyncKeyExchange.lockout + 3))
+        XCTAssertNil(after, "a far-future lock ends within 15 minutes once it has been clamped")
+    }
+
+    /// R4: an all-zero X25519 agreement (a low-order public key) is refused on both sides.
+    func testAllZeroSharedSecretIsRefused() throws {
+        let low = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(repeating: 0, count: 32))
+        let admin = Curve25519.KeyAgreement.PrivateKey()
+        XCTAssertThrowsError(try SyncKeyExchange.seal([SymmetricKey(size: .bits256)], to: low, from: admin, requestId: UUID().uuidString,
+                                                      transcript: Data(repeating: 7, count: 32)))
+        let device = Curve25519.KeyAgreement.PrivateKey()
+        XCTAssertThrowsError(try SyncKeyExchange.open(Data(repeating: 9, count: 200), with: device, from: low, requestId: UUID().uuidString,
+                                                      transcript: Data(repeating: 7, count: 32)))
+    }
+
     /// M6: more keys than one grant carries: a clear error, nothing saved.
     func testTooManyKeysIsAClearError() async throws {
         let s = try setup(keyCount: SyncKeyExchange.maxKeys + 1)

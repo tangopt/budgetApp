@@ -52,6 +52,8 @@ public enum SyncKeyExchange {
     /// Declined or refused codes in a row before the Mac stops answering her requests for `lockout`.
     public static let maxFailedAttempts = 3
     public static let lockout: TimeInterval = 15 * 60
+    /// Only declined or refused codes within this long of each other count towards the lockout.
+    public static let failureWindow: TimeInterval = 60 * 60
     /// CloudKit's zone-wide share record name (`CKRecordNameZoneWideShare`): part of the share's identity in
     /// `requestName`.
     public static let zoneShareRecordName = "cloudkit.zoneshare"
@@ -173,9 +175,13 @@ public enum SyncKeyExchange {
     }
 
     /// HKDF-SHA256 over the agreements in order (the Mac's key with hers, then the ephemeral with hers).
-    private static func derive(_ secrets: [SharedSecret], requestId: String, transcript: Data) -> SymmetricKey {
+    private static func derive(_ secrets: [SharedSecret], requestId: String, transcript: Data) throws -> SymmetricKey {
         var material = Data()
-        for secret in secrets { secret.withUnsafeBytes { material.append(contentsOf: $0) } }
+        for secret in secrets {
+            // A low-order public key makes the agreement all zeros: nobody but the sender of that key could not know it.
+            guard secret.withUnsafeBytes({ $0.contains { $0 != 0 } }) else { throw ExchangeError.unreadableGrant }
+            secret.withUnsafeBytes { material.append(contentsOf: $0) }
+        }
         return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: material), salt: Data(requestId.utf8),
                                       info: Data((info + "/grant").utf8) + transcript, outputByteCount: 32)
     }
@@ -325,10 +331,26 @@ public enum SyncKeyExchange {
     struct Ledger: Codable, Equatable {
         /// Requests never answered again (granted, declined, refused, expired), until the time they can't be fresh anyway.
         var closed: [String: Date] = [:]
-        /// Declined or refused codes in a row.
-        var failures = 0
+        /// When each declined or refused code happened; only the last `failureWindow` counts towards the lockout.
+        var failedAt: [Date] = []
         /// No request of hers is answered before this time.
         var lockedUntil: Date?
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            closed = try c.decodeIfPresent([String: Date].self, forKey: .closed) ?? [:]
+            failedAt = try c.decodeIfPresent([Date].self, forKey: .failedAt) ?? []
+            lockedUntil = try c.decodeIfPresent(Date.self, forKey: .lockedUntil)
+        }
+
+        /// The lockout still in force at `now`, never later than `lockout` from now (a clock set far ahead once, or a
+        /// tampered value, can't lock her out for longer).
+        func activeLock(now: Date) -> Date? {
+            guard let until = lockedUntil, until > now else { return nil }
+            return min(until, now.addingTimeInterval(SyncKeyExchange.lockout))
+        }
 
         static func key(member: String) -> String { "keyExchangeLedger." + member }
 
@@ -379,8 +401,7 @@ public enum SyncKeyExchange {
         /// (`HouseholdCopy.tooManyAttempts`); nil when it answers.
         public func lockedUntil(now: Date) async throws -> Date? {
             let ledger = try await ledger()
-            guard let until = ledger.lockedUntil, until > now else { return nil }
-            return until
+            return ledger.activeLock(now: now)
         }
 
         /// Her request, once her device has revealed its key: show its code and ask the admin to confirm. Nil while
@@ -398,14 +419,20 @@ public enum SyncKeyExchange {
                 log.error("Key exchange: a request not written by the member, or not the right shape; ignored")
                 return nil
             }
-            let ledger = try await ledger()
+            var current = try await ledger()
+            if let until = current.lockedUntil, until > now.addingTimeInterval(lockout) {
+                // A lock further out than a lockout can be: keep it at a lockout from now, so it ends.
+                try await self.record(now: now) { $0.lockedUntil = now.addingTimeInterval(lockout) }
+                current = try await ledger()
+            }
+            let ledger = current
             guard ledger.closed[id] == nil else { return nil }
             guard try await isMember() else {
                 log.error("Key exchange: a request from someone not on the household share; ignored")
                 return nil
             }
             guard let answered, answered.requestId == id else {
-                if let until = ledger.lockedUntil, until > now { return nil }
+                if ledger.activeLock(now: now) != nil { return nil }
                 return try await answer(id: id, commitment: commitment, postedAt: record.modifiedAt, now: now)
             }
             guard now.timeIntervalSince(answered.answeredAt) <= lifetime else {
@@ -459,7 +486,7 @@ public enum SyncKeyExchange {
             case .saved:
                 try await record(now: now) { ledger in
                     ledger.closed[request.id] = now.addingTimeInterval(lifetime)
-                    ledger.failures = 0
+                    ledger.failedAt = []
                 }
                 self.answered = nil
                 toClear.insert(request.id)
@@ -535,9 +562,9 @@ public enum SyncKeyExchange {
             try await record(now: now) { ledger in
                 ledger.closed[id] = now.addingTimeInterval(lifetime)
                 guard failed else { return }
-                ledger.failures += 1
-                if ledger.failures >= maxFailedAttempts {
-                    ledger.failures = 0
+                ledger.failedAt = ledger.failedAt.filter { now.timeIntervalSince($0) < failureWindow } + [now]
+                if ledger.failedAt.count >= maxFailedAttempts {
+                    ledger.failedAt = []
                     ledger.lockedUntil = now.addingTimeInterval(lockout)
                 }
             }

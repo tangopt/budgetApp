@@ -66,6 +66,10 @@ final class RealSync: ObservableObject {
     @Published private(set) var progress: SyncTurnOn.Progress?
     /// Why the real sync doesn't run although the upload began (nil when it runs, or before the turn-on).
     @Published private(set) var refusal: String?
+    /// Settings ▸ Household (step 7a): the member, her share, the key exchange.
+    let household: HouseholdController
+    /// The running engine is the admin's own (signed in to the admin's iCloud user): the Mac that binds and answers.
+    private var enginePrimary = false
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -97,6 +101,8 @@ final class RealSync: ObservableObject {
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         self.session = session
+        household = HouseholdController(dbQueue: dbQueue, session: session)
+        household.isRunning = { [weak self] in self?.scheduler != nil && self?.enginePrimary == true }
         // The iCloud account changed while Mango runs: sync stops and the user is checked again (a different one
         // never syncs; Settings ▸ Sync says why).
         accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
@@ -114,6 +120,7 @@ final class RealSync: ObservableObject {
         confirmedICloudUser = nil
         engineUserId = nil
         sessionWatch = nil
+        enginePrimary = false
         statusTask?.cancel()
         progressTask?.cancel()
         if let running = scheduler {
@@ -216,6 +223,7 @@ final class RealSync: ObservableObject {
             return
         }
         let (role, deviceId, revalidates) = made
+        enginePrimary = revalidates
         let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                     device: SyncDevice(id: deviceId, name: Host.current().localizedName ?? "Mac"),
                                     keyStore: KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: false)),
@@ -229,6 +237,8 @@ final class RealSync: ObservableObject {
                 self.status = status
                 Self.log.info("Real sync status: \(Self.describe(status), privacy: .public)")
                 await self.refreshProgress()
+                // A sync finished: look for her acceptance and her key request.
+                if case .idle = status { await self.household.refresh(contactCloud: true) }
             }
         }
         watchProgress()

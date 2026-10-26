@@ -209,6 +209,11 @@ public enum HouseholdInvite {
     /// `syncState` (local): the record names `remove` took off the share since the last invite.
     static let removedKey = "householdRemovedParticipants"
 
+    /// Whether the admin removed the member (`remove`) and has not invited again since.
+    public static func wasRemoved(db: Database) throws -> Bool {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncState WHERE key = ?", arguments: [removedKey]) == 1
+    }
+
     /// The record names taken off the household's share since the last invite (`remove`).
     public static func removed(db: Database) throws -> [String] {
         try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [removedKey])

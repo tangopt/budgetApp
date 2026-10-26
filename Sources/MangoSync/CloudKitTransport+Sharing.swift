@@ -9,6 +9,12 @@ import BudgetCore
 extension CloudKitTransport: SyncShareTransport {
     public func currentUserRecordName() async throws -> String { try await currentUser() }
 
+    /// The zone's `CKShare` itself and its container, for the system share sheet (`NSItemProvider.registerCKShare`).
+    public func shareForSheet(_ zone: String) async throws -> (share: CKShare, container: CKContainer)? {
+        guard let share = try await fetchZoneShare(zone) else { return nil }
+        return (share, container)
+    }
+
     public func zoneShare(_ zone: String) async throws -> SyncZoneShare? {
         guard let share = try await fetchZoneShare(zone) else { return nil }
         return Self.syncShare(share, zone: zone, currentUser: try await currentUser())
