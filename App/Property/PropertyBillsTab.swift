@@ -216,7 +216,7 @@ struct BillsTenancyView: View {
                 Color.clear.frame(width: 1, height: 1).gridColumnAlignment(.leading)
                 ForEach(months, id: \.self) { month in
                     Text(month.formatted(Self.monthName)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .figureText()
                         .frame(maxWidth: .infinity)
                 }
             }
