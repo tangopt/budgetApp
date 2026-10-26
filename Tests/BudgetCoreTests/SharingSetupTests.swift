@@ -266,10 +266,15 @@ final class SharingSetupTests: XCTestCase {
 
             try SharingSetup.save(rows, admin: h.admin, db: db, now: Self.day)
             XCTAssertEqual(try account(db, accountId).ownerPersonId, h.adminPersonId)
-            // Afterwards nobody changes an owner (joint or owned), not even the owner or the admin.
+            // Afterwards only the admin moves an account between theirs and Joint (sync-ui); nobody hands one to the member.
             for before in [SyncValue.null, .int(h.adminPersonId)] {
                 let decision = try ownerChange(before: before)
-                XCTAssertEqual(decision, .denied)
+                XCTAssertTrue(try AccessPolicy.allows(h.admin, decision, db: db))
+                XCTAssertFalse(try AccessPolicy.allows(h.member, decision, db: db))
+                let toMember = try AccessAreaMap.area(table: "account", origin: .edit, change: .update(before: ["ownerPersonId": before]),
+                                                      changedFields: ["ownerPersonId"],
+                                                      row: ["ownerPersonId": .int(h.memberPersonId), "sharingLevel": .string("balanceOnly")], db: db)
+                XCTAssertEqual(toMember, .denied)
             }
         }
     }

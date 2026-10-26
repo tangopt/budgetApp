@@ -383,6 +383,18 @@ public enum SyncTurnOn {
         try advance(to: .ownershipConfirmed, db: db, now: now)
     }
 
+    /// The upload's start (sync-ui, 2026-10-26: the sheet no longer asks who owns each account): once backed up, the
+    /// admin confirms ownership with the defaults when it isn't confirmed yet (`SharingSetup.confirmDefaults`; owners and
+    /// levels already set are kept), and the stage becomes `ownershipConfirmed`. Refuses before the backup and for
+    /// anyone but the household's admin; nothing is written then.
+    public static func confirmOwnershipAtStart(admin: AccessActor, db: Database, now: Date) throws {
+        let current = try stage(db: db)
+        guard current >= .backedUp else { throw TurnOnError.wrongStage(current) }
+        guard admin.isAdmin, try AccessActor.admin(db: db).appUserId == admin.appUserId else { throw SharingError.notAdmin }
+        try SharingSetup.confirmDefaults(admin: admin, db: db, now: now)
+        try markOwnershipConfirmed(db: db, now: now)
+    }
+
     /// Step 4, at stage `keysReady` only, by the household's admin: records the admin's iCloud user on their
     /// app user (`cloudKitUserRecordName`, so the iPhone finds its viewer and private zone), gives every row its sync
     /// identity and queues it (`SyncRecordStore.backfill`, and any identity never uploaded that isn't queued), rebuilds

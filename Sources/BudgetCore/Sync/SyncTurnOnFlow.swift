@@ -1,8 +1,9 @@
 import Foundation
 
 /// What the Mac's "Turn on sync…" sheet and Settings ▸ Sync show at each point of `SyncTurnOn` (step 6 Task 13), and
-/// every word of it. The sheet has three steps, each a section with its state: **1 Back up**, **2 Who owns each
-/// account?**, **3 Upload**; the blockers are listed above them. Only the person's own press of **Start upload** starts
+/// every word of it. The sheet has two steps, each a section with its state: **1 Back up**, **2 Upload**; the blockers
+/// are listed above them. It doesn't ask who owns each account (sync-ui, 2026-10-26): the upload's start confirms the
+/// defaults (`SyncTurnOn.confirmOwnershipAtStart`) and each account's sharing is changed in the account itself. Only the person's own press of **Start upload** starts
 /// the upload, and only with no blocker left; closing the sheet never stops a running upload, and reopening it shows the
 /// stage kept in the database.
 public enum SyncTurnOnFlow {
@@ -19,14 +20,11 @@ public enum SyncTurnOnFlow {
         case none
         case checking
         case backingUp
-        case savingOwners
         case starting
     }
 
     public struct Facts: Equatable, Sendable {
         public var progress: SyncTurnOn.Progress
-        /// Every account has its owner and level (`SharingSetup.isConfirmed`).
-        public var ownershipConfirmed: Bool
         public var blockers: [SyncTurnOn.Blocker]
         /// The iCloud checks behind `blockers` (keys, markers, the account) have answered.
         public var checked: Bool
@@ -36,10 +34,9 @@ public enum SyncTurnOnFlow {
         public var syncRefusal: String?
         public var work: Work
 
-        public init(progress: SyncTurnOn.Progress, ownershipConfirmed: Bool, blockers: [SyncTurnOn.Blocker], checked: Bool,
+        public init(progress: SyncTurnOn.Progress, blockers: [SyncTurnOn.Blocker], checked: Bool,
                     syncStatus: SyncStatus, syncRefusal: String? = nil, work: Work = .none) {
             self.progress = progress
-            self.ownershipConfirmed = ownershipConfirmed
             self.blockers = blockers
             self.checked = checked
             self.syncStatus = syncStatus
@@ -61,10 +58,6 @@ public enum SyncTurnOnFlow {
         /// "Back up now" (or "Back up again") is enabled.
         public var canBackUp: Bool
         public var backUpButton: String?
-        public var ownership: StepState
-        public var ownershipLine: String?
-        /// "Set owners…" is enabled (only once backed up: the backup comes before any write).
-        public var canSetOwners: Bool
         public var upload: StepState
         public var uploadLine: String?
         public var uploadTone: Tone
@@ -81,7 +74,7 @@ public enum SyncTurnOnFlow {
     // MARK: Copy
 
     public static let sheetTitle = "Turn on sync"
-    public static let sheetNote = "Mango backs up your data, asks who owns each account, then uploads everything to iCloud, sealed with keys only your devices hold."
+    public static let sheetNote = "Mango backs up your data, then uploads everything to iCloud, sealed with keys only your devices hold."
     public static let blockersTitle = "Before sync can turn on:"
     public static let checking = "Checking iCloud…"
     public static let checkFailed = "Mango couldn't reach iCloud to check, so the upload can't start yet."
@@ -96,17 +89,11 @@ public enum SyncTurnOnFlow {
     public static let backUpExplanation = "A full copy of your data beside it, before anything changes."
     public static func backedUp(fileName: String) -> String { "Backed up: \(fileName)" }
 
-    public static let ownershipTitle = "Who owns each account?"
-    public static let setOwners = "Set owners…"
-    public static let ownershipWaiting = "After the backup."
-    public static let ownershipExplanation = "Each account's owner and how much the other person sees."
-    public static let ownershipDone = "Done"
-
     public static let uploadTitle = "Upload"
     public static let startUpload = "Start upload"
     public static let starting = "Starting the upload…"
-    public static let uploadWaiting = "After the owners are set."
-    public static let uploadExplanation = "Nothing goes to iCloud until you press Start upload."
+    public static let uploadWaiting = "After the backup."
+    public static let uploadExplanation = "Nothing goes to iCloud until you press Start upload. Your accounts start shared as balance only, property accounts in full; change each one in Accounts."
     public static func uploading(sent: Int, total: Int) -> String { "Uploading \(sent) of \(total) records" }
     public static let uploadPaused = "Upload paused — it continues where it stopped."
     public static let uploadDone = "Your data is in iCloud."
@@ -151,9 +138,6 @@ public enum SyncTurnOnFlow {
         let fileName = facts.progress.backupPath.map { URL(fileURLWithPath: $0).lastPathComponent }
         let backUpButton: String? = started ? nil : (facts.work == .backingUp ? backingUp : (isBackedUp ? backUpAgain : backUpNow))
 
-        let ownersSet = isBackedUp && facts.ownershipConfirmed
-        let ownership: StepState = ownersSet ? .done : (isBackedUp ? .current : .waiting)
-
         let upload: StepState
         var line: String?
         var tone = Tone.neutral
@@ -175,8 +159,8 @@ public enum SyncTurnOnFlow {
             }
             fraction = facts.progress.total > 0 ? Double(facts.progress.sent) / Double(facts.progress.total) : 0
         default:
-            upload = ownersSet ? .current : .waiting
-            line = facts.work == .starting ? starting : (ownersSet ? uploadExplanation : uploadWaiting)
+            upload = isBackedUp ? .current : .waiting
+            line = facts.work == .starting ? starting : (isBackedUp ? uploadExplanation : uploadWaiting)
         }
 
         return Screen(
@@ -185,14 +169,11 @@ public enum SyncTurnOnFlow {
             backupLine: isBackedUp ? fileName.map { backedUp(fileName: $0) } : backUpExplanation,
             canBackUp: !started && idle && mayWrite,
             backUpButton: backUpButton,
-            ownership: ownership,
-            ownershipLine: ownersSet ? ownershipDone : (isBackedUp ? ownershipExplanation : ownershipWaiting),
-            canSetOwners: isBackedUp && !facts.ownershipConfirmed && !started && idle && mayWrite,
             upload: upload,
             uploadLine: line,
             uploadTone: tone,
             showsStartUpload: !started,
-            canStartUpload: !started && ownersSet && facts.blockers.isEmpty && facts.checked && idle,
+            canStartUpload: !started && isBackedUp && facts.blockers.isEmpty && facts.checked && idle,
             fraction: fraction,
             showsCheckAgain: !started && !facts.checked && idle)
     }

@@ -113,6 +113,46 @@ public enum SharingLevels {
         return change
     }
 
+    /// Moves the account between the admin's own and Joint (sync-ui, 2026-10-26), as the household's admin, in the
+    /// caller's transaction, with the level it takes (`.everything` for Joint). Only after ownership is confirmed;
+    /// only between the admin and Joint (handing an account to another person is step 7's); a joint account is
+    /// Everything; Hidden only without blockers. The same owner as now is a level change (`set`). Like `set`, it
+    /// writes the owner and level only and queues every record whose placement changes, so the push moves them
+    /// (`SyncZoneMoves`; the reconcile's facts cover the owner too).
+    @discardableResult
+    public static func setOwner(_ owner: SharingSetup.Owner, level: SharingLevel, accountId: Int64, actor: AccessActor,
+                                db: Database) throws -> Change {
+        guard let account = try Account.fetchOne(db, key: accountId) else { throw SharingError.accountNotFound }
+        guard try SharingSetup.isConfirmed(db: db) else { throw SharingError.ownershipNotConfirmed }
+        guard actor.isAdmin, try AccessActor.admin(db: db).appUserId == actor.appUserId else { throw SharingError.notAdmin }
+        let from = account.ownerPersonId
+        let to = owner.personId
+        guard from == nil || from == actor.personId else { throw SharingError.notOwner }
+        guard to == nil || to == actor.personId else { throw SharingError.ownerMustBeAdminOrJoint }
+        if to == nil { guard level == .everything else { throw SharingError.jointMustBeEverything } }
+        if from == to {
+            return to == nil ? Change(from: account.sharingLevel, to: level, isLowering: false)
+                             : try set(level, accountId: accountId, actor: actor, db: db)
+        }
+        let blockers = try blockers(accountId: accountId, to: level, db: db)
+        guard blockers.isEmpty else { throw SharingError.blocked(blockers) }
+
+        func value(_ person: Int64?) -> SyncValue { person.map(SyncValue.int) ?? .null }
+        // The same rule the Mac re-validates an incoming owner change with.
+        let decision = try AccessAreaMap.area(table: "account", origin: .edit,
+                                              change: .update(before: ["ownerPersonId": value(from), "sharingLevel": .string(account.sharingLevel.rawValue)]),
+                                              changedFields: level == account.sharingLevel ? ["ownerPersonId"] : ["ownerPersonId", "sharingLevel"],
+                                              row: ["ownerPersonId": value(to), "sharingLevel": .string(level.rawValue)], db: db)
+        guard try AccessPolicy.allows(actor, decision, db: db) else { throw SharingError.notOwner }
+        let moves = try SyncZoneMoves.placementChanges(from: [:], to: [accountId: .init(owner: to, level: level)], db: db)
+        try ActorWrite.stamped(actor, origin: .edit, db: db) {
+            try db.execute(sql: "UPDATE account SET ownerPersonId = ?, sharingLevel = ? WHERE id = ?", arguments: [to, level.rawValue, accountId])
+        }
+        try SyncZoneMoves.queue(moves, db: db)
+        try SyncZoneMoves.noteFacts(accountId: accountId, db: db, now: Date())
+        return Change(from: account.sharingLevel, to: level, isLowering: level < account.sharingLevel)
+    }
+
     /// How many records changing the account to `level` moves to another zone (the warning's "Moves 1,204 records").
     /// `set` also resends a few that only change form (the account's own stub, property money leaving out its batch);
     /// those aren't counted. Reads only. 0 for the level it has, for a joint account (always shared in full) and before

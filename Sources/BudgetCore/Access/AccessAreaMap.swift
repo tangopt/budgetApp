@@ -188,9 +188,9 @@ public enum AccessAreaMap {
 
     /// Budget & accounts, plus the owner's say for a level change. A new account names its owner (who must
     /// be the writer) unless it is joint at Everything; a level change is judged on the owner before it; a
-    /// joint account's level is nobody's to change, and after set-up nobody changes an owner. The one
-    /// exception is the ownership sheet: while ownership is unconfirmed, the admin (with Household settings)
-    /// sets the owner and level of an account that has no owner yet.
+    /// joint account's level is nobody's to change. Owners: while ownership is unconfirmed, the admin (with
+    /// Household settings) sets the owner and level of an account that has no owner yet; afterwards only the
+    /// admin moves an account between theirs and Joint (Joint at Everything), and nobody else changes an owner.
     private static func accountDecision(change: AccessChange, changedFields: Set<String>, row: [String: SyncValue],
                                         db: Database) throws -> AccessDecision {
         var parts: [AccessDecision] = []
@@ -214,8 +214,19 @@ public enum AccessAreaMap {
                     parts.append(.area(.householdSettings))
                     parts.append(.ownerOnly(personId: try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")))
                 } else if changedFields.contains("ownerPersonId") {
-                    // After set-up nobody changes an owner (a deliberate later flow, not step 6).
-                    parts.append(.denied)
+                    // After set-up only the admin moves an account between theirs and Joint (`SharingLevels.setOwner`);
+                    // a joint account is Everything. Any other owner change (to or from another person) is step 7's.
+                    let admin = try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")
+                    let after = try localId(row["ownerPersonId"], table: "person", db: db)
+                    let level = row["sharingLevel"]
+                    let ownersAllowed = admin != nil && (owner == nil || owner == admin) && (after == nil || after == admin)
+                    let jointBelowEverything = after == nil && level != nil && level != .string(SharingLevel.everything.rawValue)
+                    if ownersAllowed, !jointBelowEverything {
+                        parts.append(.area(.householdSettings))
+                        parts.append(.ownerOnly(personId: admin))
+                    } else {
+                        parts.append(.denied)
+                    }
                 } else {
                     parts.append(.ownerOnly(personId: owner))
                 }
