@@ -72,6 +72,8 @@ targets:
         # "YES" only in a team-signed build (Config/SigningPhone.xcconfig); read by CloudKitAvailability.
         MangoCloudKit: $(MANGO_CLOUDKIT)
         UILaunchScreen: {}
+        # The household invitation (a CKShare link) opens this app and reaches the scene delegate (step 7a).
+        CKSharingSupported: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         # Export compliance: only Apple's own encryption (CryptoKit), so TestFlight doesn't ask on every build.

@@ -55,6 +55,9 @@ final class PhoneSyncController: ObservableObject {
     @Published private(set) var viewerRecordName: String?
     /// Shown once this device was found no longer in the household (its data removed here).
     @Published private(set) var householdNotice: String?
+    /// While this device joins the household, or after it was removed (step 7a); nil on the admin's phone and once the
+    /// first household pull has landed. The root shows `HouseholdJoinView` for it.
+    @Published private(set) var joinState: HouseholdJoinState?
 
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
@@ -82,6 +85,13 @@ final class PhoneSyncController: ObservableObject {
     private var accountWatch: NSObjectProtocol?
     /// The household's data is being dropped here (one at a time).
     private var leavingHousehold = false
+    /// The owner of the household this device joined (a member device), as the running engine was made.
+    private var memberOwner: String?
+    /// The invitation being accepted; kept until iCloud has accepted it, for Retry.
+    private var pendingInvitation: (metadata: CKShare.Metadata, owner: String)?
+    /// The key request (a member without the household key) and the task polling it.
+    private var requester: SyncKeyExchange.Requester?
+    private var exchange: Task<Void, Never>?
     private let canUseCloudKit = PhoneEntitlements.hasCloudKitContainer()
     /// Demo data is shown: nothing here touches CloudKit or the Keychain.
     private var isDemo = PhoneDemoData.isOn
@@ -95,6 +105,10 @@ final class PhoneSyncController: ObservableObject {
     func attach(_ environment: PhoneEnvironment) async {
         guard dbQueue == nil, !environment.isDemo, !isDemo else { return }
         dbQueue = environment.dbQueue
+        // The household invitation (the scene delegate's): one that arrived before this point is handed over now.
+        PhoneShareInbox.shared.handler = { [weak self] metadata in
+            Task { @MainActor [weak self] in await self?.shareReceived(metadata) }
+        }
         checkAccount()
         if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit,
                                       demoModeOn: PhoneDemoData.isOn) {
@@ -190,6 +204,9 @@ final class PhoneSyncController: ObservableObject {
         statusTask?.cancel()
         statusTask = nil
         engineViewer = .none
+        exchange?.cancel()
+        exchange = nil
+        requester = nil
         if let running = scheduler {
             scheduler = nil
             await running.stop()
@@ -216,6 +233,15 @@ final class PhoneSyncController: ObservableObject {
         // keeps the iCloud user it first reads.
         let owner = (try? await dbQueue.read { db in try SyncHouseholdMembership.current(db: db) }) ?? nil
         guard mine == engineGeneration, !isDemo else { return }
+        memberOwner = owner
+        let held = owner == nil ? false : await keyIsHeld(keyStore)
+        guard mine == engineGeneration, !isDemo else { return }
+        let plan = HouseholdJoinState.plan(owner: owner, keyHeld: held)
+        if plan == .exchangeKey, let owner {
+            // A member without the household key pulls nothing: the key exchange first (a new code each launch).
+            beginKeyExchange(owner: owner, resume: false)
+            return
+        }
         let transport: any SyncTransport
         if let owner {
             let container = CKContainer(identifier: CloudKitTransport.containerIdentifier)
@@ -239,6 +265,7 @@ final class PhoneSyncController: ObservableObject {
             }
         }
         Task { await scheduler.requestSync(.launch) }
+        if plan == .pullHousehold { await updateJoinState(status: .off) }
     }
 
     /// Follows the viewer (`followViewerIfNamed`), one check at a time.
@@ -309,6 +336,13 @@ final class PhoneSyncController: ObservableObject {
         identityGeneration += 1
         readingRecordName = false
         householdNotice = nil
+        joinState = nil
+        pendingInvitation = nil
+        exchange?.cancel()
+        exchange = nil
+        requester = nil
+        PhoneShareInbox.shared.handler = nil
+        memberOwner = nil
         dbQueue = nil
         status = .off
         lastSync = nil
@@ -333,11 +367,15 @@ final class PhoneSyncController: ObservableObject {
         checkAccount()
         readViewerRecordName()
         Task { await scheduler?.requestSync(.foreground) }
+        if let owner = memberOwner, requester != nil, exchange == nil { beginKeyExchange(owner: owner, resume: true) }
     }
 
     /// The scene went to the background: a running sync stops at its next operation (token and stamps unchanged).
     func sceneEnteredBackground() {
         wentToBackground = true
+        // The key exchange stops polling; its request stays (in memory) until the scene is active again.
+        exchange?.cancel()
+        exchange = nil
         guard let scheduler else { return }
         Task { await scheduler.cancel() }
     }
@@ -365,6 +403,7 @@ final class PhoneSyncController: ObservableObject {
         if let pulled = try? await dbQueue.read({ db in try SyncEngineCore.hasChangeToken(db: db) }) {
             isFirstDownload = !pulled
         }
+        await updateJoinState(status: status)
         if case .syncing = status { return }
         if await scheduler.leftHousehold {
             // Not inside the status loop: stopping the engine ends that loop.
@@ -410,12 +449,186 @@ final class PhoneSyncController: ObservableObject {
             }.value
         }
         householdNotice = HouseholdCopy.removedNotice
+        joinState = .removed
+        memberOwner = nil
         await startEngine(viewer: .none)
     }
 
     /// The notice was read.
     func dismissHouseholdNotice() {
         householdNotice = nil
+        switch joinState {
+        case .removed?, .cannotJoin?: joinState = nil
+        default: break
+        }
+    }
+
+    // MARK: Joining a household (step 7a)
+
+    /// The household invitation arrived (a link opened here). Only a device with no household of its own accepts it:
+    /// the admin's phone holds the household in its own zone and never does.
+    private func shareReceived(_ metadata: CKShare.Metadata) async {
+        guard let dbQueue, !isDemo else { return }
+        guard keyStore != nil, canUseCloudKit else {
+            joinState = .cannotJoin(HouseholdCopy.syncOff)
+            return
+        }
+        let invitation: CloudKitShareAcceptance.Invitation
+        do {
+            invitation = try CloudKitShareAcceptance.invitation(metadata)
+        } catch {
+            joinState = .cannotJoin(HouseholdCopy.wrongHousehold)
+            return
+        }
+        let (current, holdsHousehold) = (try? await dbQueue.read { db in
+            (try SyncHouseholdMembership.current(db: db),
+             try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncRecord WHERE zone = ?)", arguments: [SyncZones.household]) ?? true)
+        }) ?? (nil, true)
+        if let current, current != invitation.ownerRecordName {
+            joinState = .cannotJoin(HouseholdCopy.alreadyMember)
+            return
+        }
+        if current == nil, holdsHousehold {
+            joinState = .cannotJoin(HouseholdCopy.hasOwnData)
+            return
+        }
+        pendingInvitation = (metadata, invitation.ownerRecordName)
+        await acceptPending()
+    }
+
+    /// Accepts the kept invitation in iCloud; only an accepted one is recorded as the membership.
+    private func acceptPending() async {
+        guard let dbQueue, let pending = pendingInvitation, !isDemo else { return }
+        joinState = .accepting
+        do {
+            try await CloudKitShareAcceptance.accept(pending.metadata)
+        } catch {
+            Self.log.error("Sync: the household invitation couldn't be accepted (\(String(describing: type(of: error)), privacy: .public))")
+            let network = (error as? CKError).map { [.networkUnavailable, .networkFailure].contains($0.code) } ?? false
+            joinState = .stillJoining(network ? .offline : .acceptFailed)
+            return
+        }
+        do {
+            try await dbQueue.write { db in try SyncHouseholdMembership.record(ownerRecordName: pending.owner, db: db) }
+        } catch {
+            joinState = .stillJoining(.acceptFailed)
+            return
+        }
+        pendingInvitation = nil
+        await stopEngine()
+        await startEngine(viewer: .none)
+    }
+
+    /// "Retry" under "Still joining…".
+    func retryJoin() {
+        Task { [weak self] in
+            guard let self else { return }
+            if self.pendingInvitation != nil {
+                await self.acceptPending()
+            } else if let owner = self.memberOwner, self.scheduler == nil {
+                self.exchange?.cancel()
+                self.exchange = nil
+                self.beginKeyExchange(owner: owner, resume: false)
+            } else {
+                self.joinState = .pulling
+                await self.scheduler?.requestSync(.foreground)
+            }
+        }
+    }
+
+    /// "Start again" after a refused or expired request: a new request, a new code.
+    func startKeyExchangeAgain() {
+        guard let owner = memberOwner else { return }
+        exchange?.cancel()
+        exchange = nil
+        requester = nil
+        beginKeyExchange(owner: owner, resume: false)
+    }
+
+    /// The household key is in this device's Keychain (read off the main actor).
+    private func keyIsHeld(_ keyStore: any SyncKeyStore) async -> Bool {
+        await Task.detached { (try? keyStore.key(zone: SyncRecordStore.householdZone)) != nil }.value
+    }
+
+    /// Starts (or, after the scene returns, resumes) polling the key request. One poll loop at a time.
+    private func beginKeyExchange(owner: String, resume: Bool) {
+        guard exchange == nil, let keyStore, canUseCloudKit, !isDemo else { return }
+        let generation = engineGeneration
+        exchange = Task { [weak self] in await self?.runKeyExchange(owner: owner, keyStore: keyStore, resume: resume, generation: generation) }
+    }
+
+    private func runKeyExchange(owner: String, keyStore: any SyncKeyStore, resume: Bool, generation: Int) async {
+        func live() -> Bool { !Task.isCancelled && generation == engineGeneration && !isDemo }
+        let requester: SyncKeyExchange.Requester
+        if resume, let existing = self.requester {
+            requester = existing
+        } else {
+            if joinState == nil || joinState?.offersStartAgain == true || joinState?.offersRetry == true { joinState = .waitingForKey }
+            guard let member = try? await CloudKitAccountStatus.userRecordName() else {
+                guard live() else { return }
+                joinState = .stillJoining(.noAccount)
+                exchange = nil
+                return
+            }
+            let container = CKContainer(identifier: CloudKitTransport.containerIdentifier)
+            let made = SyncKeyExchange.Requester(board: CloudKitPublicBoard(),
+                                                 transport: CloudKitTransport(database: container.sharedCloudDatabase, zoneOwnerName: owner),
+                                                 keys: keyStore, member: member, householdOwner: owner)
+            do {
+                let first = try await made.start(now: Date())
+                guard live() else { return }
+                joinState = HouseholdJoinState(requester: first)
+            } catch {
+                guard live() else { return }
+                Self.log.error("Sync: the key request couldn't be posted (\(String(describing: type(of: error)), privacy: .public))")
+                joinState = .stillJoining(.notShownYet)
+                exchange = nil
+                return
+            }
+            guard live() else { return }
+            self.requester = made
+            requester = made
+        }
+        var failures = 0
+        while live() {
+            do {
+                let status = try await requester.poll(now: Date())
+                guard live() else { return }
+                failures = 0
+                joinState = HouseholdJoinState(requester: status)
+                switch status {
+                case .received:
+                    exchange = nil
+                    self.requester = nil
+                    keyHeld = true
+                    await startEngine(viewer: .none)
+                    return
+                case .refused, .expired:
+                    exchange = nil
+                    self.requester = nil
+                    return
+                case .waitingForMac, .showCode:
+                    break
+                }
+            } catch {
+                // The shared database may not show the household yet, or the network is down: keep asking, and say so
+                // after a while.
+                failures += 1
+                if failures >= 5, case .waitingForKey? = joinState { joinState = .stillJoining(.notShownYet) }
+            }
+            try? await Task.sleep(for: .seconds(3))
+        }
+    }
+
+    /// A member device's join state from the sync's status and whether a household pull has succeeded yet.
+    private func updateJoinState(status: SyncStatus) async {
+        guard memberOwner != nil, let dbQueue, !isDemo, exchange == nil else { return }
+        switch joinState {
+        case nil, .pulling?, .stillJoining?: break
+        default: return
+        }
+        let joined = (try? await dbQueue.read { db in try SyncHouseholdMembership.hasJoined(db: db) }) ?? false
+        joinState = HouseholdJoinState.afterPull(status: status, joined: joined)
     }
 
     /// Asks CloudKit for the account, one check at a time: a newer check cancels the older, whose answer is dropped
