@@ -91,8 +91,10 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     private var failing: [String: Int] = [:]
     private var loseNextReply = false
 
-    /// The server's clock: every write moves it on by a millisecond; tests move it with `advanceClock`.
+    /// The server's clock: every write moves it on by a millisecond (and, `followsWallClock`, up to the wall clock);
+    /// tests move it with `advanceClock`.
     public private(set) var now: Date
+    private let followsWallClock: Bool
     public private(set) var pageSize: Int
     public let recordSizeLimit: Int
     /// The limits enforced per save operation.
@@ -105,11 +107,13 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     public private(set) var limitExceededCount = 0
 
     /// `advertisesLimits`: false to tell the engine none, so it meets them only as `limitExceeded`.
-    /// `zones`: zones that exist from the start.
+    /// `zones`: zones that exist from the start. `followsWallClock`: the server's time of a save is never earlier than the
+    /// devices' (`Date()`), as with a real server, so their clocks aren't clamped back (step 7a).
     public init(start: Date = Date(timeIntervalSinceReferenceDate: 800_000_000), pageSize: Int = 400, recordSizeLimit: Int = 1_000_000,
                 limits: SyncOperationLimits = SyncOperationLimits(maxRecords: 400, maxBytes: 2_000_000), advertisesLimits: Bool = true,
-                zones: [String] = [], ownerRecordName: String = "fake-owner") {
+                zones: [String] = [], ownerRecordName: String = "fake-owner", followsWallClock: Bool = false) {
         now = start
+        self.followsWallClock = followsWallClock
         self.ownerRecordName = ownerRecordName
         self.pageSize = pageSize
         self.recordSizeLimit = recordSizeLimit
@@ -427,6 +431,7 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     private func tick() {
         sequence += 1
         now = now.addingTimeInterval(0.001)
+        if followsWallClock { now = max(now, Date()) }
     }
 
     private func stamp(_ stored: Stored, zone: String) -> SyncServerStamp {

@@ -17,8 +17,9 @@ import os
 ///   a version the Mac's own iCloud user saved is never judged; one another appUser's iCloud user saved is judged
 ///   field by field as theirs, whatever its clocks claim (`by`, writerless, dated before ownership was confirmed),
 ///   and the fields it gives this device are stored as theirs (`attributing`); one an iCloud user this household
-///   doesn't know saved has every field it would change reverted. A version the server names no writer for is
-///   judged by its clocks, as below (step 6).
+///   doesn't know saved, or one the server names no writer for (`SyncPayload.unnamedServerWriter`), has every field it
+///   would change reverted. Only a record an older build kept in staging has no server writer at all: it is judged by
+///   its clocks, as below (step 6).
 /// - **Whose changes:** only other users'. The Mac's own user (its `syncWriter`, else the household's admin) is
 ///   never judged again: the ownership sheet's writes, read after ownership was confirmed, would be "denied".
 ///   A field with no clock, or a clock without a writer dated before ownership was confirmed, dates from
@@ -36,8 +37,12 @@ import os
 /// - **Logged** in `syncAccessRevert` (`recentReverts`: "Reverted a change by B: no permission for Property", or
 ///   "…: no permission: only the owner can change this");
 ///   the system log line names a table and an area, never a person or a value.
-/// - **Limit (step 6):** deletions carry no writer (a CloudKit delete has no fields), so they can't be judged:
-///   they apply, and the Mac logs each one it applies while re-validating (step 7 attributes them).
+/// - **Deletes (step 7a):** a household delete travels as a deletion marker (`SyncPayload.deleted`), a save the server
+///   attributes. One another app user (or an unknown iCloud user) had no permission for (`deleteVerdict`) keeps the row:
+///   it is queued to go again over the marker (`resent`), and logged ("Reverted a delete by B: no permission for
+///   Property"). A bare hard deletion in the household (an older build, a modified client: no writer) is undone the same
+///   way, unless this Mac deleted the record itself. Private zones keep hard deletes, never judged: only their owner
+///   writes there.
 public enum AccessRevalidation {
     public enum Verdict: Equatable, Sendable {
         case allowed
@@ -85,11 +90,13 @@ public enum AccessRevalidation {
     }
 
     /// Who wrote `payload`, by the server's word (`serverWriter`, an iCloud user record name) matched against the
-    /// app users' `cloudKitUserRecordName`. Nil when the server named no one: the payload is judged by its clocks, as
-    /// in step 6. `selfUser`: the Mac's own app user UUID (`selfUser(deviceUser:db:)`).
+    /// app users' `cloudKitUserRecordName`. A version the server named no writer for is `.unknown` (fail closed). Nil
+    /// only for a record an older build kept in staging (no `serverWriter` at all): judged by its clocks, as in step 6.
+    /// `selfUser`: the Mac's own app user UUID (`selfUser(deviceUser:db:)`).
     public static func attributedWriter(_ payload: SyncPayload, selfUser: String?, db: Database) throws -> Attribution? {
         guard let writer = payload.serverWriter else { return nil }
-        guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE cloudKitUserRecordName = ?", arguments: [writer]),
+        guard writer != SyncPayload.unnamedServerWriter,
+              let id = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE cloudKitUserRecordName = ?", arguments: [writer]),
               let uuid = try SyncRecordStore.existingUUID(table: "appUser", localId: id, db: db) else { return .unknown }
         return uuid == selfUser ? .selfUser : .appUser(uuid)
     }
@@ -380,22 +387,87 @@ public enum AccessRevalidation {
         }
     }
 
-    /// An incoming delete applied while re-validating: it carries no writer, so it can't be judged (step 7).
-    static func logUnjudgedDelete(table: String?) {
-        log.notice("Applied an incoming delete of a \(table ?? "unknown", privacy: .public) record without judging it: deletes carry no writer")
+    // MARK: Deletes (step 7a)
+
+    /// What `syncAccessRevert.fields` holds for a reverted delete.
+    static let deleteFields = "*"
+
+    /// Whether a delete of the record `uuid` (a `table` row) by `attribution`'s writer stands: judged on the record as
+    /// this device holds it (`AccessAreaMap.area(… change: .delete, row: …)`). A record not held here has nothing to judge.
+    public static func deleteVerdict(uuid: String, table: String, attribution: Attribution, db: Database) throws -> Verdict {
+        guard let revert = try deleteRevert(uuid: uuid, table: table, attribution: attribution, origin: nil, db: db) else { return .allowed }
+        return .revert(fields: revert.fields, area: revert.area, writerAppUserUuid: revert.writer)
+    }
+
+    /// The revert a delete needs (nil: it stands). `origin`: the marker's, as far as it is believed (`judgedOrigin`).
+    static func deleteRevert(uuid: String, table: String, attribution: Attribution, origin: WriteOrigin?, db: Database) throws -> Revert? {
+        let writer: String?
+        let actor: AccessActor?
+        switch attribution {
+        case .selfUser:
+            return nil
+        case .appUser(let user):
+            writer = user
+            actor = try SyncRecordStore.localId(table: "appUser", uuid: user, db: db).map { try AccessActor.load(appUserId: $0, db: db) }
+        case .unknown:
+            writer = nil
+            actor = nil
+        }
+        guard let localId = try SyncRecordStore.localId(table: table, uuid: uuid, db: db),
+              let row = try SyncTranslator.outgoing(PendingChange(table: table, localId: localId, uuid: uuid, kind: .update), db: db)?.fields
+        else { return nil }
+        let decision = try decide(table: table, origin: origin, change: .delete, fields: [], row: row, db: db)
+        if try allows(actor, decision, db: db) { return nil }
+        let (area, reason) = try failure(actor, decision, table: table, db: db)
+        return Revert(fields: [deleteFields], area: area, writer: writer, reason: reason)
+    }
+
+    /// An incoming delete of a record held here, judged on the Mac (while re-validating). `marker`: the deletion marker
+    /// it came as (its server writer says who); nil: a bare hard deletion, which in the household no app user of this
+    /// household can have made with this build (undone, unless this Mac's own tombstone holds the record), and in a
+    /// private zone is its owner's (it stands). Returns whether the delete was refused: the row stays, queued to go up
+    /// again as `resent` (over the marker's version, which the pull keeps as its stamp; afresh after a hard deletion),
+    /// and the revert is logged.
+    static func refusesDelete(uuid: String, table: String, zone: String, marker: SyncPayload?, deviceUser: String?,
+                              db: Database, now: Date) throws -> Bool {
+        let selfUser = try selfUser(deviceUser: deviceUser, db: db)
+        let attribution: Attribution
+        var origin: WriteOrigin?
+        if let marker {
+            // A marker from an older build's staging has no server writer: nobody this household knows (fail closed).
+            attribution = try attributedWriter(marker, selfUser: selfUser, db: db) ?? .unknown
+            origin = try judgedOrigin(marker, attribution: attribution, db: db)
+        } else {
+            guard zone == SyncZones.household else { return false }
+            let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid)
+            if let selfUser, tombstone?.deletedBy == selfUser { return false }
+            attribution = .unknown
+        }
+        guard let localId = try SyncRecordStore.localId(table: table, uuid: uuid, db: db),
+              let revert = try deleteRevert(uuid: uuid, table: table, attribution: attribution, origin: origin, db: db) else { return false }
+        if marker == nil {
+            // Gone from the server: it goes again as new (no stamp).
+            try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
+        }
+        try SyncMerge.queue(uuid: uuid, table: table, localId: localId, kind: marker == nil ? .insert : .update, db: db)
+        try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ?", arguments: [SyncTranslator.resentReconciled, uuid])
+        try record([revert], table: table, uuid: uuid, db: db, now: now)
+        return true
     }
 
     // MARK: The log
 
-    /// The latest reverts, newest first: "Reverted a change by B: no permission for Budget & accounts".
+    /// The latest reverts, newest first: "Reverted a change by B: no permission for Budget & accounts", "Reverted a
+    /// delete by B: …".
     public static func recentReverts(limit: Int, db: Database) throws -> [String] {
-        try Row.fetchAll(db, sql: "SELECT writerAppUserUuid, area FROM syncAccessRevert ORDER BY id DESC LIMIT ?", arguments: [limit]).map { row in
+        try Row.fetchAll(db, sql: "SELECT writerAppUserUuid, area, fields FROM syncAccessRevert ORDER BY id DESC LIMIT ?", arguments: [limit]).map { row in
             let writer: String? = row["writerAppUserUuid"]
             let name = try writer.flatMap { uuid -> String? in
                 guard let id = try SyncRecordStore.localId(table: "appUser", uuid: uuid, db: db) else { return nil }
                 return try String.fetchOne(db, sql: "SELECT displayName FROM appUser WHERE id = ?", arguments: [id])
             } ?? unknownWriterName
-            return "Reverted a change by \(name): \(reasonText(row["area"]))"
+            let fields: String? = row["fields"]
+            return "Reverted a \(fields == deleteFields ? "delete" : "change") by \(name): \(reasonText(row["area"]))"
         }
     }
 }

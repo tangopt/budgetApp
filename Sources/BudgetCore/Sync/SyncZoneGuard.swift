@@ -159,10 +159,11 @@ public struct SyncZoneGuard {
     /// - a payload in a zone that is neither `household` nor a person's private zone;
     /// - an `accountDetails` record that isn't a stub's, in its owner's zone, with its private columns only;
     /// - a move marker carrying anything but where the record went (`movedTo`, another zone of this household);
+    /// - a deletion marker (step 7a) carrying anything but its record's name and type, or outside the household;
     /// - a payload carrying (a value or a clock of) a field its `omittedFields` leaves out, or leaving out a
     ///   column that doesn't sync.
-    /// A household move marker is the one household payload that may name a private record, and only one that was
-    /// saved to the household before (`syncPresence`): its old copy is already there, and the marker replaces it.
+    /// A household move or deletion marker is the one household payload that may name a private record, and only one that
+    /// was saved to the household before (`syncPresence`): its old copy is already there, and the marker replaces it.
     public func check(_ payloads: [SyncPayload]) throws {
         for payload in payloads {
             try check(payload)
@@ -196,6 +197,21 @@ public struct SyncZoneGuard {
             return
         }
         guard let schema = SyncSchema.table(payload.recordType) else { throw violation("none", "not a synced record type") }
+        if payload.deleted != nil {
+            // A deletion marker names the record (its copy is already there) and nothing else; it says no more than
+            // `deletionMarkerTarget` to builds that don't know it.
+            guard payload.isDeletionMarker, payload.movedTo == SyncPayload.deletionMarkerTarget, payload.fields.isEmpty, payload.clocks.isEmpty,
+                  payload.modifiedBy == nil, payload.modifiedAt == nil, payload.mergedInto == nil, payload.importRunUuid == nil,
+                  payload.batchGeneration == nil, payload.manifest == nil, payload.deletedReferences == nil, payload.largePayload == nil,
+                  payload.resent == nil, payload.documentFile == nil, payload.omittedFields == nil, payload.origin == nil else {
+                throw violation("none", "a deletion marker carrying more than its record")
+            }
+            guard payload.zone == SyncZones.household else { throw violation("none", "a deletion marker outside the household") }
+            guard inHousehold.contains(payload.recordName) else {
+                throw violation("none", "a deletion marker for a record that was never in the household")
+            }
+            return
+        }
         if let target = payload.movedTo {
             // A move marker names the record (its old copy is already there) and where it went; nothing else.
             guard payload.fields.isEmpty, payload.clocks.isEmpty, payload.mergedInto == nil, payload.importRunUuid == nil,

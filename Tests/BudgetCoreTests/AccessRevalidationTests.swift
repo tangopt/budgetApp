@@ -233,7 +233,9 @@ final class AccessRevalidationTests: XCTestCase {
         XCTAssertNil(try h.localId("category", uuid: uuid, on: h.memberDevice), "and its delete removed it from her device")
         XCTAssertNil(try h.localId("category", uuid: uuid, on: h.adminPhone))
         let onServer = try await h.cloud.fetch(uuid, zone: SyncZones.household)
-        XCTAssertNil(onServer, "deleted on the server")
+        let marker = try onServer.map { try SyncLargePayload.payload(from: $0.wire, keys: try h.adminKeys.allKeys(zone: SyncZones.household)) }
+        XCTAssertEqual(marker?.deleted, true, "a deletion marker on the server (step 7a)")
+        XCTAssertEqual(marker?.fields, [:])
         XCTAssertEqual(try reverts(h), ["Reverted a change by B: no permission for Rules & categories"])
         // Sent again (a stale copy): it stays out.
         try await round(h)

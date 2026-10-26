@@ -66,7 +66,8 @@ public final class TwoPersonHousehold {
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
                             phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false) throws -> TwoPersonHousehold {
         // The admin made the household zone before inviting her (the member can't create it in his database).
-        let cloud = FakeCloud(zones: [SyncZones.household], ownerRecordName: adminICloudUser)
+        // Its clock keeps up with the devices' (they stamp `Date()`), so the members' clocks aren't all clamped (step 7a).
+        let cloud = FakeCloud(start: Date(), zones: [SyncZones.household], ownerRecordName: adminICloudUser, followsWallClock: true)
         cloud.invite(memberICloudUser, zone: SyncZones.household)
         cloud.accept(zone: SyncZones.household, as: memberICloudUser)
         let adminKeys = InMemorySyncKeyStore()

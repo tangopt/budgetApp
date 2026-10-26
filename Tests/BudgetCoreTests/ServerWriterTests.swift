@@ -228,4 +228,52 @@ final class ServerWriterTests: XCTestCase {
             XCTAssertFalse(try AccessRevalidation.shouldRevalidate(signedInAppUserId: admin, iCloudUserRecordName: nil, db: db), "an unknown iCloud user")
         }
     }
+
+    // MARK: Fail closed (Task 2 review)
+
+    /// A server record without a writer is judged as an unknown writer, never by its clocks; only a record an older build
+    /// kept in staging (no writer recorded) keeps the clock path.
+    func testServerRecordWithoutWriterIsJudgedAsUnknown() async throws {
+        let h = try await household()
+        let key = try XCTUnwrap(try h.adminKeys.allKeys(zone: SyncZones.household).values.first)
+        let uuid = try h.uuid("transaction_", h.fixture.sharedTransaction)
+        let payload = SyncPayload(recordType: "transaction_", recordName: uuid, zone: SyncZones.household, fields: [:])
+        let (wire, _) = try SyncLargePayload.wire(for: payload, key: key)
+        let stamp = SyncServerStamp(systemFields: Data(), changeTag: "t", modifiedAt: Date())
+        let unnamed = try SyncLargePayload.payload(from: SyncServerRecord(wire: wire, stamp: stamp, lastModifiedBy: nil),
+                                                   keys: try h.adminKeys.allKeys(zone: SyncZones.household))
+        let admin = try adminUserUuid(h)
+        try await h.adminMac.db.read { db in
+            XCTAssertEqual(try AccessRevalidation.attributedWriter(unnamed, selfUser: admin, db: db), .unknown)
+            XCTAssertNil(try AccessRevalidation.attributedWriter(payload, selfUser: admin, db: db), "no writer at all: an older build's staging")
+        }
+        // Waiting for its key: kept as unnamed, and an older build's row (no writer recorded) stays without one.
+        try await h.adminMac.db.write { db in
+            try SyncTranslator.stageWaitingForKey(SyncServerRecord(wire: wire, stamp: stamp, lastModifiedBy: nil), db: db, now: Date())
+            let opened = try SyncTranslator.takeWaitingForKey(keys: try h.adminKeys.allKeys(zone: SyncZones.household), db: db, now: Date())
+            XCTAssertEqual(opened.first?.0.serverWriter, SyncPayload.unnamedServerWriter)
+            try SyncTranslator.stageWaitingForKey(SyncServerRecord(wire: wire, stamp: stamp, lastModifiedBy: nil), db: db, now: Date())
+            let json = try XCTUnwrap(String.fetchOne(db, sql: "SELECT payloadJSON FROM syncStaging WHERE uuid = ?", arguments: [uuid]))
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            object["lastModifiedBy"] = nil
+            let older = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+            try db.execute(sql: "UPDATE syncStaging SET payloadJSON = ? WHERE uuid = ?", arguments: [older, uuid])
+            let reopened = try SyncTranslator.takeWaitingForKey(keys: try h.adminKeys.allKeys(zone: SyncZones.household), db: db, now: Date())
+            XCTAssertNil(reopened.first?.0.serverWriter)
+        }
+    }
+
+    /// A version without the server's time of the save is clamped to when it arrived, not left unclamped.
+    func testMissingServerDateClampsToReceiveTime() async throws {
+        let h = try await household()
+        let received = Date()
+        var payload = SyncPayload(recordType: "transaction_", recordName: "r", zone: SyncZones.household, fields: [:],
+                                  clocks: ["note": SyncClock(at: received.addingTimeInterval(86_400), by: nil)])
+        payload.serverWriter = TwoPersonHousehold.memberICloudUser
+        let stamp = SyncServerStamp(systemFields: Data(), changeTag: "t", modifiedAt: .distantPast)
+        let dated = try await h.adminMac.db.read { db in
+            try SyncEngineCore.serverDated(payload, stamp: stamp, deviceUser: nil, receivedAt: received, db: db)
+        }
+        XCTAssertEqual(dated.clocks["note"]?.at, received)
+    }
 }
