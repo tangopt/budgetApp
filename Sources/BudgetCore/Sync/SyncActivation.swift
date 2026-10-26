@@ -4,7 +4,7 @@ import Foundation
 /// database never syncs: only a Debug launch with `--sync-demo` whose `BUDGET_DB_PATH` names the demo database
 /// (`DemoMarker`), outside the app's own data folder, in a build signed with the iCloud entitlement. Everything
 /// else is refused with its reason, before any database is opened. Both apps ask here (the Mac's `SyncDemoMode`,
-/// the iPhone's launch).
+/// the iPhone's launch). Step 6: the Mac's real database syncs once "Turn on sync…" has run on it (`realDecision`).
 public enum SyncActivation {
     public static let demoArgument = "--sync-demo"
 
@@ -51,6 +51,36 @@ public enum SyncActivation {
         }
         guard hasCloudKitEntitlement else {
             return .refuse("\(demoArgument) needs a team-signed Debug build with the iCloud entitlement for Mango's container (Config/Signing.local.xcconfig names the team); this build has none.")
+        }
+        return .allow
+    }
+
+    /// A developer's flag: a Debug Mac build may sync the real database only when launched with it (and everything
+    /// else `realDecision` asks holds, Production included).
+    public static let realInDebugArgument = "--sync-real-in-debug"
+
+    /// Whether the Mac's real database may sync (step 6 Task 12): only the app's own database, never the demo's, once
+    /// this Mac's "Turn on sync…" flow has reached the upload (`SyncTurnOn.Stage` `uploading` or `done`, kept in that
+    /// database), in a build signed for Mango's iCloud container in its Production environment. A Debug build only
+    /// with `realInDebugArgument`. Never together with `--sync-demo` (that launch keeps `decision`'s demo rules).
+    public static func realDecision(isAppDatabase: Bool, isDemoDatabase: Bool, stage: SyncTurnOn.Stage, hasCloudKitEntitlement: Bool,
+                                    isProduction: Bool, isDebug: Bool, arguments: [String]) -> Decision {
+        if arguments.contains(demoArgument) {
+            return .refuse("A \(demoArgument) launch syncs only the demo database, never the real one.")
+        }
+        guard isAppDatabase else { return .refuse("Only the app's own database syncs with your data in iCloud.") }
+        guard !isDemoDatabase else { return .refuse("The demo database never syncs with your data in iCloud.") }
+        guard stage >= .uploading else {
+            return .refuse("Sync is off: turn it on in Settings ▸ Sync (Turn on sync…) on this Mac first.")
+        }
+        guard !isDebug || arguments.contains(realInDebugArgument) else {
+            return .refuse("A Debug build syncs the real database only with \(realInDebugArgument).")
+        }
+        guard hasCloudKitEntitlement else {
+            return .refuse("This build isn't signed with the iCloud entitlement for Mango's container, so it syncs nothing.")
+        }
+        guard isProduction else {
+            return .refuse("This build syncs with iCloud's development environment; your data syncs only in Production.")
         }
         return .allow
     }

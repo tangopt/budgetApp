@@ -105,7 +105,7 @@ final class SyncRehearsalTests: XCTestCase {
         // Applied into an empty database through the checked pull.
         XCTAssertEqual(report.apply.received, report.records - (report.recordsByType[SyncDocumentFile.recordType] ?? 0)
                        - (report.recordsByType[SyncZoneKeys.recordType] ?? 0))
-        XCTAssertEqual(report.apply.staged, 0)
+        XCTAssertEqual(report.apply.stagingRows, 0, "what waited for its parents during the pull was applied")
         XCTAssertEqual(report.apply.unreadable, 0)
         XCTAssertEqual(report.apply.held, 0)
         XCTAssertEqual(report.apply.rowCountMismatches, [])
@@ -267,5 +267,116 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertNoThrow(try SyncRehearsal.checkPaths(databasePath: path, libraryPath: nil, isAppData: { _ in false }))
         XCTAssertThrowsError(try SyncRehearsal.checkPaths(databasePath: path + "-missing", libraryPath: nil, isAppData: { _ in false }))
         XCTAssertThrowsError(try SyncRehearsal.checkPaths(databasePath: path, libraryPath: path, isAppData: { _ in false }), "the library is a folder")
+    }
+
+    // MARK: Step 6: zones, ownership and a member stand-in
+
+    /// The demo as a real database would be before the turn-on: not the demo's (no marker), no owner confirmed, no
+    /// summaries. Returns its path, its evidence folder and the account ids by name.
+    private func unconfirmedDemo() throws -> (database: String, library: URL, accounts: [String: Int64]) {
+        let path = folder.appendingPathComponent("real-like.sqlite").path
+        let library = folder.appendingPathComponent("RealLikeEvidence", isDirectory: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let manager = try TestDatabase.demoManager(path: path, evidenceRoot: library)
+        let accounts = try manager.dbQueue.write { db -> [String: Int64] in
+            try db.execute(sql: "PRAGMA application_id = 0")
+            try db.execute(sql: "DELETE FROM accountBalancePoint")
+            try db.execute(sql: "DELETE FROM accountSummaryMonth")
+            try db.execute(sql: "DELETE FROM memberPermission")
+            try db.execute(sql: "DELETE FROM personSharing")
+            try db.execute(sql: "UPDATE account SET ownerPersonId = NULL, sharingLevel = 'everything'")
+            return Dictionary(uniqueKeysWithValues: try Row.fetchAll(db, sql: "SELECT id, name FROM account").map { ($0["name"] as String, $0["id"] as Int64) })
+        }
+        XCTAssertFalse(try manager.dbQueue.read { db in try DemoMarker.isDemo(db) })
+        try manager.dbQueue.close()
+        return (path, library, accounts)
+    }
+
+    func testRehearsalOnDemoPassesWithZones() async throws {
+        let (database, library, accounts) = try unconfirmedDemo()
+        let balanceOnly = try XCTUnwrap(accounts[DemoSharing.balanceOnlyAccount])
+        let joint = try XCTUnwrap(accounts[DemoSharing.jointAccount])
+        // One Balance only account; one joint; every other account at Everything.
+        var ownership = RehearsalOwnership(joint: [joint])
+        for (_, id) in accounts where id != joint { ownership.levels[id] = .everything }
+        ownership.levels[balanceOnly] = .balanceOnly
+        let source = try DatabaseQueue(path: database)
+        let privateTransactions = try await source.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM transaction_ WHERE accountId = ?", arguments: [balanceOnly]) ?? 0
+        }
+        try source.close()
+        XCTAssertGreaterThan(privateTransactions, 10, "the Balance only account has transactions to keep private")
+
+        let report = try await SyncRehearsal.run(databasePath: database, libraryPath: library.path, ownership: ownership)
+
+        XCTAssertTrue(report.ownership.savedHere)
+        XCTAssertEqual(report.ownership.accountsByLevel["Balance only"], 1)
+        XCTAssertEqual(report.ownership.joint, 1)
+        XCTAssertEqual(report.turnOn.stage, .done)
+        XCTAssertEqual(report.turnOn.sent, report.turnOn.total)
+        XCTAssertGreaterThan(report.turnOn.total, 2_000)
+        XCTAssertNotNil(report.backupFile.range(of: #"^budget\.sqlite\.pre-sync-backup-\d{8}-\d{6}(-\d+)?$"#, options: .regularExpression))
+        XCTAssertNil(report.guardRefusal)
+        XCTAssertEqual(report.householdViolations, [])
+        XCTAssertGreaterThan(report.recordsByZone["household"] ?? 0, 1_000)
+        XCTAssertGreaterThan(report.recordsByZone["private (admin)"] ?? 0, privateTransactions)
+        XCTAssertNil(report.recordsByZone["private (other)"])
+        XCTAssertGreaterThan(report.summaries["accountBalancePoint"] ?? 0, 0)
+        XCTAssertEqual(report.sealingFindings, [])
+        XCTAssertEqual(report.plaintextFields, [])
+        XCTAssertEqual(report.taxFiguresChanged, 0, "ownership and the turn-on change no tax figure")
+        // The admin's other device: both zones, everything.
+        XCTAssertEqual(report.apply.rowCountMismatches, [])
+        XCTAssertEqual(report.apply.taxFiguresChanged, 0)
+        XCTAssertEqual(report.apply.stagingRows, 0)
+        // The member stand-in: the household only.
+        XCTAssertGreaterThan(report.member.received, 1_000)
+        XCTAssertEqual(report.member.privateTransactionsHeld, 0)
+        XCTAssertEqual(report.member.privateRecordsHeld, 0)
+        XCTAssertEqual(report.member.privateAccountFieldsHeld, 0)
+        XCTAssertEqual(report.member.stagingRows, 0)
+        XCTAssertEqual(report.member.unreadable, 0)
+        XCTAssertTrue(report.passed, report.text)
+        XCTAssertTrue(report.text.contains("Member stand-in"))
+        XCTAssertFalse(report.text.contains(DemoSharing.balanceOnlyAccount), "counts only, never names")
+    }
+
+    func testRehearsalOwnershipChoicesAreChecked() async throws {
+        let (database, _, accounts) = try unconfirmedDemo()
+        do {
+            _ = try await SyncRehearsal.run(databasePath: database, libraryPath: nil, ownership: RehearsalOwnership(joint: [999_999]))
+            XCTFail("an unknown account id is refused")
+        } catch {
+            XCTAssertEqual(error as? SyncRehearsal.RehearsalError, .unknownAccounts([999_999]))
+        }
+        // A copy already confirmed keeps its owners: choices given would be ignored, so they are refused.
+        let confirmed = folder.appendingPathComponent("confirmed.sqlite").path
+        try TestDatabase.demoManager(path: confirmed).dbQueue.close()
+        let anyAccount = try XCTUnwrap(accounts.values.first)
+        do {
+            _ = try await SyncRehearsal.run(databasePath: confirmed, libraryPath: nil, ownership: RehearsalOwnership(levels: [anyAccount: .everything]))
+            XCTFail("choices on a confirmed copy are refused")
+        } catch {
+            XCTAssertEqual(error as? SyncRehearsal.RehearsalError, .ownershipAlreadyConfirmed)
+        }
+    }
+
+    func testOwnershipChoicesReadFromJSONAndFlags() throws {
+        let json = Data(#"{"joint": [3], "levels": {"7": "everything", "9": "balanceOnly", "11": "categoryTotals", "12": "hidden"}}"#.utf8)
+        let decoded = try JSONDecoder().decode(RehearsalOwnership.self, from: json)
+        XCTAssertEqual(decoded, RehearsalOwnership(joint: [3], levels: [7: .everything, 9: .balanceOnly, 11: .categoryTotals, 12: .hidden]))
+        XCTAssertEqual(try JSONDecoder().decode(RehearsalOwnership.self, from: Data("{}".utf8)), RehearsalOwnership())
+        XCTAssertEqual(try JSONDecoder().decode(RehearsalOwnership.self, from: try JSONEncoder().encode(decoded)), decoded)
+        XCTAssertThrowsError(try JSONDecoder().decode(RehearsalOwnership.self, from: Data(#"{"levels": {"7": "some"}}"#.utf8)))
+        XCTAssertThrowsError(try JSONDecoder().decode(RehearsalOwnership.self, from: Data(#"{"levels": {"seven": "everything"}}"#.utf8)))
+
+        var flags = RehearsalOwnership()
+        try flags.addJoint("3")
+        try flags.addLevel("7=everything")
+        try flags.addLevel("9=balanceOnly")
+        XCTAssertEqual(flags, RehearsalOwnership(joint: [3], levels: [7: .everything, 9: .balanceOnly]))
+        XCTAssertThrowsError(try flags.addJoint("x")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notAnAccountId("x")) }
+        XCTAssertThrowsError(try flags.addLevel("7")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notALevel("7")) }
+        XCTAssertThrowsError(try flags.addLevel("7=Everything")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notALevel("Everything")) }
     }
 }

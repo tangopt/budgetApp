@@ -20,7 +20,36 @@ import os
 /// 4. The payloads are applied into an empty migrated database through the checked pull
 ///    (`FiledYearSyncCheck`), timed, with the process's memory footprint sampled; row counts and tax figures
 ///    must come out the same.
+///
+/// Step 6 (Task 12): between 2 and 3 the copy goes through the Mac's own "Turn on sync" stages (`SyncTurnOn`): the
+/// timestamped backup, the ownership sheet saved on the copy with the choices given (`RehearsalOwnership`; nothing
+/// goes up unconfirmed), the upload begun (the admin's iCloud user named, everything queued, the admin's summaries
+/// built). The push is the admin's Mac's (its viewer, re-validating) through `ZoneAuditingTransport`, every save
+/// checked by the guard; the audit is append-only, so nothing below Everything may reach `household` even for a
+/// moment. The payloads are then applied into two empty databases: the admin's other device (both zones: row counts
+/// and tax figures equal the copy) and a member stand-in (household only, its key alone: no record placed privately,
+/// no stub's private columns, nothing left staged). The report holds counts only, never a value.
 public enum SyncRehearsal {
+    /// What the rehearsal stops on before running (nothing is pushed then).
+    public enum RehearsalError: Error, Equatable, LocalizedError {
+        /// Account ids given that the copy has no unowned account for.
+        case unknownAccounts([Int64])
+        /// The copy's owners are already confirmed (saved in the app): the choices given would be ignored.
+        case ownershipAlreadyConfirmed
+
+        public var errorDescription: String? {
+            switch self {
+            case .unknownAccounts(let ids):
+                return "No account waiting for an owner has id \(ids.map(String.init).joined(separator: ", ")) in the copy."
+            case .ownershipAlreadyConfirmed:
+                return "The copy's owners are already confirmed: run without --joint, --level or --ownership to rehearse with them."
+            }
+        }
+    }
+
+    /// The iCloud user named on the copy's admin when the copy names none (the real one is only known in the app).
+    public static let rehearsalUserRecordName = "_rehearsalUser"
+
     public enum PathError: Error, Equatable, LocalizedError {
         case missing(String)
         case notAFolder(String)
@@ -53,6 +82,7 @@ public enum SyncRehearsal {
 
     public struct Apply: Equatable, Sendable {
         public var received = 0
+        /// Staged during the pull (a private zone's records wait for their household parents, then apply).
         public var staged = 0
         public var unreadable = 0
         public var held = 0
@@ -64,6 +94,36 @@ public enum SyncRehearsal {
         public var rowCountMismatches: [String] = []
         /// Tax figures (every stored year) that differ between them.
         public var taxFiguresChanged = 0
+        /// Rows left in `syncStaging` after the pull.
+        public var stagingRows = 0
+    }
+
+    /// What the member stand-in (household zone only, with the household key alone) ended with.
+    public struct MemberApply: Equatable, Sendable {
+        public var received = 0
+        public var unreadable = 0
+        public var held = 0
+        /// Rows left in `syncStaging` (must be 0: no orphan waits for a record it may not see).
+        public var stagingRows = 0
+        /// Records the admin's Mac places in a private zone that the stand-in holds (must be 0).
+        public var privateRecordsHeld = 0
+        /// Of those, transactions (must be 0).
+        public var privateTransactionsHeld = 0
+        /// Values of a household stub's private columns (account numbers, IBAN, …) it holds (must be 0).
+        public var privateAccountFieldsHeld = 0
+        /// Rows it holds, all synced tables.
+        public var rows = 0
+        /// Tax figures that differ from the copy's (for information: the member's figures exclude what she can't see).
+        public var taxFiguresChanged = 0
+    }
+
+    /// The ownership the rehearsal ran with (counts only).
+    public struct Ownership: Equatable, Sendable {
+        /// Whether the choices were saved on the copy by the rehearsal (false: the copy was already confirmed).
+        public var savedHere: Bool
+        public var joint: Int
+        /// Accounts by level title.
+        public var accountsByLevel: [String: Int]
     }
 
     public struct Report: Sendable {
@@ -103,13 +163,31 @@ public enum SyncRehearsal {
         public var pushSeconds: Double
         /// Changes still pending after the push (must be 0).
         public var pendingAfterPush: Int
+        /// The admin's other device (both zones).
         public var apply: Apply
+        /// Step 6: who owns what on the copy.
+        public var ownership: Ownership
+        /// The backup the turn-on made (its file name), and where the stages ended (must be `done`).
+        public var backupFile: String
+        public var turnOn: SyncTurnOn.Progress
+        /// Records the server holds by zone: "household", "private (admin)", "private (other)".
+        public var recordsByZone: [String: Int]
+        /// Every household save that should never have been there (`ZoneAuditingTransport`, append-only; must be empty).
+        public var householdViolations: [String]
+        /// The guard's refusal that stopped the push, record type and reason only (must be nil).
+        public var guardRefusal: String?
+        /// Summary rows on the copy, by table.
+        public var summaries: [String: Int]
+        public var member: MemberApply
 
         public var passed: Bool {
             tables.allSatisfy(\.identical) && tablesAfterPayloads.allSatisfy(\.identical) && taxFiguresChanged == 0
                 && plaintextFields.isEmpty && sealingFindings.isEmpty && pendingAfterPush == 0 && push.refused == 0 && push.keyWait == nil
-                && apply.staged == 0 && apply.unreadable == 0 && apply.held == 0
+                && apply.unreadable == 0 && apply.held == 0 && apply.stagingRows == 0
                 && apply.rowCountMismatches.isEmpty && apply.taxFiguresChanged == 0
+                && turnOn.stage == .done && householdViolations.isEmpty && guardRefusal == nil
+                && member.stagingRows == 0 && member.unreadable == 0 && member.privateRecordsHeld == 0
+                && member.privateTransactionsHeld == 0 && member.privateAccountFieldsHeld == 0
         }
 
         public var text: String { SyncRehearsal.text(self) }
@@ -142,7 +220,8 @@ public enum SyncRehearsal {
 
     // MARK: Running
 
-    public static func run(databasePath: String, libraryPath: String?, keep: Bool = false) async throws -> Report {
+    public static func run(databasePath: String, libraryPath: String?, keep: Bool = false,
+                           ownership: RehearsalOwnership = RehearsalOwnership()) async throws -> Report {
         let fileManager = FileManager.default
         let work = fileManager.temporaryDirectory.appendingPathComponent("SyncRehearsal-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
@@ -190,26 +269,72 @@ public enum SyncRehearsal {
         try manager.migrate()
         let backfilled = try await copy.write { db in try SyncRecordStore.backfill(db: db) }
         let tables = try compare(original, copy)
-        // Every stored year and the protected range (R13: 2020/21–2024/25 ∪ stored filed/paid ⊆ this).
+
+        // Step 6: the Mac's turn-on stages on the copy — backup, ownership confirmed (the choices given), upload begun.
+        let now = Date()
+        let backup = try SyncTurnOn.backUp(manager: manager, databasePath: copyPath, now: now)
+        let savedHere = try await copy.write { db -> Bool in
+            let saved = try applyOwnership(ownership, db: db, now: now)
+            try SyncTurnOn.markOwnershipConfirmed(db: db, now: now)
+            return saved
+        }
+        _ = try await copy.write { db -> Int in
+            let admin = try AccessActor.admin(db: db)
+            let named = try String.fetchOne(db, sql: "SELECT cloudKitUserRecordName FROM appUser WHERE id = ?", arguments: [admin.appUserId])
+            return try SyncTurnOn.beginUpload(admin: admin, cloudKitUserRecordName: named ?? rehearsalUserRecordName, db: db, now: now)
+        }
+        let ownershipSummary = try await copy.read { db in try summarizeOwnership(savedHere: savedHere, db: db) }
+        let summaries = try await copy.read { db in
+            try Dictionary(uniqueKeysWithValues: ["accountBalancePoint", "accountSummaryMonth"].map { table in
+                (table, try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(quoted(table))") ?? 0)
+            })
+        }
+        // The copy as it is about to upload: the push may write only sync bookkeeping from here.
+        let configured = try ToolDatabase.open(path: work.appendingPathComponent("configured.sqlite").path)
+        defer { try? configured.close() }
+        try copy.backup(to: configured)
+
+        // Every stored year and the protected range (R13: 2020/21–2024/25 ∪ stored filed/paid ⊆ this): the migration,
+        // the ownership and the turn-on change no figure.
         let protectedYears = Array(FiledYearSyncCheck.fixedYears)
         let originalFigures = try await original.read { db in try TaxFigures.snapshot(db: db, years: protectedYears) }
         let copyFigures = try await copy.read { db in try TaxFigures.snapshot(db: db, years: protectedYears) }
         let taxYears = try await original.read { db in try TaxFigures.years(db: db, extra: protectedYears) }
         let taxFiguresChanged = TaxFigures.changes(from: originalFigures, to: copyFigures).count
 
-        // The outgoing payload set, generated by the engine into an in-memory cloud with CloudKit's limits.
+        // Where the admin's Mac places every record (by UUID), for the audit.
+        let placements = try await copy.read { db in try placementMap(db: db) }
+        let privateRecords = Set(placements.filter { $0.value.isPrivate }.keys)
+
+        // The outgoing payload set, generated by the admin's Mac's engine into an in-memory cloud with CloudKit's
+        // limits, every save audited.
         let cloud = FakeCloud(recordSizeLimit: CloudKitRecordMapping.recordSizeLimit, limits: CloudKitRecordMapping.operationLimits)
-        // One in-memory key store for both ends, as iCloud Keychain would be (ruling R15); nothing is kept.
+        // One in-memory key store for the admin's devices, as iCloud Keychain would be (ruling R15); nothing is kept.
         let keys = InMemorySyncKeyStore()
-        let sender = SyncEngineCore(db: copy, transport: cloud, device: SyncDevice(id: "rehearsal-sender", name: "Rehearsal"), keyStore: keys,
-                                    documents: library.map { SyncDocumentFiles(root: $0, policy: .lazy, waitingRoot: waiting) })
+        let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
+        audit.judge { placements[$0] }
+        let role = try await copy.read { db in try SyncTurnOn.macEngineRole(signedIn: try AccessActor.admin(db: db), db: db) }
+        let sender = SyncEngineCore(db: copy, transport: audit, device: SyncDevice(id: "rehearsal-sender", name: "Rehearsal"), keyStore: keys,
+                                    documents: library.map { SyncDocumentFiles(root: $0, policy: .lazy, waitingRoot: waiting) },
+                                    viewer: role.viewer, revalidatesAccess: role.revalidatesAccess)
         let pushStart = Date()
-        let push = try await sender.pushPending()
+        var push = SyncPushReport()
+        var guardRefusal: String?
+        do {
+            push = try await sender.pushPending()
+        } catch let violation as SyncZoneGuard.Violation {
+            guardRefusal = "\(violation.recordType): \(violation.reason)"
+        }
         let pushSeconds = Date().timeIntervalSince(pushStart)
         let pendingAfterPush = try await copy.read { db in try SyncChangeTracker.pending(db: db).count }
-        let tablesAfterPayloads = try compare(original, copy)
+        try? await copy.write { db in try SyncTurnOn.markDone(db: db, now: Date()) }
+        let turnOn = try await copy.read { db in try SyncTurnOn.progress(db: db) }
+        let tablesAfterPayloads = try compare(configured, copy)
+        let householdViolations = audit.householdViolations(router: { placements[$0] })
 
         let stored = await cloud.storedRecords()
+        let adminZone = role.viewer.personUuid.map { SyncZones.privateZone(personUuid: $0) }
+        var recordsByZone: [String: Int] = [:]
         var recordsByType: [String: Int] = [:]
         var bytesByType: [String: Int] = [:]
         var recordBytes = 0
@@ -220,6 +345,8 @@ public enum SyncRehearsal {
         var documentBytes = 0
         for wire in stored {
             let assets = wire.assets.values.reduce(0) { $0 + $1.count }
+            let zoneLabel = wire.zone == SyncZones.household ? "household" : wire.zone == adminZone ? "private (admin)" : "private (other)"
+            recordsByZone[zoneLabel, default: 0] += 1
             recordsByType[wire.recordType, default: 0] += 1
             bytesByType[wire.recordType, default: 0] += wire.size + assets
             recordBytes += wire.size
@@ -239,14 +366,15 @@ public enum SyncRehearsal {
                                                 waiting: waitingCopied ? waiting : nil))
         let sealing = try sealingFindings(in: stored, keys: keys)
 
-        // Applied into an empty migrated database through the checked pull.
+        // The admin's other device: both zones, the admin's keys, through the checked pull.
         let receiverManager = try DatabaseManager(path: work.appendingPathComponent("receiver.sqlite").path)
         try receiverManager.migrate()
         let receiver = receiverManager.dbQueue
         defer { try? receiver.close() }
         let receiving = SyncEngineCore(db: receiver, transport: cloud, device: SyncDevice(id: "rehearsal-receiver", name: "Rehearsal receiver"), keyStore: keys,
                                        documents: SyncDocumentFiles(root: work.appendingPathComponent("ReceiverLibrary", isDirectory: true), policy: .lazy,
-                                                                    waitingRoot: work.appendingPathComponent("ReceiverWaiting", isDirectory: true)))
+                                                                    waitingRoot: work.appendingPathComponent("ReceiverWaiting", isDirectory: true)),
+                                       readOnly: true, viewer: role.viewer)
         var apply = Apply()
         let sampler = FootprintSampler()
         apply.footprintBeforeBytes = FootprintSampler.current()
@@ -259,6 +387,7 @@ public enum SyncRehearsal {
         apply.staged = pulled.staged
         apply.unreadable = pulled.unreadable + pulled.waitingForKey
         apply.held = pulled.held
+        apply.stagingRows = try await receiver.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncStaging") ?? 0 }
         for table in SyncSchema.tables {
             let sql = "SELECT COUNT(*) FROM \(quoted(table.name))"
             let sent = try await copy.read { db in try Int.fetchOne(db, sql: sql) ?? 0 }
@@ -268,12 +397,107 @@ public enum SyncRehearsal {
         let receiverFigures = try await receiver.read { db in try TaxFigures.snapshot(db: db, years: protectedYears) }
         apply.taxFiguresChanged = TaxFigures.changes(from: copyFigures, to: receiverFigures).count
 
+        // The member stand-in: the household zone only, with the household key alone (as her iCloud Keychain holds).
+        let memberKeys = InMemorySyncKeyStore()
+        for key in try keys.allKeys(zone: SyncZones.household).values { try memberKeys.store(key, zone: SyncZones.household) }
+        let memberManager = try DatabaseManager(path: work.appendingPathComponent("member.sqlite").path)
+        try memberManager.migrate()
+        let memberQueue = memberManager.dbQueue
+        defer { try? memberQueue.close() }
+        let memberEngine = SyncEngineCore(db: memberQueue, transport: cloud, device: SyncDevice(id: "rehearsal-member", name: "Rehearsal member"),
+                                          keyStore: memberKeys, readOnly: true, viewer: .none)
+        let memberPulled = try await memberEngine.pull()
+        var member = try await memberQueue.read { db -> MemberApply in
+            var member = MemberApply()
+            member.stagingRows = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncStaging") ?? 0
+            for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId FROM syncRecord") {
+                let uuid: String = row["uuid"]
+                let localId: Int64 = row["localId"]
+                guard let table = SyncSchema.table(row["tableName"]), try exists(table, localId: localId, db: db) else { continue }
+                if privateRecords.contains(uuid) {
+                    member.privateRecordsHeld += 1
+                    if table.name == "transaction_" { member.privateTransactionsHeld += 1 }
+                }
+                if table.name == "account", let omitted = placements[uuid]?.omittedFields {
+                    for column in omitted where SyncZoneRouter.privateAccountColumns.contains(column) {
+                        let value = try DatabaseValue.fetchOne(db, sql: "SELECT \(quoted(column)) FROM account WHERE id = ?", arguments: [localId])
+                        if value?.isNull == false { member.privateAccountFieldsHeld += 1 }
+                    }
+                }
+            }
+            for table in SyncSchema.tables {
+                member.rows += try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(quoted(table.name))") ?? 0
+            }
+            return member
+        }
+        member.received = memberPulled.received
+        member.unreadable = memberPulled.unreadable + memberPulled.waitingForKey
+        member.held = memberPulled.held
+        let memberFigures = try await memberQueue.read { db in try TaxFigures.snapshot(db: db, years: protectedYears) }
+        member.taxFiguresChanged = TaxFigures.changes(from: copyFigures, to: memberFigures).count
+
         return Report(workFolder: work, migrationsRun: migrationsRun, backfilled: backfilled, tables: tables,
                       tablesAfterPayloads: tablesAfterPayloads, taxFiguresChanged: taxFiguresChanged, taxYears: taxYears, kept: keep, records: stored.count,
                       recordsByType: recordsByType, bytesByType: bytesByType, recordBytes: recordBytes, assetBytes: assetBytes,
                       largest: largest, largePayloads: largePayloads, documents: documents, documentBytes: documentBytes,
                       plaintextFields: plaintext.sorted(), sealingFindings: sealing, push: push, pushSeconds: pushSeconds,
-                      pendingAfterPush: pendingAfterPush, apply: apply)
+                      pendingAfterPush: pendingAfterPush, apply: apply, ownership: ownershipSummary, backupFile: backup.lastPathComponent,
+                      turnOn: turnOn, recordsByZone: recordsByZone, householdViolations: householdViolations, guardRefusal: guardRefusal,
+                      summaries: summaries, member: member)
+    }
+
+    // MARK: Ownership and placement
+
+    /// Saves the ownership sheet on the copy with `ownership` (the rest at their defaults: `SharingSetup.proposal`),
+    /// as the admin. A copy already confirmed keeps its own (and refuses choices given). Returns whether it saved.
+    static func applyOwnership(_ ownership: RehearsalOwnership, db: Database, now: Date) throws -> Bool {
+        if try SharingSetup.isConfirmed(db: db) {
+            guard ownership.isEmpty else { throw RehearsalError.ownershipAlreadyConfirmed }
+            return false
+        }
+        let admin = try AccessActor.admin(db: db)
+        let rows = try SharingSetup.proposal(admin: admin, db: db)
+        let unknown = ownership.joint.union(ownership.levels.keys).subtracting(rows.map(\.id)).sorted()
+        guard unknown.isEmpty else { throw RehearsalError.unknownAccounts(unknown) }
+        let chosen = rows.map { row -> SharingSetup.Row in
+            var row = row
+            if ownership.joint.contains(row.id) {
+                row.owner = .joint
+                row.level = .everything
+            }
+            if let level = ownership.levels[row.id] { row.level = level }
+            return row
+        }
+        try SharingSetup.save(chosen, admin: admin, db: db, now: now)
+        return true
+    }
+
+    private static func summarizeOwnership(savedHere: Bool, db: Database) throws -> Ownership {
+        var byLevel: [String: Int] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT sharingLevel, COUNT(*) AS n FROM account GROUP BY sharingLevel") {
+            let raw: String = row["sharingLevel"]
+            byLevel[SharingLevel(rawValue: raw)?.title ?? raw] = row["n"]
+        }
+        let joint = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM account WHERE ownerPersonId IS NULL") ?? 0
+        return Ownership(savedHere: savedHere, joint: joint, accountsByLevel: byLevel)
+    }
+
+    /// Where the router places every synced record held here, by UUID (one router for all).
+    static func placementMap(db: Database) throws -> [String: ZoneAssignment] {
+        let router = try SyncZoneRouter(db: db)
+        var map: [String: ZoneAssignment] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId FROM syncRecord") {
+            let localId: Int64 = row["localId"]
+            guard let table = SyncSchema.table(row["tableName"]), try exists(table, localId: localId, db: db) else { continue }
+            map[row["uuid"]] = try router.assignment(table: table.name, localId: localId)
+        }
+        return map
+    }
+
+    /// Whether `table` still holds the row `localId` (a deleted row keeps its identity as a tombstone).
+    private static func exists(_ table: SyncTableSchema, localId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM \(quoted(table.name)) WHERE \(quoted(table.localIdColumn)) = ?)",
+                          arguments: [localId]) ?? false
     }
 
     // MARK: Comparing tables
@@ -516,7 +740,7 @@ public enum SyncRehearsal {
         func mb(_ bytes: Int) -> String { String(format: "%.2f MB", Double(bytes) / 1_000_000) }
         func mb(_ bytes: UInt64) -> String { mb(Int(bytes)) }
         var lines: [String] = []
-        lines.append("# Sync migration rehearsal (step 3)")
+        lines.append("# Sync rehearsal (step 3 migration, step 6 turn-on and zones)")
         lines.append("")
         lines.append("Result: **\(report.passed ? "PASSED" : "FAILED")**")
         lines.append("")
@@ -530,6 +754,18 @@ public enum SyncRehearsal {
         lines.append("- Identical again after generating the payloads: \(differingAfter.isEmpty ? "yes" : "NO")")
         for table in differingAfter { lines.append("  - DIFFERS \(table.table): \(table.note ?? "")") }
         lines.append("- Tax figures changed by the migration: \(report.taxFiguresChanged) (years \(report.taxYears.map(String.init).joined(separator: ", ")): every stored year and 2020/21–2024/25)")
+        lines.append("")
+        lines.append("## Turning on sync (on the copy)")
+        lines.append("- Backup: \(report.backupFile)")
+        lines.append("- Ownership: \(report.ownership.savedHere ? "saved on the copy with the choices given" : "already confirmed on the copy (kept)"); joint accounts \(report.ownership.joint); by level: \(report.ownership.accountsByLevel.sorted(by: { $0.key < $1.key }).map { "\($0.key) \($0.value)" }.joined(separator: ", "))")
+        lines.append("- Stage reached: \(report.turnOn.stage.rawValue) · sent \(report.turnOn.sent) of \(report.turnOn.total)")
+        lines.append("- Summaries built: \(report.summaries.sorted(by: { $0.key < $1.key }).map { "\($0.key) \($0.value)" }.joined(separator: ", "))")
+        lines.append("")
+        lines.append("## Zones")
+        lines.append("- Records by zone: \(report.recordsByZone.sorted(by: { $0.key < $1.key }).map { "\($0.key) \($0.value)" }.joined(separator: ", "))")
+        lines.append("- Guard: \(report.guardRefusal.map { "STOPPED THE PUSH (\($0))" } ?? "every save passed")")
+        lines.append("- Household audit (append-only; nothing below Everything may ever be there): \(report.householdViolations.isEmpty ? "clean" : "\(report.householdViolations.count) VIOLATIONS")")
+        for violation in report.householdViolations.prefix(20) { lines.append("  - \(violation)") }
         lines.append("")
         lines.append("## Outgoing payloads (generated offline)")
         lines.append("- Records: \(report.records) · total \(mb(report.totalBytes)) (fields \(mb(report.recordBytes)), assets \(mb(report.assetBytes)))")
@@ -546,12 +782,20 @@ public enum SyncRehearsal {
             lines.append("| \(type) | \(count) | \(report.bytesByType[type] ?? 0) |")
         }
         lines.append("")
-        lines.append("## Apply into an empty database (checked pull)")
-        lines.append("- Received \(report.apply.received) · staged \(report.apply.staged) · unreadable \(report.apply.unreadable) · held \(report.apply.held)")
+        lines.append("## The admin's other device (both zones, checked pull)")
+        lines.append("- Received \(report.apply.received) · staged while their parents came \(report.apply.staged) · unreadable \(report.apply.unreadable) · held \(report.apply.held)")
         lines.append("- Time: \(String(format: "%.2f", report.apply.seconds)) s")
         lines.append("- Memory footprint: \(mb(report.apply.footprintBeforeBytes)) before, \(mb(report.apply.peakFootprintBytes)) peak (+\(mb(report.apply.peakFootprintBytes &- min(report.apply.peakFootprintBytes, report.apply.footprintBeforeBytes))))")
         lines.append("- Row counts that differ: \(report.apply.rowCountMismatches.isEmpty ? "none" : report.apply.rowCountMismatches.joined(separator: "; "))")
         lines.append("- Tax figures that differ from the copy: \(report.apply.taxFiguresChanged)")
+        lines.append("- Left in staging: \(report.apply.stagingRows)")
+        lines.append("")
+        lines.append("## Member stand-in (household zone only, the household key alone)")
+        let member = report.member
+        lines.append("- Received \(member.received) · unreadable \(member.unreadable) · held \(member.held) · rows \(member.rows) · left in staging \(member.stagingRows)")
+        lines.append("- Records placed privately that it holds: \(member.privateRecordsHeld) (transactions \(member.privateTransactionsHeld))")
+        lines.append("- Private account columns it holds: \(member.privateAccountFieldsHeld)")
+        lines.append("- Tax figures that differ from the copy (information only): \(member.taxFiguresChanged)")
         lines.append("")
         lines.append("## Self Assessment regression on the migrated copy")
         let copyPath = report.workFolder.appendingPathComponent("copy.sqlite").path
@@ -565,6 +809,78 @@ public enum SyncRehearsal {
         lines.append("```")
         lines.append("")
         return lines.joined(separator: "\n")
+    }
+}
+
+/// The ownership choices a rehearsal runs with (step 6 Task 12): which accounts are joint, and the level of any
+/// other account (an account not named keeps the ownership sheet's default: the admin's, at `SharingDefaults`).
+/// Account ids are given at run time (the tool's `--joint`, `--level` or `--ownership <file.json>`), never committed.
+///
+/// JSON: `{"joint": [12], "levels": {"7": "everything", "9": "balanceOnly"}}` (levels: everything, categoryTotals,
+/// balanceOnly, hidden; both keys optional).
+public struct RehearsalOwnership: Codable, Equatable, Sendable {
+    public var joint: Set<Int64>
+    public var levels: [Int64: SharingLevel]
+
+    public init(joint: Set<Int64> = [], levels: [Int64: SharingLevel] = [:]) {
+        self.joint = joint
+        self.levels = levels
+    }
+
+    public var isEmpty: Bool { joint.isEmpty && levels.isEmpty }
+
+    public enum ParseError: Error, Equatable, LocalizedError {
+        case notAnAccountId(String)
+        case notALevel(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .notAnAccountId(let text): return "\"\(text)\" isn't an account id (a whole number)."
+            case .notALevel(let text):
+                return "\"\(text)\" isn't a level: use \(SharingLevel.allCases.map(\.rawValue).joined(separator: ", "))."
+            }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case joint, levels }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        joint = Set(try container.decodeIfPresent([Int64].self, forKey: .joint) ?? [])
+        levels = [:]
+        for (id, level) in try container.decodeIfPresent([String: String].self, forKey: .levels) ?? [:] {
+            try setLevel(id: id, level: level)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(joint.sorted(), forKey: .joint)
+        try container.encode(Dictionary(uniqueKeysWithValues: levels.map { (String($0.key), $0.value.rawValue) }), forKey: .levels)
+    }
+
+    /// Reads the JSON file at `url`.
+    public static func load(from url: URL) throws -> RehearsalOwnership {
+        try JSONDecoder().decode(RehearsalOwnership.self, from: Data(contentsOf: url))
+    }
+
+    /// `--joint <id>`.
+    public mutating func addJoint(_ id: String) throws {
+        guard let value = Int64(id) else { throw ParseError.notAnAccountId(id) }
+        joint.insert(value)
+    }
+
+    /// `--level <id>=<level>`.
+    public mutating func addLevel(_ argument: String) throws {
+        let parts = argument.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { throw ParseError.notALevel(argument) }
+        try setLevel(id: parts[0], level: parts[1])
+    }
+
+    private mutating func setLevel(id: String, level: String) throws {
+        guard let value = Int64(id) else { throw ParseError.notAnAccountId(id) }
+        guard let parsed = SharingLevel(rawValue: level) else { throw ParseError.notALevel(level) }
+        levels[value] = parsed
     }
 }
 
