@@ -800,6 +800,8 @@ final class SheetCovers {
         let original: NSView
         /// What had the keyboard in the sheet (a view inside `original`, or the window).
         weak var firstResponder: NSResponder?
+        /// The sheet's own frame, put back with it (the cover is as big as the window it hangs from).
+        let frame: CGRect
     }
     private var covers: [ObjectIdentifier: Cover] = [:]
     private var observer: NSObjectProtocol?
@@ -870,9 +872,8 @@ final class SheetCovers {
                 guard let window = cover.window else { continue }
                 switch outcome {
                 case .restore:
-                    let frame = window.frame
                     window.contentView = cover.original
-                    window.setFrame(frame, display: true)
+                    window.setFrame(cover.frame, display: true)
                     window.makeFirstResponder(cover.firstResponder ?? cover.original)
                 case .dismiss:
                     // Ended still showing the lock screen: what it held is never shown again.
@@ -909,13 +910,21 @@ final class SheetCovers {
         var previous = window.firstResponder
         if let editor = previous as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder { previous = field }
         let host = NSHostingView(rootView: LockScreenHost(session: session).themedRoot())
-        // The sheet keeps its size: the lock screen scrolls if it needs more.
+        // The cover is the size of the window the sheet hangs from, so the lock screen runs edge to edge
+        // and nothing of the sheet's own frame (its edge, its shadow) shows over the window's lock screen.
+        // The sheet gets its own size back with its content.
+        // (A sheet over a sheet covers the window under both.)
+        var root = window.sheetParent
+        while let next = root?.sheetParent { root = next }
+        let covering = root.map {
+            LockCoverPolicy.coveringFrame(sheet: frame, parent: $0.frame, contentLayoutRect: $0.contentLayoutRect)
+        } ?? frame
         host.sizingOptions = []
-        host.frame = content.frame
+        host.frame = CGRect(origin: .zero, size: covering.size)
         let keeps = previous === window || (previous as? NSView)?.isDescendant(of: content) == true
-        covers[ObjectIdentifier(window)] = Cover(window: window, original: content, firstResponder: keeps ? previous : nil)
+        covers[ObjectIdentifier(window)] = Cover(window: window, original: content, firstResponder: keeps ? previous : nil, frame: frame)
         window.contentView = host
-        window.setFrame(frame, display: true)
+        window.setFrame(covering, display: true)
         window.makeFirstResponder(host)
     }
 }
