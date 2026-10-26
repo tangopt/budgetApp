@@ -101,8 +101,8 @@ final class SyncActivationTests: XCTestCase {
             }
         }
         // The phone's own database: with the entitlement, in a Release build.
-        XCTAssertEqual(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true), allow)
-        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: false), "iCloud entitlement")
+        XCTAssertEqual(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true, isDebug: false), allow)
+        assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: false, isDebug: false), "iCloud entitlement")
         assertRefused(SyncActivation.phoneDecision(isDemoData: false, isSyncDemoLaunch: false, hasCloudKitEntitlement: true, isDebug: true),
                       "Release build")
 

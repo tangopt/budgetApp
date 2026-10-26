@@ -57,6 +57,10 @@ final class PhoneSyncController: ObservableObject {
     private var engineViewer: SyncViewer = .none
     /// A check for the viewer's private zone is under way (one at a time).
     private var followingViewer = false
+    /// A read of the iCloud user's record name is under way.
+    private var readingRecordName = false
+    /// Counts `startEngine` calls (and demo data going on): only the latest makes a scheduler.
+    private var engineGeneration = 0
     private var statusTask: Task<Void, Never>?
     private var wentToBackground = false
     private var accountCheck: Task<Void, Never>?
@@ -92,25 +96,41 @@ final class PhoneSyncController: ObservableObject {
             return
         }
         self.keyStore = keyStore
-        // Who this iPhone's iCloud user is (no account, or no answer: the household's data only).
-        let recordName = try? await CloudKitAccountStatus.userRecordName()
-        guard !isDemo, self.dbQueue != nil else { return }
-        viewerRecordName = recordName
-        let viewer = (try? await dbQueue.read { db in try SyncViewer.forCloudKitUser(recordName: recordName, db: db) }) ?? .none
-        await startEngine(viewer: viewer)
+        // The household's zone starts at once; this iPhone's iCloud user is read beside it (and again on a later
+        // idle sync or a return to the foreground until it is known), and its private zone joins once named.
+        await startEngine(viewer: .none)
+        readViewerRecordName()
+    }
+
+    /// Asks CloudKit for this iPhone's iCloud user's record name, one ask at a time, until it is known; then follows
+    /// the viewer if the household already names it. No account, or no answer: the household's data only for now.
+    private func readViewerRecordName() {
+        guard viewerRecordName == nil, !readingRecordName, scheduler != nil, !isDemo else { return }
+        readingRecordName = true
+        Task { [weak self] in
+            let recordName = try? await CloudKitAccountStatus.userRecordName()
+            guard let self else { return }
+            self.readingRecordName = false
+            guard let recordName, !self.isDemo, self.scheduler != nil else { return }
+            self.viewerRecordName = recordName
+            await self.followViewer()
+        }
     }
 
     /// Makes the read-only engine for `viewer`'s zones and its scheduler (stopping one already running), then asks
-    /// for a sync.
+    /// for a sync. One at a time: a newer call (or demo data going on) supersedes one still stopping the old
+    /// scheduler, so no scheduler is ever left running unowned.
     private func startEngine(viewer: SyncViewer) async {
         guard let dbQueue, let keyStore, let deviceId, !isDemo else { return }
+        engineGeneration += 1
+        let mine = engineGeneration
         statusTask?.cancel()
         statusTask = nil
         if let running = scheduler {
             scheduler = nil
             await running.stop()
         }
-        guard !isDemo else { return }
+        guard mine == engineGeneration, !isDemo else { return }
         engineViewer = viewer
         let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                     device: SyncDevice(id: deviceId, name: UIDevice.current.name),
@@ -118,12 +138,22 @@ final class PhoneSyncController: ObservableObject {
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
         await scheduler.start()
+        // Superseded while starting: the newer call has taken this scheduler off and stops it.
+        guard mine == engineGeneration, self.scheduler === scheduler else { return }
         statusTask = Task { [weak self] in
             for await status in await scheduler.statusStream() {
                 await self?.statusChanged(status)
             }
         }
         Task { await scheduler.requestSync(.launch) }
+    }
+
+    /// Follows the viewer (`followViewerIfNamed`), one check at a time.
+    private func followViewer() async {
+        guard !followingViewer else { return }
+        followingViewer = true
+        await followViewerIfNamed()
+        followingViewer = false
     }
 
     /// After a pull: if the household has now named this iPhone's iCloud user, the engine is made again with its
@@ -169,6 +199,7 @@ final class PhoneSyncController: ObservableObject {
     /// the Keychain until `leaveDemo()`.
     func enterDemo() async {
         isDemo = true
+        engineGeneration += 1
         accountCheck?.cancel()
         accountCheck = nil
         accountGeneration += 1
@@ -203,6 +234,7 @@ final class PhoneSyncController: ObservableObject {
         wentToBackground = false
         guard !isDemo else { return }
         checkAccount()
+        readViewerRecordName()
         Task { await scheduler?.requestSync(.foreground) }
     }
 
@@ -237,12 +269,12 @@ final class PhoneSyncController: ObservableObject {
             isFirstDownload = !pulled
         }
         if case .syncing = status { return }
-        if case .idle = status, engineViewer == .none, viewerRecordName != nil, !followingViewer {
-            // Not inside the status loop: making the engine again ends that loop.
-            followingViewer = true
-            Task { [weak self] in
-                await self?.followViewerIfNamed()
-                self?.followingViewer = false
+        if case .idle = status, engineViewer == .none {
+            if viewerRecordName == nil {
+                readViewerRecordName()
+            } else {
+                // Not inside the status loop: making the engine again ends that loop.
+                Task { [weak self] in await self?.followViewer() }
             }
         }
         if let keyStore {

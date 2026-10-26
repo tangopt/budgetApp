@@ -60,7 +60,7 @@ public enum SyncActivation {
     /// (`databasePath`: `BUDGET_DB_PATH`). Otherwise the phone's own database syncs in a Release build (TestFlight)
     /// signed with the iCloud entitlement: it is the phone's own and read-only (pulls only), so it can't change the
     /// household's data.
-    public static func phoneDecision(isDemoData: Bool, isSyncDemoLaunch: Bool, hasCloudKitEntitlement: Bool, isDebug: Bool = false,
+    public static func phoneDecision(isDemoData: Bool, isSyncDemoLaunch: Bool, hasCloudKitEntitlement: Bool, isDebug: Bool,
                                      databasePath: String? = nil, fileManager: FileManager = .default) -> Decision {
         if isDemoData { return .refuse("Demo data never syncs.") }
         if isSyncDemoLaunch {
