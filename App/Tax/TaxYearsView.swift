@@ -160,6 +160,7 @@ struct TaxYearPage: View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             header
             TaxBanners(viewModel: viewModel)
+            paidSuggestion
             if viewModel.tab == .missingEvidence {
                 TaxMissingEvidenceTab(viewModel: missingEvidenceViewModel, page: page, openTransaction: openTransaction)
             } else {
@@ -221,6 +222,23 @@ struct TaxYearPage: View {
             .frame(minHeight: 24)
             // Never wider than the page (C6): the sections that fit, then a More menu.
             ScreenTabs("Tax year section", selection: $viewModel.tab, tabs: TaxYearsViewModel.Tab.allCases, label: \.rawValue)
+        }
+    }
+
+    /// A filed year whose recorded HMRC payments cover what its return says is due: the status
+    /// change is offered, never made (its button goes through `setStatus`, with its filed-year check).
+    @ViewBuilder
+    private var paidSuggestion: some View {
+        if let result = page.selfAssessment,
+           TaxPaymentCoverage.suggestsMarkingPaid(status: page.row.status, balancingDue: result.calculation.balancingPayment,
+                                                  payments: page.income.payments, startYear: page.row.year.startYear) {
+            InlineBanner(.info, action: {
+                Button("Mark as paid") { viewModel.setStatus(.paid) }
+                    .controlSize(.small)
+                    .help("The balancing payment is recorded: mark \(page.row.year.label) as paid")
+            }) {
+                Text("Payments cover what's due — mark as paid?")
+            }
         }
     }
 

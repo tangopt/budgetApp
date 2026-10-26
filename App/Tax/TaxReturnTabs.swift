@@ -351,7 +351,8 @@ struct TaxFilingTab: View {
 
     /// Filed, and the balancing payment shows as paid: the year can be marked paid.
     private func canMarkPaid(_ result: SelfAssessment.Result) -> Bool {
-        page.row.status == .filed && TaxReturnFormat.balancingIsPaid(result, status: page.row.status, payments: page.income.payments)
+        TaxPaymentCoverage.suggestsMarkingPaid(status: page.row.status, balancingDue: result.calculation.balancingPayment,
+                                               payments: page.income.payments, startYear: result.taxYear.startYear)
     }
 
     var body: some View {
@@ -675,11 +676,11 @@ enum TaxReturnFormat {
 
     /// How close what's recorded may come to what's due and still count as paid: £1 (HMRC's
     /// figures are in pence, payments are often rounded to the pound).
-    static let paidTolerance = 100
+    static let paidTolerance = TaxPaymentCoverage.tolerance
 
     /// What the payments of `kind` recorded for the year starting `startYear` add up to.
     static func recorded(_ payments: [HMRCPayment], kind: HMRCPaymentKind, startYear: Int) -> Int {
-        payments.filter { $0.kind == kind && $0.startYear == startYear }.reduce(0) { $0 + $1.amountMinorUnits }
+        TaxPaymentCoverage.recorded(payments, kind: kind, startYear: startYear)
     }
 
     /// A payment's state: paid once something is recorded and it comes within £1 of `due` (a
@@ -698,9 +699,8 @@ enum TaxReturnFormat {
     /// Whether the balancing payment counts as paid: the year is marked paid, or balancing
     /// payments are recorded for it and add up to within £1 of it.
     static func balancingIsPaid(_ result: SelfAssessment.Result, status: TaxYearStatus, payments: [HMRCPayment]) -> Bool {
-        let due = result.calculation.balancingPayment
-        let paid = recorded(payments, kind: .balancingPayment, startYear: result.taxYear.startYear)
-        return status == .paid || (due > 0 && paid > 0 && paid >= due - paidTolerance)
+        status == .paid || TaxPaymentCoverage.covers(balancingDue: result.calculation.balancingPayment, payments: payments,
+                                                      startYear: result.taxYear.startYear)
     }
 
     /// The balancing payment's state: paid once the year is marked paid or balancing payments
