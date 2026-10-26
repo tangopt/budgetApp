@@ -170,6 +170,44 @@ final class SharedActualsSourceTests: XCTestCase {
         XCTAssertEqual(owner["Income"]?["2026-11"], 700)
     }
 
+    /// Scenario Lab's Compare, Differences and Grid read one `ComparisonData` whose calendar the lab builds with
+    /// `PayCalendar.forData(…, publishedCloses:)` from the viewer's source (step 6 review I2): the member's comparison
+    /// months are the owner's, and its actuals are the Budget grid's.
+    func testScenarioComparisonFollowsTheOwnersPayMonths() async throws {
+        let (h, _) = try await Self.household(salaryInBalanceOnly: true)
+        let member = try Self.viewer(h.memberDevice, admin: false)
+        let admin = try Self.viewer(h.adminMac, admin: true)
+        let ownerMonths = try await h.adminMac.db.read { db in try Self.payMonths(db, SharedActualsSource(viewer: admin, today: Self.today)) }
+        try await h.memberDevice.db.read { db in
+            let source = SharedActualsSource(viewer: member, today: Self.today)
+            func data(published: [Date]) throws -> ComparisonData {
+                let transactions = try source.transactions(db)
+                let categories = try Category.fetchAll(db)
+                let calendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: try PayMonthClose.fetchAll(db),
+                                                   today: Self.today, publishedCloses: published)
+                return ComparisonData(today: Self.today, accounts: try source.accounts(db), snapshots: try source.balanceSnapshots(db),
+                                      transactions: transactions, transferLinks: try TransferLink.fetchAll(db), categories: categories,
+                                      rate: try ExchangeRateSetting.currentOrDefault(db: db), payCalendar: calendar, horizonYear: 2027, horizonMonth: 12)
+            }
+            let compared = try data(published: try source.publishedCloses(db))
+            XCTAssertEqual((6...12).map { month in compared.payCalendar.closeDate(of: PayMonth(year: 2026, month: month)) }, ownerMonths.map(\.close))
+            let names = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).map { ($0.id!, $0.name) })
+            func byName(_ totals: [Int64: [Int: [Int: Int]]]) -> [String: [String: Int]] {
+                var result: [String: [String: Int]] = [:]
+                for (category, years) in totals {
+                    for (year, months) in years { for (month, amount) in months where amount != 0 {
+                        result[names[category]!, default: [:]][String(format: "%04d-%02d", year, month)] = amount
+                    } }
+                }
+                return result
+            }
+            XCTAssertEqual(byName(ScenarioComparison.gridActuals(compared).monthTotals), try Self.gridTotals(db, source))
+            // Without the owner's closes the member's comparison months would be her own.
+            let ownMonths = try data(published: [])
+            XCTAssertNotEqual((6...12).map { month in ownMonths.payCalendar.closeDate(of: PayMonth(year: 2026, month: month)) }, ownerMonths.map(\.close))
+        }
+    }
+
     /// The owner's figures (less what the levels don't share) and the member's, after checking their pay months match.
     private func gridTotalsOnBothSides(salaryInBalanceOnly: Bool, totalsInEuros: Bool = false) async throws
         -> (owner: [String: [String: Int]], member: [String: [String: Int]]) {

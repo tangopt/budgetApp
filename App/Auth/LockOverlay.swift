@@ -319,6 +319,8 @@ final class LockScreenModel: ObservableObject {
             enrolled.remove(id)
             step = .password
             message = "Touch ID isn't on for you here any more. Enter your password."
+        case .refused(let refusal):
+            message = refusal
         case .failed(let error):
             message = "Touch ID didn't work: \(AuthText.sentence(error)) Enter your password."
             step = .password
@@ -412,6 +414,13 @@ final class LockScreenModel: ObservableObject {
     var isThrottled: Bool { (throttledUntil ?? .distantPast) > Date() }
 
     #if SNAPSHOTS
+    /// Snapshot routes only: `user` chosen and their sign-in refused with `message` (the refusal sign-in gives).
+    func snapshotShowRefusal(_ message: String, for user: Int64?) {
+        selectedId = user
+        step = .password
+        self.message = message
+    }
+
     /// Snapshot routes only: the inline Touch ID shown listening, never evaluated.
     func snapshotShowTouchIDListening() {
         step = .choose

@@ -38,15 +38,32 @@ enum SharingSnapshots {
             SnapshotRoute(name: "settings-sharing-hidden_blocked", title: "Settings ▸ Sharing: Hidden refused for an account a property needs") { context in
                 try await confirmation(context, account: "Euro Current", to: .hidden)
             },
-            SnapshotRoute(name: "settings-sharing-member", title: "Settings ▸ Sharing as Person B: no accounts of her own, no Set owners…") { context in
-                try await signInMember(context)
-                return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
+            SnapshotRoute(name: "auth-member_refused", title: "Lock screen: Person B refused on A's Mac user (it holds A's private accounts)") { context in
+                let member = try await memberUser(context)
+                guard let refusal = try await context.dbQueue.read({ db in try SharingSignIn.refusal(personId: member.personId, db: db) }) else {
+                    throw SnapshotCheckFailed("Person B wasn't refused on A's database")
+                }
+                let admin = try await context.dbQueue.read { db in try AppUser.filter(Column("isAdmin") == true).order(Column("id")).fetchOne(db) }
+                let locked = SessionModel(dbQueue: context.dbQueue, isSetUp: true, biometrics: StandInTouchID(enrolled: []), defaults: SnapshotMode.defaults)
+                locked.snapshotLock()
+                let model = LockScreenModel(session: locked, biometrics: StandInTouchID(enrolled: []), candidates: [admin, member].compactMap { $0 })
+                model.prepare()
+                model.snapshotShowRefusal(refusal, for: member.id)
+                return AnyView(LockScreen(model: model))
             },
             SnapshotCatalog.screen("accounts", "sharing_badges", "Accounts: lock badges on A's accounts below Everything", .accounts) { models, context in
                 models.accounts.selectedAccountId = context.accountId("Travel Card")
             },
-            SnapshotRoute(name: "budget-cell-private_lines", title: "Budget as Person B: a cell's shared transactions, then A's private card as one line",
+        ]
+    }
+
+    /// Person B on her own database (the demo with A's private records taken out, as her device would hold it): the
+    /// cell's private lines, net worth's note, her Settings ▸ Sharing. They change the demo copy, so they run last.
+    static var memberRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "budget-cell-private_lines", title: "Budget on Person B's own database: a cell's shared transactions, then A's private card as one line",
                           settleFactor: 2) { context in
+                try await becomeMembersDatabase(context)
                 let cell = try await privateCell(context)
                 try await signInMember(context)
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .budgetGrid, prepare: { models in
@@ -57,10 +74,16 @@ enum SharingSnapshots {
                     }
                 })))
             },
-            SnapshotRoute(name: "dashboard-viewer_member", title: "Dashboard as Person B: net worth includes everything she can see",
+            SnapshotRoute(name: "dashboard-viewer_member", title: "Dashboard on Person B's own database: net worth includes everything she can see",
                           settleFactor: 1.5) { context in
+                try await becomeMembersDatabase(context)
                 try await signInMember(context)
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .dashboard)))
+            },
+            SnapshotRoute(name: "settings-sharing-member", title: "Settings ▸ Sharing as Person B on her own database: no accounts of her own, no Set owners…") { context in
+                try await becomeMembersDatabase(context)
+                try await signInMember(context)
+                return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
             },
         ]
     }
@@ -90,21 +113,42 @@ enum SharingSnapshots {
             return (SharingOverview.AccountRow(id: id, displayName: account.displayName, bankName: account.bankName, level: account.sharingLevel),
                     try SharingOverview.preview(accountId: id, to: level, db: db), other)
         }
-        var change = SharingSettingsModel.PendingChange(account: row, to: level)
-        change.preview = preview
+        let change = SharingLevelChangeFlow.Pending(account: row, to: level, preview: preview)
         return AnyView(SnapshotSheetCanvas(sheet: LevelChangeConfirm(change: change, otherName: other, onCancel: {}, onChange: {})))
     }
 
-    /// Signs in as Person B, a member with no password (made once in the demo copy), for this route.
-    private static func signInMember(_ context: SnapshotContext) async throws {
-        let member = try await context.dbQueue.write { db -> AppUser in
+    /// Person B as a member with no password (made once in the demo copy).
+    private static func memberUser(_ context: SnapshotContext) async throws -> AppUser {
+        try await context.dbQueue.write { db -> AppUser in
             guard let person = try Person.filter(Column("name") == "Person B").fetchOne(db), let personId = person.id else { throw SnapshotMissing("Person B") }
             if let existing = try AppUser.filter(Column("personId") == personId).fetchOne(db) { return existing }
             var user = AppUser(personId: personId, displayName: person.name, isAdmin: false, createdAt: AppClock.now)
             try user.insert(db)
             return user
         }
+    }
+
+    /// Signs in as Person B for this route, as sign-in would let her: only on a database that isn't someone else's.
+    private static func signInMember(_ context: SnapshotContext) async throws {
+        let member = try await memberUser(context)
+        if let refusal = try await context.dbQueue.read({ db in try SharingSignIn.refusal(personId: member.personId, db: db) }) {
+            throw SnapshotCheckFailed("Person B refused: \(refusal)")
+        }
         context.environment.session.snapshotSignIn(member)
+    }
+
+    /// The demo copy as Person B's own device holds it: A's private records (`SharingSignIn.othersPrivateRecords`)
+    /// taken out; A's private accounts stay as stubs with their summaries. Done once.
+    private static func becomeMembersDatabase(_ context: SnapshotContext) async throws {
+        let member = try await memberUser(context)
+        try await context.dbQueue.write { db in
+            let records = try SharingSignIn.othersPrivateRecords(personId: member.personId, db: db)
+            for table in ["forecastEntry", "balanceSnapshot", "balanceSnapshotArchive", "transaction_", "importBatch", "importProfile"] {
+                let ids = records.filter { $0.table == table }.map { String($0.id) }
+                guard !ids.isEmpty else { continue }
+                try db.execute(sql: "DELETE FROM \(table) WHERE id IN (\(ids.joined(separator: ",")))")
+            }
+        }
     }
 
     /// The latest closed month's biggest category on A's Category totals card, with one shared purchase in it on the
@@ -135,5 +179,11 @@ enum SharingSnapshots {
     }
 
     private static let sharedPurchase = "Shared purchase (demo)"
+}
+
+/// A route's own check failed (the run prints it and skips the route).
+struct SnapshotCheckFailed: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = "check failed: \(description)" }
 }
 #endif

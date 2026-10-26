@@ -78,6 +78,11 @@ public enum SharingCopy {
     public static let taxAndIncome = "My tax years and income"
     public static let taxAndIncomeNote = "Your tax years, employment and payroll documents and HMRC pages. Taxes stay shared in full for now."
     public static let badgeHelp = "How much of this account the other person sees. Change it in Settings ▸ Sharing."
+    /// Sign-in refused: this database holds another person's private accounts (`SharingSignIn`).
+    public static let otherPersonsMacUser = "This Mac user holds someone else's private accounts. Sign in on your own Mac user."
+    /// Settings ▸ Sharing while locked, and before sign-in is set up.
+    public static let needsSignIn = "Sign in to Mango to see how your accounts are shared."
+    public static let needsSignInSetUp = "Sharing starts once sign-in is set up, in Settings ▸ Sign-in."
     /// When the household has nobody else yet.
     public static let otherPersonFallback = "The other person"
 

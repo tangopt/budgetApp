@@ -1,5 +1,6 @@
 // App/Settings/SharingSettings.swift
 import SwiftUI
+import Combine
 import BudgetCore
 import GRDB
 
@@ -26,26 +27,22 @@ struct SharingSettings: View {
     }
 }
 
+extension Notification.Name {
+    /// Owners or a level changed (Settings ▸ Sharing): the main window's screen on show reads its figures again.
+    static let sharingChanged = Notification.Name("mango.sharingChanged")
+}
+
 @MainActor
 final class SharingSettingsModel: ObservableObject {
-    /// A level picked on one of your accounts, waiting for Change.
-    struct PendingChange: Identifiable, Equatable {
-        let account: SharingOverview.AccountRow
-        let to: SharingLevel
-        /// nil while the records to move are counted.
-        var preview: SharingOverview.LevelChangePreview?
-        var isChanging = false
-        var error: String?
-
-        var id: String { "\(account.id)-\(to.rawValue)" }
-    }
-
     @Published private(set) var overview: SharingOverview?
+    /// Why the pane has nothing to show or change (signed out, sign-in not set up); nil when it does.
+    @Published private(set) var unavailable: String?
     /// The admin's display name, the ownership sheet's owner choice.
     @Published private(set) var adminName = ""
     /// The ownership sheet's rows, while it is open (`SharingSetup.proposal`).
     @Published var ownershipRows: [SharingSetup.Row]?
-    @Published var pending: PendingChange?
+    /// The level change being confirmed (`SharingLevelChangeFlow`: one at a time, Change only once counted).
+    @Published private(set) var flow = SharingLevelChangeFlow()
     @Published var error: String?
     @Published private(set) var isWorking = false
 
@@ -55,15 +52,26 @@ final class SharingSettingsModel: ObservableObject {
         self.dbQueue = dbQueue
     }
 
+    var pending: SharingLevelChangeFlow.Pending? { flow.pending }
+
     func load() async {
         do {
-            guard let actor = try await dbQueue.loadSignedInActor() else { overview = nil; return }
+            guard let actor = try await dbQueue.loadSignedInActor() else {
+                overview = nil
+                unavailable = SharingCopy.needsSignInSetUp
+                return
+            }
             let (overview, adminName) = try await dbQueue.read { db in
                 (try SharingOverview.load(actor: actor, db: db),
                  try String.fetchOne(db, sql: "SELECT displayName FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1") ?? "")
             }
             self.overview = overview
             self.adminName = adminName
+            unavailable = nil
+        } catch is SignedOutWrite {
+            // Locked: nothing is shown or changed until someone signs in (the pane reloads then).
+            overview = nil
+            unavailable = SharingCopy.needsSignIn
         } catch {
             self.error = describe(error)
         }
@@ -89,6 +97,7 @@ final class SharingSettingsModel: ObservableObject {
             try SharingSetup.save(rows, admin: actor, db: db, now: Date())
         }
         ownershipRows = nil
+        NotificationCenter.default.post(name: .sharingChanged, object: nil)
         await load()
     }
 
@@ -96,54 +105,40 @@ final class SharingSettingsModel: ObservableObject {
 
     /// Opens the confirmation, then counts the records to move off the main thread.
     func request(_ level: SharingLevel, for account: SharingOverview.AccountRow) {
-        guard level != account.level, pending == nil else { return }
-        let change = PendingChange(account: account, to: level)
-        pending = change
-        let id = account.id
+        guard let id = flow.request(level, for: account) else { return }
+        let accountId = account.id
         Task {
             do {
-                let preview = try await dbQueue.read { db in try SharingOverview.preview(accountId: id, to: level, db: db) }
-                guard pending?.id == change.id else { return }
-                pending?.preview = preview
+                let preview = try await dbQueue.read { db in try SharingOverview.preview(accountId: accountId, to: level, db: db) }
+                flow.counted(preview, for: id)
             } catch {
-                guard pending?.id == change.id else { return }
-                pending?.error = describe(error)
+                flow.failed(describe(error), for: id)
             }
         }
     }
 
     func confirmChange() async {
-        guard var change = pending, change.preview?.isBlocked == false else { return }
-        change.isChanging = true
-        change.error = nil
-        pending = change
-        let (id, level) = (change.account.id, change.to)
+        guard let change = flow.beginChange() else { return }
         do {
             _ = try await dbQueue.writeAsSignedInUser { db, actor in
-                try SharingLevels.set(level, accountId: id, actor: actor, db: db)
+                try SharingLevels.set(change.level, accountId: change.accountId, actor: actor, db: db)
             }
-            pending = nil
+            flow.changed(change.id)
+            NotificationCenter.default.post(name: .sharingChanged, object: nil)
             await load()
         } catch {
-            pending?.isChanging = false
-            pending?.error = describe(error)
+            flow.failed(describe(error), for: change.id)
         }
     }
 
     func cancelChange() {
-        guard pending?.isChanging != true else { return }
-        pending = nil
+        flow.cancel()
     }
 
     private func describe(_ error: Error) -> String {
         if let error = error as? SharingError { return SharingCopy.error(error) }
         return error.localizedDescription
     }
-
-    #if SNAPSHOTS
-    /// Snapshot routes only: a confirmation already counted.
-    func snapshotShow(_ change: PendingChange) { pending = change }
-    #endif
 }
 
 struct SharingSettingsContent: View {
@@ -155,6 +150,9 @@ struct SharingSettingsContent: View {
 
     var body: some View {
         Form {
+            if let unavailable = model.unavailable {
+                Section { Text(unavailable).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
             if let overview = model.overview {
                 if overview.isConfirmed {
                     confirmed(overview)
@@ -179,6 +177,9 @@ struct SharingSettingsContent: View {
         .formStyle(.grouped)
         .frame(height: 520)
         .task { await model.load() }
+        // Someone else signed in, or the lock ended: the pane is theirs.
+        .onReceive(AppEnvironment.Current.shared.environment?.session.$state.map(\.signedInId).removeDuplicates().dropFirst().eraseToAnyPublisher()
+                   ?? Empty().eraseToAnyPublisher()) { _ in Task { await model.load() } }
         .sheet(isPresented: Binding(get: { model.ownershipRows != nil }, set: { if !$0 { model.ownershipRows = nil } })) {
             if let rows = model.ownershipRows {
                 OwnershipSheet(rows: rows, adminName: model.adminName, onSave: { try await model.saveOwnership($0) })

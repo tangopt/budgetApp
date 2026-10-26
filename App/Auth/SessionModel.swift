@@ -80,6 +80,8 @@ final class SessionModel: ObservableObject {
         /// Not enrolled on this Mac, or dropped because the fingerprints changed: ask for the password, then
         /// offer Touch ID again.
         case notEnrolled
+        /// This Mac user's database holds someone else's private accounts (`SharingSignIn`): not here.
+        case refused(String)
         case failed(String)
     }
 
@@ -275,6 +277,8 @@ final class SessionModel: ObservableObject {
             return .notRecognised
         } catch BiometricUnlockError.lockedOut {
             return .lockedOut
+        } catch let refused as SignInRefused {
+            return .refused(refused.message)
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -334,6 +338,12 @@ final class SessionModel: ObservableObject {
     }
 
     private func begin(appUserId: Int64, then step: AfterSignIn? = nil) async throws {
+        // One person per Mac user (fails closed): nobody signs in to a database holding someone else's private accounts.
+        let refusal = try await dbQueue.read { db -> String? in
+            guard let user = try AppUser.fetchOne(db, key: appUserId) else { return nil }
+            return try SharingSignIn.refusal(personId: user.personId, db: db)
+        }
+        if let refusal { throw SignInRefused(message: refusal) }
         let user = try await dbQueue.write { db -> AppUser? in
             try AppUserStore.recordSignIn(db, appUserId: appUserId, now: Date())
             return try AppUser.fetchOne(db, key: appUserId)
@@ -363,4 +373,11 @@ final class SessionModel: ObservableObject {
         }
         observers.append((center, token))
     }
+}
+
+/// A sign-in refused because this Mac user's database holds someone else's private accounts (`SharingSignIn`); its
+/// message is the lock screen's.
+struct SignInRefused: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

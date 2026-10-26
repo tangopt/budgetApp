@@ -696,8 +696,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
 
     // MARK: The Grid tab's side panel (`GridCellPanelModel`)
 
-    /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end`
-    /// (every account): what a cell's actual sums, whichever plan is shown.
+    /// The other person's private accounts in a cell, one line each (`SharedActuals.privateLines`), off the main thread.
     func privateLines(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) async -> [SharedActuals.PrivateLine] {
         let (viewer, today) = (actuals.viewer, actuals.today)
         return (try? await dbQueue.read { db in
@@ -705,6 +704,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         }) ?? []
     }
 
+    /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end`
+    /// (every account): what a cell's actual sums, whichever plan is shown.
     func transactions(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) -> [Transaction] {
         gridActuals.budgetFacing.filter { $0.categoryId.map(categoryIds.contains) == true && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
     }

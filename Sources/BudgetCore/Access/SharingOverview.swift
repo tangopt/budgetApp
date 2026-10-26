@@ -48,7 +48,7 @@ public struct SharingOverview: Equatable, Sendable {
         let confirmed = try SharingSetup.isConfirmed(db: db)
         var own: [AccountRow] = [], joint: [AccountRow] = []
         if confirmed {
-            for account in try AccountOrdering.sorted(try Account.fetchAll(db)) {
+            for account in AccountOrdering.sorted(try Account.fetchAll(db)) {
                 guard let id = account.id else { continue }
                 let row = AccountRow(id: id, displayName: account.displayName, bankName: account.bankName, level: account.sharingLevel)
                 if account.ownerPersonId == nil { joint.append(row) } else if account.ownerPersonId == actor.personId { own.append(row) }

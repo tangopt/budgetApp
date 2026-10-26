@@ -7,7 +7,7 @@ import BudgetCore
 /// recall what the other person may already have (a higher one says what they will see). Nothing changes until
 /// Change. A Hidden that something still needs lists what blocks it and offers no Change.
 struct LevelChangeConfirm: View {
-    let change: SharingSettingsModel.PendingChange
+    let change: SharingLevelChangeFlow.Pending
     let otherName: String
     let onCancel: () -> Void
     let onChange: () -> Void
@@ -22,8 +22,7 @@ struct LevelChangeConfirm: View {
                       error: change.error,
                       width: SheetMetrics.formWidth,
                       onCancel: onCancel,
-                      primary: isBlocked ? nil : SheetAction(SharingCopy.changeButton,
-                                                             isEnabled: preview != nil && !change.isChanging, action: onChange)) {
+                      primary: isBlocked ? nil : SheetAction(SharingCopy.changeButton, isEnabled: change.canChange, action: onChange)) {
             VStack(alignment: .leading, spacing: 10) {
                 if let preview {
                     if preview.isBlocked {

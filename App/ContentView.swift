@@ -363,8 +363,10 @@ struct ContentView: View {
         .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in
             guard id != shownForUserId else { return }
             shownForUserId = id
-            reloadForSignedInUser()
+            reloadSharedFigures()
         }
+        // Owners or a level changed in Settings ▸ Sharing (another window): the screen on show reads again.
+        .onReceive(NotificationCenter.default.publisher(for: .sharingChanged)) { _ in reloadSharedFigures() }
         // Observes the phase alone, so the window isn't redrawn by every progress tick.
         .onReceive(environment.importCenter.$phase.map(Self.isActiveImport).removeDuplicates()) { importActive = $0 }
         // ⌘F (Edit ▸ Search Transactions) and File ▸ Import… (⇧⌘I) in this window, only while signed in.
@@ -409,8 +411,8 @@ struct ContentView: View {
         DocumentImportAction.forCenter(environment.importCenter)
     }
 
-    /// The screen on show, read again as the person now signed in sees it.
-    private func reloadForSignedInUser() {
+    /// The screen on show, read again as the person signed in sees it now (someone else signed in, or a level changed).
+    private func reloadSharedFigures() {
         switch selection {
         case .dashboard: dashboardViewModel.load()
         case .accounts: accountsViewModel.load()

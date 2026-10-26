@@ -93,16 +93,9 @@ struct OwnershipSheet: View {
 
     /// Joint locks the level to Everything; back to the admin, the account takes its default again.
     private func setJoint(_ joint: Bool, _ row: Binding<SharingSetup.Row>) {
-        guard joint != (row.wrappedValue.owner == .joint) else { return }
-        if joint {
-            row.wrappedValue.owner = .joint
-            row.wrappedValue.level = .everything
-        } else if let admin = adminPersonId {
-            row.wrappedValue.owner = .person(admin)
-            row.wrappedValue.level = SharingDefaults.level(ownerPersonId: admin, isPropertyLinked: row.wrappedValue.isPropertyLinked)
-        }
+        guard let adminPersonId else { return }
+        row.wrappedValue.setJoint(joint, adminPersonId: adminPersonId)
     }
-
 
     private func save() {
         isSaving = true
