@@ -35,6 +35,9 @@ struct PropertyPanelDock<Page: View, SidePanel: View>: View {
 struct PropertySidePanel<Content: View>: View {
     let title: String
     var subtitle: String?
+    /// The title is a name (a bank description, a document): it truncates in the middle, whole
+    /// on hover, instead of being kept whole as a figure.
+    var titleIsName = false
     let onClose: () -> Void
     @ViewBuilder let content: Content
     @Environment(\.theme) private var theme
@@ -42,7 +45,7 @@ struct PropertySidePanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.headline).lineLimit(1).figureText()
+                titleText
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark") }
@@ -61,6 +64,15 @@ struct PropertySidePanel<Content: View>: View {
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(theme.windowFill)
+    }
+
+    @ViewBuilder
+    private var titleText: some View {
+        if titleIsName {
+            Text(title).font(.headline).lineLimit(1).truncationMode(.middle).help(title)
+        } else {
+            Text(title).font(.headline).lineLimit(1).figureText()
+        }
     }
 }
 

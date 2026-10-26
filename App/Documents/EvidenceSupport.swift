@@ -248,6 +248,9 @@ struct PickerLinkedMark: View {
 struct EvidenceDocumentPickRow: View {
     let summary: EvidenceDocumentSummary
     var reasons: [String] = []
+    /// A narrow column (the Missing evidence side panel): the kind on its own line and the
+    /// reasons wrapping, so nothing is cut off.
+    var stacked = false
     @Environment(\.documentKinds) private var kinds
 
     var body: some View {
@@ -261,10 +264,15 @@ struct EvidenceDocumentPickRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.displayName).lineLimit(1).truncationMode(.middle)
                 DocumentCaptionLine(kindName: kinds.displayName(of: summary), date: summary.docDate,
-                                    amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
+                                    amountMinorUnits: summary.amountMinorUnits, currency: summary.currency, stacked: stacked)
                     .font(.caption).foregroundStyle(.secondary)
                 if !reasons.isEmpty {
-                    Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if stacked {
+                        Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
         }
@@ -280,14 +288,27 @@ struct DocumentCaptionLine: View {
     let date: Date?
     let amountMinorUnits: Int?
     let currency: Currency?
+    /// The kind on its own line (wrapping, never cut), the day and amount under it.
+    var stacked = false
 
     var body: some View {
         let figures = [date.map(DocumentFormat.day),
                        amountMinorUnits.flatMap { amount in currency.map { Money.format(amount, currency: $0) } }].compactMap { $0 }
-        HStack(spacing: 0) {
-            Text(kindName).lineLimit(1)
-            if !figures.isEmpty {
-                Text(" · " + figures.joined(separator: " · ")).figureText()
+        Group {
+            if stacked {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(kindName).fixedSize(horizontal: false, vertical: true)
+                    if !figures.isEmpty {
+                        Text(figures.joined(separator: " · ")).figureText()
+                    }
+                }
+            } else {
+                HStack(spacing: 0) {
+                    Text(kindName).lineLimit(1)
+                    if !figures.isEmpty {
+                        Text(" · " + figures.joined(separator: " · ")).figureText()
+                    }
+                }
             }
         }
         .accessibilityElement(children: .combine)

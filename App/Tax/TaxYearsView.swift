@@ -260,10 +260,13 @@ struct TaxMissingEvidenceTab: View {
         MissingEvidenceView(viewModel: viewModel, openTransaction: openTransaction, embedded: true)
             .onAppear {
                 if saved == nil { saved = (viewModel.periodChoice, viewModel.propertyFilter) }
+                // The standalone screen's side panel doesn't follow it here (nor this one back).
+                viewModel.selectedItemId = nil
                 follow()
             }
             .onChange(of: key) { follow() }
             .onDisappear {
+                viewModel.selectedItemId = nil
                 if let saved {
                     viewModel.periodChoice = saved.0
                     viewModel.propertyFilter = saved.1

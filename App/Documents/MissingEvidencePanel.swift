@@ -15,7 +15,11 @@ final class MissingEvidencePanelModel: ObservableObject {
     let dbQueue: DatabaseQueue
     let library: EvidenceLibrary
 
-    @Published private(set) var index: EvidenceDocumentSearch.Index?
+    @Published private(set) var index: EvidenceDocumentSearch.Index? {
+        didSet { indexVersion += 1 }
+    }
+    /// Bumped each time the library is read: the search runs again on the new read.
+    @Published private(set) var indexVersion = 0
     /// The documents that could satisfy `suggestionsItemId`'s item, best first.
     @Published private(set) var suggestions: [MissingEvidence.Candidate] = []
     @Published private(set) var suggestionsItemId: String?
@@ -40,8 +44,37 @@ final class MissingEvidencePanelModel: ObservableObject {
         self.library = library
     }
 
+    /// Bumped when the library, the transactions, accounts or categories change anywhere (an
+    /// edit on another screen, an import, a sync): the panel reads again.
+    @Published private(set) var generation = 0
+    private var observation: AnyDatabaseCancellable?
+
     /// The library changed (the panel wrote, or the item's documents did): read it again next time.
     func invalidate() { libraryIsStale = true }
+
+    /// The page shows: what was read before may be out of date, so everything is read again,
+    /// and any later change to what the panel reads bumps `generation`.
+    func start() {
+        libraryIsStale = true
+        matcherIndex = nil
+        guard observation == nil else { return }
+        let region = DatabaseRegionObservation(tracking: Transaction.all(), Account.all(), Category.all(),
+                                               EvidenceDocument.all(), DocumentLink.all())
+        observation = region.start(in: dbQueue, onError: { _ in }, onChange: { [weak self] _ in
+            Task { @MainActor in self?.databaseChanged() }
+        })
+    }
+
+    func stop() {
+        observation?.cancel()
+        observation = nil
+    }
+
+    private func databaseChanged() {
+        libraryIsStale = true
+        matcherIndex = nil
+        generation += 1
+    }
 
     /// Reads what's stale, then the suggestions for `item` and which files are here.
     func refresh(for item: MissingEvidence.Item) async {
@@ -163,7 +196,7 @@ struct MissingEvidencePanel: View {
     private var linkedIds: Set<Int64> { Set(attached.map(\.id)) }
 
     var body: some View {
-        PropertySidePanel(title: item.title, subtitle: subtitle, onClose: onClose) {
+        PropertySidePanel(title: item.title, subtitle: subtitle, titleIsName: true, onClose: onClose) {
             if let note {
                 Text(note.text)
                     .font(.callout)
@@ -183,11 +216,15 @@ struct MissingEvidencePanel: View {
             .wrapProbeClips()
         }
         .quickLookPreview($model.quickLook, in: model.quickLookURLs)
-        .task(id: item) {
+        // Read again when the item changes or anything the panel reads changes elsewhere (a
+        // short pause first, so ↑/↓ through the rows and a burst of writes read once).
+        .task(id: RefreshKey(item: item, generation: model.generation)) {
             if previewedId.map({ id in !attached.contains { $0.id == id } }) ?? true { previewedId = attached.first?.id }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
             await model.refresh(for: item)
         }
-        .task(id: SearchKey(text: query.trimmingCharacters(in: .whitespaces), isReady: model.index != nil)) {
+        .task(id: SearchKey(text: query.trimmingCharacters(in: .whitespaces), indexVersion: model.indexVersion)) {
             let text = query.trimmingCharacters(in: .whitespaces)
             if !text.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
@@ -371,7 +408,7 @@ struct MissingEvidencePanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(summary.displayName).lineLimit(1).truncationMode(.middle).help(summary.displayName)
                     DocumentCaptionLine(kindName: document.kindName, date: summary.docDate,
-                                        amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
+                                        amountMinorUnits: summary.amountMinorUnits, currency: summary.currency, stacked: true)
                         .font(.caption).foregroundStyle(.secondary)
                     if let shortfall = document.shortfall {
                         Text("Doesn't count: \(shortfall.text)").font(.caption).foregroundStyle(theme.pending)
@@ -526,7 +563,7 @@ struct MissingEvidencePanel: View {
 
     private func pickRow(_ summary: EvidenceDocumentSummary, reasons: [String] = []) -> some View {
         HStack(spacing: 6) {
-            EvidenceDocumentPickRow(summary: summary, reasons: reasons)
+            EvidenceDocumentPickRow(summary: summary, reasons: reasons, stacked: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             quickLookButton(summary)
             if linkedIds.contains(summary.id) {
@@ -551,6 +588,11 @@ struct MissingEvidencePanel: View {
 
     private struct SearchKey: Equatable {
         let text: String
-        let isReady: Bool
+        let indexVersion: Int
+    }
+
+    private struct RefreshKey: Equatable {
+        let item: MissingEvidence.Item
+        let generation: Int
     }
 }
