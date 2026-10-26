@@ -74,6 +74,8 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Export compliance: only Apple's own encryption (CryptoKit), so TestFlight doesn't ask on every build.
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango.ios
