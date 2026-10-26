@@ -80,6 +80,11 @@ public struct UtilityBillsGrid: Equatable, Sendable {
     public var bills: [UtilityBill]
     public var rows: [UtilityBillRow]
 
+    public init(bills: [UtilityBill], rows: [UtilityBillRow]) {
+        self.bills = bills
+        self.rows = rows
+    }
+
     /// Bills per stage.
     public func count(_ stage: UtilityBillStage) -> Int { bills.filter { $0.stage == stage }.count }
 
