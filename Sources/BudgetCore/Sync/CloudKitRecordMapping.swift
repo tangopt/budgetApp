@@ -26,13 +26,21 @@ public enum CloudKitRecordMapping {
     /// CloudKit's limit on one record's fields (assets don't count).
     public static let recordSizeLimit = 1_000_000
 
-    /// Records live in the household zone of the admin's private database in build step 3.
-    public static func zoneID(_ zone: String) -> CKRecordZone.ID {
-        CKRecordZone.ID(zoneName: zone, ownerName: CKCurrentUserDefaultName)
+    /// A zone of the current user's private database, or, with `ownerName`, another user's zone shared with them
+    /// (the shared database; step 7a).
+    public static func zoneID(_ zone: String, ownerName: String = CKCurrentUserDefaultName) -> CKRecordZone.ID {
+        CKRecordZone.ID(zoneName: zone, ownerName: ownerName)
     }
 
-    public static func recordID(_ recordName: String, zone: String) -> CKRecord.ID {
-        CKRecord.ID(recordName: recordName, zoneID: zoneID(zone))
+    public static func recordID(_ recordName: String, zone: String, ownerName: String = CKCurrentUserDefaultName) -> CKRecord.ID {
+        CKRecord.ID(recordName: recordName, zoneID: zoneID(zone, ownerName: ownerName))
+    }
+
+    /// Who the server says wrote the record's version (`lastModifiedUserRecordID`): CloudKit names the current user
+    /// `CKCurrentUserDefaultName`, which becomes `currentUser` (nil when it isn't known); nil when the record says none.
+    public static func writer(of record: CKRecord, currentUser: String?) -> String? {
+        guard let name = record.lastModifiedUserRecordID?.recordName else { return nil }
+        return name == CKCurrentUserDefaultName ? currentUser : name
     }
 
     // MARK: Records
@@ -40,14 +48,15 @@ public enum CloudKitRecordMapping {
     /// The record to save: built on the archived `systemFields` of the version last seen (so
     /// `.ifServerRecordUnchanged` compares against it), or new when there are none. Assets are written to
     /// files in `assetDirectory`, which the caller removes once the operation has finished.
-    public static func record(from wire: SyncWireRecord, systemFields: Data?, assetDirectory: URL) throws -> CKRecord {
+    public static func record(from wire: SyncWireRecord, systemFields: Data?, assetDirectory: URL,
+                              ownerName: String = CKCurrentUserDefaultName) throws -> CKRecord {
         if let field = wire.unencryptedFields.keys.sorted().first {
             throw MappingError.plaintextField(recordType: wire.recordType, field: field)
         }
         if let field = wire.assets.keys.sorted().first(where: { wire.encryptedFields[$0] != nil }) {
             throw MappingError.fieldClash(recordType: wire.recordType, field: field)
         }
-        let id = recordID(wire.recordName, zone: wire.zone)
+        let id = recordID(wire.recordName, zone: wire.zone, ownerName: ownerName)
         let record: CKRecord
         if let systemFields {
             guard let (archived, keys) = try? unarchive(systemFields), archived.recordID == id, archived.recordType == wire.recordType else {
@@ -113,8 +122,9 @@ public enum CloudKitRecordMapping {
                         modifiedAt: record.modificationDate ?? .distantPast)
     }
 
-    public static func serverRecord(_ record: CKRecord) throws -> SyncServerRecord {
-        SyncServerRecord(wire: try wire(from: record), stamp: stamp(of: record))
+    /// `currentUser`: the current user's record name, for `writer(of:currentUser:)`.
+    public static func serverRecord(_ record: CKRecord, currentUser: String? = nil) throws -> SyncServerRecord {
+        SyncServerRecord(wire: try wire(from: record), stamp: stamp(of: record), lastModifiedBy: writer(of: record, currentUser: currentUser))
     }
 
     // MARK: Archives
@@ -185,11 +195,11 @@ public enum CloudKitRecordMapping {
     // MARK: Errors
 
     /// One record's save error as the protocol's outcome.
-    public static func saveOutcome(for error: Error, wire: SyncWireRecord) -> SaveResult.Outcome {
+    public static func saveOutcome(for error: Error, wire: SyncWireRecord, currentUser: String? = nil) -> SaveResult.Outcome {
         guard let error = error as? CKError else { return .failed(String(describing: type(of: error))) }
         switch error.code {
         case .serverRecordChanged:
-            guard let record = error.serverRecord, let server = try? serverRecord(record) else {
+            guard let record = error.serverRecord, let server = try? serverRecord(record, currentUser: currentUser) else {
                 return .failed("serverRecordChanged without a readable server record")
             }
             return .changed(server)
@@ -202,12 +212,12 @@ public enum CloudKitRecordMapping {
     }
 
     /// One record's save as the protocol's result; a passing failure keeps the server's retry-after (M4).
-    public static func saveResult(_ wire: SyncWireRecord, _ result: Result<CKRecord, Error>) -> SaveResult {
+    public static func saveResult(_ wire: SyncWireRecord, _ result: Result<CKRecord, Error>, currentUser: String? = nil) -> SaveResult {
         switch result {
         case .success(let record):
             return SaveResult(recordName: wire.recordName, outcome: .saved(stamp(of: record)))
         case .failure(let error):
-            let outcome = saveOutcome(for: error, wire: wire)
+            let outcome = saveOutcome(for: error, wire: wire, currentUser: currentUser)
             guard case .failed = outcome, let error = error as? CKError, passingCodes.contains(error.code) else {
                 return SaveResult(recordName: wire.recordName, outcome: outcome)
             }
@@ -226,10 +236,10 @@ public enum CloudKitRecordMapping {
     /// One record a change feed delivered. A record fetched whole but not readable keeps its type (I1), so the
     /// engine still routes reserved types; a failure that passes fails the page; any other failure is that
     /// record's alone (I2), staged as unreadable with its type unknown, so one record never blocks the zone.
-    public static func feedChange(_ id: CKRecord.ID, _ result: Result<CKRecord, Error>, zone: String) -> FeedOutcome {
+    public static func feedChange(_ id: CKRecord.ID, _ result: Result<CKRecord, Error>, zone: String, currentUser: String? = nil) -> FeedOutcome {
         switch result {
         case .success(let record):
-            if let server = try? serverRecord(record) { return .change(.record(server)) }
+            if let server = try? serverRecord(record, currentUser: currentUser) { return .change(.record(server)) }
             return .change(.record(unreadable(id, recordType: record.recordType)))
         case .failure(let error):
             if let mapped = operationError(error, zone: zone) as? SyncTransportError, mapped.isPassing { return .failPage(mapped) }

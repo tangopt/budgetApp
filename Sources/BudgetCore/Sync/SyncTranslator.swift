@@ -215,17 +215,19 @@ public enum SyncTranslator {
             var results: [String: IncomingResult] = [:]
             let order = Dictionary(uniqueKeysWithValues: SyncSchema.tables.enumerated().map { ($1.name, $0) })
             var saves: [SyncPayload] = []
-            var deletes: [(name: String, type: String?)] = []
+            // Deletion markers (step 7a) are deletes, with the marker that says who made them.
+            var deletes: [(name: String, type: String?, marker: SyncPayload?)] = []
             for change in changes {
                 switch change {
+                case .save(let payload) where payload.isDeletionMarker: deletes.append((payload.recordName, payload.recordType, payload))
                 case .save(let payload): saves.append(payload)
-                case .delete(let name, let type): deletes.append((name, type))
+                case .delete(let name, let type): deletes.append((name, type, nil))
                 }
             }
             // Move markers (step 6) remove rows: after the saves, children first, as deletes go.
-            let markers = saves.filter { $0.movedTo != nil && $0.mergedInto == nil }
+            let markers = saves.filter(\.isMoveMarker)
                 .sorted { (order[$0.recordType] ?? -1) > (order[$1.recordType] ?? -1) }
-            saves.removeAll { $0.movedTo != nil && $0.mergedInto == nil }
+            saves.removeAll(where: \.isMoveMarker)
             saves.sort { (order[$0.recordType] ?? Int.max) < (order[$1.recordType] ?? Int.max) }
             var arrived: Set<String> = []
             var unknownArrived = false
@@ -246,7 +248,8 @@ public enum SyncTranslator {
                 try delete.type ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [delete.name])
             }
             for (delete, table) in zip(deletes, deleteTables).sorted(by: { (order[$0.1 ?? ""] ?? -1) > (order[$1.1 ?? ""] ?? -1) }) {
-                results[delete.name] = try applyDelete(uuid: delete.name, recordType: table, db: db, deviceUser: deviceUser, now: now)
+                results[delete.name] = try applyDelete(uuid: delete.name, recordType: table, marker: delete.marker, db: db,
+                                                       deviceUser: deviceUser, now: now)
                 // A delete of a record of unknown type may be what anything waits for.
                 if let table { arrived.insert(table) } else { unknownArrived = true }
             }
@@ -366,7 +369,10 @@ public enum SyncTranslator {
         if payload.recordType == SyncZoneRouter.companionRecordType {
             return try applyCompanion(payload, db: db, deviceUser: deviceUser, now: now, fromStaging: fromStaging)
         }
-        if payload.movedTo != nil, payload.mergedInto == nil {
+        if payload.isDeletionMarker {
+            return try applyDelete(uuid: payload.recordName, recordType: payload.recordType, marker: payload, db: db, deviceUser: deviceUser, now: now)
+        }
+        if payload.isMoveMarker {
             return try applyMarker(payload, db: db, deviceUser: deviceUser, now: now)
         }
         guard let schema = SyncSchema.table(payload.recordType), try db.tableExists(schema.name) else {
@@ -402,6 +408,18 @@ public enum SyncTranslator {
             // at the local id it had here when that is free (ruling R7).
             try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
             reviveAt = localId
+        } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil,
+                  try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ? AND kind = 'delete')", arguments: [uuid]) ?? false {
+            // A delete made here and not sent yet wins over any version arriving before it goes (often this device's
+            // own upload coming back, the row deleted before the pull): the row stays deleted and its tombstone (with
+            // the stamp its marker goes over) stays, so the delete is never stuck. Any table, documents included. A
+            // record sent again because the server lost it (ruling R12) still comes back, visibly, as below.
+            if payload.resent == true {
+                takeBack = true
+            } else {
+                try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+                return .discarded("deleted here")
+            }
         } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
             // A delete wins over an edit made while offline, except that a document is sent again by a
             // device that kept it because a record links to it (`kept`): it comes back.
@@ -473,16 +491,25 @@ public enum SyncTranslator {
         var judgedLocal: [String: SyncValue]?
         if AccessRevalidation.isOn(db: db), !redirected {
             selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
-            if !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser) {
+            // Step 7a: who wrote it is the server's word, when it gives one.
+            let attribution = try AccessRevalidation.attributedWriter(payload, selfUser: selfUser, db: db)
+            var writer: String?
+            if case .appUser(let user)? = attribution { writer = user }
+            if attribution == .selfUser || (attribution == nil && !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser)) {
                 // Only the Mac's own user wrote it: nothing to judge.
             } else if let localId = existing {
                 let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields ?? [:]
                 judgedLocal = local
+                if let writer {
+                    payload = try AccessRevalidation.attributing(payload, to: writer, local: local, localId: localId, db: db)
+                }
                 reverts = try AccessRevalidation.reverts(for: payload, local: local, selfUser: selfUser, db: db)
                 for field in reverts.flatMap(\.fields) { values[field] = nil }
             } else if let revert = try AccessRevalidation.reverts(for: payload, local: nil, selfUser: selfUser, db: db).first {
                 try AccessRevalidation.remove(revert, payload: payload, selfUser: selfUser, db: db, now: now)
                 return .discarded("no permission")
+            } else if let writer {
+                payload = try AccessRevalidation.attributing(payload, to: writer, local: nil, localId: nil, db: db)
             }
         }
         // One payload's failure (a constraint this device's data refuses) mustn't undo the others: it is
@@ -940,6 +967,9 @@ public enum SyncTranslator {
         var systemFields: Data
         var changeTag: String
         var modifiedAt: Date
+        /// Who the server says saved it (step 7a; `SyncPayload.unnamedServerWriter` when it named no one; nil in rows
+        /// kept by older builds, judged by their clocks).
+        var lastModifiedBy: String?
 
         init(_ record: SyncServerRecord) {
             recordType = record.wire.recordType
@@ -950,12 +980,14 @@ public enum SyncTranslator {
             systemFields = record.stamp.systemFields
             changeTag = record.stamp.changeTag
             modifiedAt = record.stamp.modifiedAt
+            lastModifiedBy = record.lastModifiedBy ?? SyncPayload.unnamedServerWriter
         }
 
         var server: SyncServerRecord {
             SyncServerRecord(wire: SyncWireRecord(recordType: recordType, recordName: recordName, zone: zone,
                                                   encryptedFields: encryptedFields, assets: assets),
-                             stamp: SyncServerStamp(systemFields: systemFields, changeTag: changeTag, modifiedAt: modifiedAt))
+                             stamp: SyncServerStamp(systemFields: systemFields, changeTag: changeTag, modifiedAt: modifiedAt),
+                             lastModifiedBy: lastModifiedBy)
         }
     }
 
@@ -983,7 +1015,9 @@ public enum SyncTranslator {
             }
             let server = sealed.server
             do {
-                let payload = try SyncLargePayload.payload(from: server.wire, keys: keys)
+                var payload = try SyncLargePayload.payload(from: server, keys: keys)
+                // Kept by an older build (no writer recorded): judged by its clocks, as then.
+                if sealed.lastModifiedBy == nil { payload.serverWriter = nil }
                 try db.execute(sql: "DELETE FROM syncStaging WHERE id = ?", arguments: [row.id])
                 opened.append((payload, server.stamp))
             } catch FieldSealing.SealingError.keyMissing {
@@ -999,9 +1033,16 @@ public enum SyncTranslator {
 
     // MARK: Deletes
 
-    private static func applyDelete(uuid: String, recordType: String?, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
-        if AccessRevalidation.isOn(db: db) {
-            AccessRevalidation.logUnjudgedDelete(table: try recordType ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [uuid]))
+    /// An incoming delete: a hard deletion, or a deletion marker (`marker`, step 7a; it says who deleted). On the Mac,
+    /// while re-validating, a delete its writer had no permission for keeps the row (`AccessRevalidation.refusesDelete`).
+    private static func applyDelete(uuid: String, recordType: String?, marker: SyncPayload? = nil, db: Database, deviceUser: String?,
+                                    now: Date) throws -> IncomingResult {
+        if AccessRevalidation.isOn(db: db), try SyncTombstoneRow.fetchOne(db, key: uuid)?.mergedInto == nil,
+           let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [uuid]),
+           try AccessRevalidation.refusesDelete(uuid: uuid, table: record.tableName, zone: record.zone, marker: marker, deviceUser: deviceUser,
+                                                db: db, now: now) {
+            try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+            return .kept("no permission")
         }
         let staged = try SyncStagingRow.filter(Column("uuid") == uuid).fetchOne(db)
         try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
@@ -1039,7 +1080,17 @@ public enum SyncTranslator {
                                       winner: deviceUser, loser: nil, db: db, now: now)
             return .kept("still referenced")
         }
-        try SyncMerge.retire(uuid: uuid, table: schema.name, localId: record.localId, zone: record.zone, deletedBy: nil, now: now, db: db)
+        // A marker's delete is stored as its writer's (the server's word), when that is an app user here.
+        var deletedBy: String?
+        if let marker {
+            let selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
+            switch try AccessRevalidation.attributedWriter(marker, selfUser: selfUser, db: db) {
+            case .appUser(let user)?: deletedBy = user
+            case .selfUser?: deletedBy = selfUser
+            case .unknown?, nil: deletedBy = nil
+            }
+        }
+        try SyncMerge.retire(uuid: uuid, table: schema.name, localId: record.localId, zone: record.zone, deletedBy: deletedBy, now: now, db: db)
         return .applied
     }
 

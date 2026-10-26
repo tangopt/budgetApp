@@ -703,6 +703,9 @@ public enum SyncRehearsal {
                     found.insert(type + ": not exactly a sealed file")
                 }
                 continue
+            case let exchange where SyncKeyExchange.recordTypes.contains(exchange):
+                found.formUnion(ZoneAuditingTransport.exchangeFindings(wire))
+                continue
             default:
                 break
             }

@@ -153,6 +153,17 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// over the record's old copy so nothing readable stays behind. Receivers that sync that zone ignore it; the
     /// others drop their row (no tombstone: a later move back applies).
     public var movedTo: String?
+    /// Step 7a: the iCloud user record name the server says saved this version (`SyncServerRecord.lastModifiedBy`),
+    /// never the sender's claim. Never on the wire (`SyncWireRecord.init(_:)` clears it): the receiving engine sets
+    /// it on every record it takes from the server (staging keeps it). Nil: the server named no one (judged by the
+    /// clocks, as in step 6).
+    public var serverWriter: String?
+    /// Step 7a: a deletion marker, not a record. It has no fields and is saved over the record's last version in
+    /// `household` (private zones keep hard deletes), so the server says who deleted it (`serverWriter`) and the admin's
+    /// Mac can judge it (`AccessRevalidation.deleteVerdict`). Receivers apply it as a delete. It also carries
+    /// `movedTo = deletionMarkerTarget`, a zone no device syncs: a build from before markers (it ignores `deleted`) takes
+    /// it as a move out of view and drops its row, as a delete would (no ghost record).
+    public var deleted: Bool?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,
@@ -174,6 +185,29 @@ public struct SyncPayload: Codable, Equatable, Sendable {
 
     /// When `field` last changed on the sender: its own clock, else the insert's, else never.
     public func clock(_ field: String) -> SyncClock? { clocks[field] ?? clocks[SyncMerge.insertClock] }
+
+    /// Where a deletion marker says its record went, for builds that don't know `deleted`: a zone name no device syncs
+    /// (not a zone name `SyncZones` makes), so they drop the row.
+    public static let deletionMarkerTarget = "mango.deleted"
+
+    /// What `serverWriter` holds for a version the server named no writer for (a missing `lastModifiedUserRecordID`):
+    /// judged as an iCloud user this household doesn't know (`AccessRevalidation.attributedWriter`). Nil stays for
+    /// records an older build kept in staging (judged by their clocks).
+    public static let unnamedServerWriter = ""
+
+    /// The deletion marker of `uuid` (a `tableName` record) in `zone`: no fields, no clocks.
+    public static func deletionMarker(uuid: String, tableName: String, zone: String) -> SyncPayload {
+        var payload = SyncPayload(recordType: tableName, recordName: uuid, zone: zone, fields: [:])
+        payload.deleted = true
+        payload.movedTo = deletionMarkerTarget
+        return payload
+    }
+
+    /// A deletion marker (`deleted`).
+    public var isDeletionMarker: Bool { deleted == true }
+
+    /// A move marker (step 6): `movedTo` names a real zone (a deletion marker's doesn't).
+    public var isMoveMarker: Bool { movedTo != nil && mergedInto == nil && !isDeletionMarker }
 }
 
 /// Where a payload too large for a record went (ruling R4): an asset field of the same record, holding the

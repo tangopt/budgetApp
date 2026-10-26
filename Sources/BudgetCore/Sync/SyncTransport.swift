@@ -15,14 +15,18 @@ public struct SyncServerStamp: Equatable, Sendable {
     }
 }
 
-/// A record as the server holds it: as written, with its stamp.
+/// A record as the server holds it: as written, with its stamp, and who the server says wrote this version.
 public struct SyncServerRecord: Equatable, Sendable {
     public var wire: SyncWireRecord
     public var stamp: SyncServerStamp
+    /// The iCloud user record name the server says wrote this version (CloudKit's `lastModifiedUserRecordID`), never
+    /// a claim the record makes about itself; nil when the transport can't tell.
+    public var lastModifiedBy: String?
 
-    public init(wire: SyncWireRecord, stamp: SyncServerStamp) {
+    public init(wire: SyncWireRecord, stamp: SyncServerStamp, lastModifiedBy: String? = nil) {
         self.wire = wire
         self.stamp = stamp
+        self.lastModifiedBy = lastModifiedBy
     }
 }
 
@@ -209,6 +213,8 @@ public struct SyncWireRecord: Equatable, Sendable {
         for (column, value) in payload.fields { fields[Self.fieldPrefix + column] = try encoder.encode(value) }
         var meta = payload
         meta.fields = [:]
+        // Only the receiving engine says who wrote (from the server), never the sender.
+        meta.serverWriter = nil
         fields[Self.metaField] = try encoder.encode(meta)
         self.init(recordType: payload.recordType, recordName: payload.recordName, zone: payload.zone, encryptedFields: fields)
     }

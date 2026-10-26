@@ -703,8 +703,10 @@ extension SyncEngineCore {
     /// record's file reference kept (a deleted row's dropped), stragglers re-wrapped.
     /// Returns how many zone key records couldn't be read (staged for attention).
     @discardableResult
+    /// `cleansFiles` (a device that writes `zone`): a deleted row's sealed file record is deleted there too (final
+    /// review I-1: the delete came back on a pull before its push heard of it, or another device of the owner's made it).
     static func takeDocumentFiles(zoneKeys: [SyncServerRecord], saves: [SyncPayload], deletions: [String], zone: String,
-                                  keyStore: any SyncKeyStore, db: Database, now: Date) throws -> Int {
+                                  keyStore: any SyncKeyStore, db: Database, now: Date, cleansFiles: Bool = false) throws -> Int {
         // The latest version of the marker (a feed lists it once). One that can't be read never rolls back the
         // pull (final review I2): it is staged for attention with its type, and the marker here is no longer taken
         // as confirmed (follow-up: the next push asks the server again, and waits while it can't read it); a
@@ -733,10 +735,22 @@ extension SyncEngineCore {
         for payload in saves where SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil {
             if let reference = payload.documentFile {
                 try SyncDocumentFile.setReference(reference, uuid: payload.recordName, db: db, now: now)
+            } else if payload.movedTo != nil, try SyncFileTables.row(uuid: payload.recordName, db: db) == nil {
+                // A move marker took the row out of view here (a zone this device doesn't follow): its file reference goes too.
+                try SyncDocumentFile.setReference(nil, uuid: payload.recordName, db: db, now: now)
             }
         }
         // Only once the row is gone here (a document linked by another record is never deleted, §5.3).
-        for uuid in deletions where try SyncFileTables.row(uuid: uuid, db: db) == nil {
+        for uuid in deletions {
+            guard try SyncFileTables.row(uuid: uuid, db: db) == nil else {
+                // Kept here (a linked document is sent again, §5.3): the deleting device takes the file it knew, so
+                // what goes from here is sealed again, never a reference to a file record that may be gone.
+                if cleansFiles { try SyncDocumentFile.setReference(nil, uuid: uuid, db: db, now: now) }
+                continue
+            }
+            if cleansFiles, let file = try SyncDocumentFile.reference(uuid: uuid, db: db) {
+                try SyncCleanup.add(zone: zone, recordName: file.recordName, db: db)
+            }
             try SyncDocumentFile.setReference(nil, uuid: uuid, db: db, now: now)
         }
         _ = try rewrapStragglers(zone: zone, keys: try keyStore.allKeys(zone: zone), db: db, now: now)

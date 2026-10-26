@@ -773,6 +773,7 @@ enum SignInErrorText {
         case .noCredential: "They have no password on this Mac yet."
         case .emptyName: "The name can't be empty."
         case .unknownPerson, .noSuchUser: "That person isn't in this database any more."
+        case .householdHasMember: "The household already has someone else in it."
         case nil: error.localizedDescription
         }
     }

@@ -221,7 +221,24 @@ public enum SyncChangeTracker {
         if try db.columns(in: "syncWriter").contains(where: { $0.name == "origin" }) {
             try db.execute(sql: "UPDATE syncWriter SET origin = NULL WHERE origin IS NOT NULL")
         }
+        try installStampKeeper(db: db)
         for table in present { try sweepOrphans(table, db: db) }
+    }
+
+    /// The trigger that keeps a deleted record's server stamp (`syncRecord.systemFields`) on its tombstone, in the zone it
+    /// lived in (step 7a): a household delete's marker is saved over that version, with no extra round trip. Outside the
+    /// tracking triggers (`triggerPrefix`, `schemaHash`): nothing synced changes, and an older build leaves it be.
+    static let stampKeeperTrigger = "syncKeepDeletedStamp"
+
+    static func installStampKeeper(db: Database) throws {
+        guard try db.tableExists("syncTombstone"), try db.columns(in: "syncTombstone").contains(where: { $0.name == "systemFields" }) else { return }
+        try db.execute(sql: """
+            CREATE TRIGGER IF NOT EXISTS \(quoted(stampKeeperTrigger)) AFTER DELETE ON syncRecord WHEN OLD.systemFields IS NOT NULL
+            BEGIN
+            UPDATE syncTombstone SET systemFields = OLD.systemFields
+                WHERE uuid = OLD.uuid AND zone = OLD.zone AND mergedInto IS NULL;
+            END
+            """)
     }
 
     /// `schema` cut down to the tables and columns the database has; what is missing is logged.

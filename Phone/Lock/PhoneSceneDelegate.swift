@@ -1,3 +1,4 @@
+import CloudKit
 import SwiftUI
 import UIKit
 import Combine
@@ -34,6 +35,8 @@ final class PhoneSceneDelegate: NSObject, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        // A cold start from the household invitation's link.
+        if let metadata = connectionOptions.cloudKitShareMetadata { PhoneShareInbox.shared.receive(metadata) }
         let cover = UIWindow(windowScene: windowScene)
         cover.windowLevel = .alert + 1
         let host = UIHostingController(rootView: CoverWindowContent(lock: lock, activity: activity))
@@ -46,6 +49,11 @@ final class PhoneSceneDelegate: NSObject, UIWindowSceneDelegate {
         lockObservation = lock.$state.sink { [weak self] state in
             MainActor.assumeIsolated { self?.update(locked: state != .unlocked, stateLanded: false) }
         }
+    }
+
+    /// The household invitation (a CKShare link) was opened while the app runs: the sync controller accepts it.
+    func windowScene(_ windowScene: UIWindowScene, userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
+        PhoneShareInbox.shared.receive(cloudKitShareMetadata)
     }
 
     func sceneWillResignActive(_ scene: UIScene) {

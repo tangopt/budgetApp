@@ -279,6 +279,11 @@ public enum SyncBatch {
             switch change {
             case .save(let payload):
                 if held.contains(payload.recordName) { continue }
+                if payload.isDeletionMarker, open.contains(payload.recordName) {
+                    // A batch's delete as a marker (step 7a): applied with its batch, as its run's writer's.
+                    routed.results[payload.recordName] = .staged(waitingForBatch)
+                    continue
+                }
                 if let run = payload.importRunUuid, try waits(member: payload, run: run, db: db) {
                     try stage(payload, run: run, generation: payload.batchGeneration ?? 0, db: db, now: now)
                     routed.results[payload.recordName] = .staged(waitingForBatch)
@@ -451,7 +456,23 @@ public enum SyncBatch {
         }
         // Deletes and revivals apply with the batch that announced them.
         let applying = batch.state.isWaiting
-        if applying { changes += manifest.deletes.map { SyncIncomingChange.delete(recordName: $0, recordType: nil) } }
+        if applying {
+            // Step 7a: each as a deletion marker by whoever the server says saved the run's record (the batch's writer),
+            // so the Mac judges them as that writer's import; a record not held here needs none.
+            let runRecord = saved.first { $0.recordName == run && $0.recordType == ImportRun.databaseTableName }
+            for name in manifest.deletes {
+                if let runRecord, let writer = runRecord.serverWriter,
+                   let held = try Row.fetchOne(db, sql: "SELECT tableName, zone FROM syncRecord WHERE uuid = ?", arguments: [name]) {
+                    var marker = SyncPayload.deletionMarker(uuid: name, tableName: held["tableName"], zone: held["zone"])
+                    marker.serverWriter = writer
+                    marker.origin = WriteOrigin.import.rawValue
+                    marker.importRunUuid = run
+                    changes.append(.save(marker))
+                } else {
+                    changes.append(.delete(recordName: name, recordType: nil))
+                }
+            }
+        }
         var revivals: [String: Int64] = [:]
         for name in applying ? manifest.revives : [] {
             if let tombstone = try SyncTombstoneRow.fetchOne(db, key: name), tombstone.mergedInto == nil { revivals[name] = tombstone.localId }

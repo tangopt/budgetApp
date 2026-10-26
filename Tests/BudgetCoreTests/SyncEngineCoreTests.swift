@@ -561,13 +561,41 @@ final class SyncEngineCoreTests: XCTestCase {
         try device.read { db in try SyncConflictRow.filter(Column("uuid") == uuid).fetchAll(db).map(\.losingValueJSON) }
     }
 
-    func testADeleteMissedWhileTheTokenExpiredComesBackVisibly() async throws {
+    /// Deletes made on `device` as a build from before deletion markers sent them (step 7a), or as a private zone still
+    /// does: hard deletes on the server, which no later fetch lists once the token has expired.
+    private func hardDelete(on device: SyncEngineTestDevice, sql: String, uuids: [String]) async throws {
+        try device.write { db in
+            try db.execute(sql: sql)
+            try db.execute(sql: "DELETE FROM syncPending WHERE kind = 'delete'")
+        }
+        try await cloud.delete(uuids, zone: "household")
+    }
+
+    /// Step 7a: a household delete is a marker, which a full fetch lists: a device that missed it while its token
+    /// expired takes the delete, rather than sending the record again.
+    func testADeleteMarkerMissedWhileTheTokenExpiredIsTakenOnTheFullFetch() async throws {
         let (_, _, coffee) = try base(a)
         let uuid = try a.uuid("transaction_", coffee)
         try await a.engine.syncNow()
         try await b.engine.syncNow()
         await cloud.expireChangeTokens()
         try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+        let report = try await b.engine.syncNow()
+        XCTAssertEqual(report.pull.reconciled, 0)
+        XCTAssertNil(try transaction(b, uuid: uuid), "the delete is taken")
+        try await a.engine.syncNow()
+        XCTAssertNil(try transaction(a, uuid: uuid))
+        XCTAssertEqual(try a.content(), try b.content())
+    }
+
+    func testADeleteMissedWhileTheTokenExpiredComesBackVisibly() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        await cloud.expireChangeTokens()
+        try await hardDelete(on: a, sql: "DELETE FROM transaction_ WHERE id = \(coffee)", uuids: [uuid])
         try await a.engine.syncNow()
         let deletedOnServer = await cloud.record(named: uuid)
         XCTAssertNil(deletedOnServer)
@@ -616,11 +644,8 @@ final class SyncEngineCoreTests: XCTestCase {
         try await a.engine.syncNow()
         try await b.engine.syncNow()
         await cloud.expireChangeTokens()
-        try a.write { db in
-            try db.execute(sql: "DELETE FROM transaction_")
-            try db.execute(sql: "DELETE FROM importBatch")
-            try db.execute(sql: "DELETE FROM account")
-        }
+        try await hardDelete(on: a, sql: "DELETE FROM transaction_; DELETE FROM importBatch; DELETE FROM account",
+                             uuids: [uuids.2, uuids.1, uuids.0])
         try await a.engine.syncNow()
         try await b.engine.syncNow()   // B never saw the deletes: all three go up again, resent
         let childOnServer = try await cloud.payload(named: uuids.2, keys: keys)
@@ -655,7 +680,7 @@ final class SyncEngineCoreTests: XCTestCase {
         try await a.engine.syncNow()
         try await b.engine.syncNow()
         await cloud.expireChangeTokens()
-        try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await hardDelete(on: a, sql: "DELETE FROM transaction_ WHERE id = \(coffee)", uuids: [uuid])
         try await a.engine.syncNow()
 
         // B's re-send of the coffee: while its save is on the way, B edits the row.
@@ -683,7 +708,7 @@ final class SyncEngineCoreTests: XCTestCase {
         let uuid = try a.uuid("transaction_", coffee)
         try await a.engine.syncNow()
         try await b.engine.syncNow()
-        try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await hardDelete(on: a, sql: "DELETE FROM transaction_ WHERE id = \(coffee)", uuids: [uuid])
         try await a.engine.syncNow()
         await cloud.expireChangeTokens()
         let bCoffee = try XCTUnwrap(b.localId("transaction_", uuid))
@@ -1197,13 +1222,18 @@ final class FakeCloudTests: XCTestCase {
         original.omittedFields = ["note"]
         original.origin = "edit"
         original.movedTo = "private-p"
+        original.deleted = true
+        // Step 7a: set only by the receiving engine (the server's word), never carried.
+        original.serverWriter = "someone"
         // Every property is set: a property added later without a value here fails this.
         for child in Mirror(reflecting: original).children {
             XCTAssertNotEqual(String(describing: child.value), "nil", "\(child.label ?? "?") is set in this test")
         }
         let wire = try SyncWireRecord(original)
         XCTAssertEqual(Set(wire.encryptedFields.keys), ["f_value", "f_note", "meta"])
-        XCTAssertEqual(try wire.payload(), original)
+        var carried = original
+        carried.serverWriter = nil
+        XCTAssertEqual(try wire.payload(), carried)
     }
 }
 

@@ -370,6 +370,7 @@ public enum FiledYearSyncCheck {
 
     private static func reason(for change: SyncIncomingChange) -> String {
         if case .delete = change { return heldDeleteReason }
+        if case .save(let payload) = change, payload.isDeletionMarker { return heldDeleteReason }
         return heldReason
     }
 
@@ -428,7 +429,7 @@ public enum FiledYearSyncCheck {
         var records = try held.map { change, reason -> FiledYearSyncAlert.Record in
             switch change {
             case .save(let payload):
-                return FiledYearSyncAlert.Record(recordType: payload.recordType, recordName: payload.recordName, isDelete: false,
+                return FiledYearSyncAlert.Record(recordType: payload.recordType, recordName: payload.recordName, isDelete: payload.isDeletionMarker,
                                                  writer: payload.modifiedBy, writerName: try writerName(payload.modifiedBy, db: db), reason: reason)
             case .delete(let name, let type):
                 let table = try type ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [name]) ?? ""

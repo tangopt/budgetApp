@@ -74,6 +74,17 @@ public enum SyncMerge {
         }
     }
 
+    /// Step 7a: `payload` with no clock later than `serverTime`, when the server saved it. A version another iCloud user
+    /// saved can't date a change after it reached the server (a future-dated clock would win every merge).
+    static func clamped(_ payload: SyncPayload, to serverTime: Date) -> SyncPayload {
+        var result = payload
+        for (field, clock) in payload.clocks where clock.at > serverTime {
+            result.clocks[field] = SyncClock(at: serverTime, by: clock.by)
+        }
+        if let at = payload.modifiedAt, at > serverTime { result.modifiedAt = serverTime }
+        return result
+    }
+
     // MARK: New records
 
     /// Writes the identity, clocks and base of a record that was just inserted from `payload`.

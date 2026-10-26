@@ -72,6 +72,9 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
             switch wire.recordType {
             case TransportLeaseStore.recordType, SyncZoneKeys.recordType:
                 continue
+            case let type where SyncKeyExchange.recordTypes.contains(type):
+                findings += Self.exchangeFindings(wire)
+                continue
             case SyncDocumentFile.recordType:
                 let owner = wire.recordName.components(separatedBy: ".file.").first ?? wire.recordName
                 if standing[wire.recordName] != nil, let placement = router(owner), placement.isPrivate {
@@ -114,11 +117,30 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
         return all
     }
 
+    /// A key exchange record in `household` (step 7a Task 8) carries no data and no key in the clear: the Mac's answer is
+    /// exactly `publicKey` (32 bytes, an ephemeral X25519 public key), a grant exactly `sealed` and `keyId`; a request
+    /// never goes there.
+    public static func exchangeFindings(_ wire: SyncWireRecord) -> [String] {
+        let fields = Set(wire.encryptedFields.keys)
+        let clean = wire.unencryptedFields.isEmpty && wire.assets.isEmpty
+        switch wire.recordType {
+        case SyncKeyExchange.offerRecordType where clean && fields == [SyncKeyExchange.publicKeyField]
+            && wire.encryptedFields[SyncKeyExchange.publicKeyField]?.count == 32:
+            return []
+        case SyncKeyExchange.grantRecordType where clean && fields == [FieldSealing.sealedField, FieldSealing.keyIdField]:
+            return []
+        default:
+            return ["\(wire.recordType) \(wire.recordName): not the key exchange's shape for household"]
+        }
+    }
+
     /// What is wrong with one household save, judged by where its record belongs now.
     private func judged(_ wire: SyncWireRecord, placement: (String) -> ZoneAssignment?) -> [String] {
         switch wire.recordType {
         case TransportLeaseStore.recordType, SyncZoneKeys.recordType:
             return []
+        case let type where SyncKeyExchange.recordTypes.contains(type):
+            return Self.exchangeFindings(wire)
         case SyncDocumentFile.recordType:
             let owner = wire.recordName.components(separatedBy: ".file.").first ?? wire.recordName
             if let placed = placement(owner), placed.isPrivate { return ["documentFile \(wire.recordName): saved to household as the file of a private record"] }
@@ -178,4 +200,27 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
     public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await inner.fetch(recordName, zone: zone) }
 
     public func serverTime() async throws -> Date? { try await inner.serverTime() }
+}
+
+// MARK: SyncShareTransport (step 7a): passed on to the wrapped transport, so the invite runs through the audit.
+
+extension ZoneAuditingTransport: SyncShareTransport {
+    private var sharing: any SyncShareTransport {
+        get throws {
+            guard let sharing = inner as? any SyncShareTransport else { throw SyncShareNotSupported() }
+            return sharing
+        }
+    }
+
+    public func currentUserRecordName() async throws -> String { try await sharing.currentUserRecordName() }
+    public func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await sharing.zoneShare(zone) }
+    public func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
+        try await sharing.makeZoneShare(zone, title: title)
+    }
+    public func removeParticipant(userRecordName: String, zone: String) async throws {
+        try await sharing.removeParticipant(userRecordName: userRecordName, zone: zone)
+    }
+    public func removeAllParticipants(zone: String) async throws -> [String] {
+        try await sharing.removeAllParticipants(zone: zone)
+    }
 }

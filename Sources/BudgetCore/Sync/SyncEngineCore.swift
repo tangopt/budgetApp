@@ -58,6 +58,9 @@ public struct SyncPullReport: Equatable, Sendable {
     public var documentsDownloaded = 0
     /// Downloaded files not saved because they don't open or don't match their record's hash (needs attention).
     public var documentsNeedingAttention = 0
+    /// The household, reached through this device's shared database (`householdIsShared`), is gone for it: the
+    /// admin removed this iCloud user from the share, or stopped sharing (step 7a). Nothing was made or queued.
+    public var leftHousehold = false
 
     public init() {}
 }
@@ -114,9 +117,10 @@ public struct SyncReport: Equatable, Sendable {
 /// The public entry points run one at a time, in call order. Stamps are kept in `syncRecord` (the opaque
 /// `systemFields` and the `changeTag` compared); the change token per zone is in `syncState`.
 public actor SyncEngineCore {
-    /// Records in the zone that are the engine's own, never data: the import lease, the zone key marker and the
-    /// sealed document files (sync spec §9.1).
-    static let reservedRecordTypes: Set<String> = [TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType]
+    /// Records in the zone that are the engine's own, never data: the import lease, the zone key marker, the
+    /// sealed document files (sync spec §9.1) and the household key exchange's (step 7a Task 8).
+    static let reservedRecordTypes = Set([TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType])
+        .union(SyncKeyExchange.recordTypes)
     /// A payload whose record would be larger than this goes as an encrypted asset (ruling R4).
     public static let largePayloadThreshold = 900_000
     /// How many times one push tries one record before leaving it for the next sync.
@@ -143,6 +147,9 @@ public actor SyncEngineCore {
     public nonisolated let viewer: SyncViewer
     /// Whether incoming changes are re-validated against the writer's permissions (the Mac; step 6 Task 9).
     public nonisolated let revalidatesAccess: Bool
+    /// The household is someone else's zone, reached through this device's shared database (a member's device, step
+    /// 7a): a missing household means this iCloud user is no longer in it (`SyncPullReport.leftHousehold`).
+    public nonisolated let householdIsShared: Bool
     /// Each zone's current key for the push under way.
     var pushKeys: [String: HouseholdKey] = [:]
     /// Tests only: an assignment that replaces the router's for a record (table, local id), to prove the guard.
@@ -163,8 +170,9 @@ public actor SyncEngineCore {
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
                 clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil, readOnly: Bool = false,
-                viewer: SyncViewer = .none, revalidatesAccess: Bool = false) {
+                viewer: SyncViewer = .none, revalidatesAccess: Bool = false, householdIsShared: Bool = false) {
         self.db = db
+        self.householdIsShared = householdIsShared
         self.readOnly = readOnly
         self.viewer = viewer
         self.revalidatesAccess = revalidatesAccess
@@ -285,6 +293,7 @@ public actor SyncEngineCore {
             report.unreadable += zoneReport.unreadable
             report.waitingForKey += zoneReport.waitingForKey
             report.reconciled += zoneReport.reconciled
+            report.leftHousehold = report.leftHousehold || zoneReport.leftHousehold
         }
         // The Mac keeps every file (sync spec §5.7).
         let files = try await downloadMissingDocuments()
@@ -337,6 +346,19 @@ public actor SyncEngineCore {
                 zoneKeys = [:]
                 continue
             } catch SyncTransportError.zoneNotFound {
+                // Someone else's household this device no longer reaches: it left (or was removed). Nothing is made
+                // or queued; the device drops the household's data (`SyncLocalData.dropZone`).
+                if zone == SyncZones.household, householdIsShared {
+                    // Not before her first household pull here (Task 7, M4): just after accepting, CloudKit may not list
+                    // the zone yet. Nothing was pulled, so nothing is kept or dropped meanwhile.
+                    guard try await db.read({ db in try SyncHouseholdMembership.hasJoined(db: db) }) else {
+                        Self.log.notice("Sync: the shared household isn't reachable yet; trying again on the next sync")
+                        return SyncPullReport()
+                    }
+                    var left = SyncPullReport()
+                    left.leftHousehold = true
+                    return left
+                }
                 // Read-only: the household hasn't been shared up yet; nothing to download, nothing made here.
                 if readOnly { return SyncPullReport() }
                 try await recoverMissingZone(zone)
@@ -360,7 +382,7 @@ public actor SyncEngineCore {
                         continue
                     }
                     do {
-                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record.wire, keys: keys), record.stamp))
+                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record, keys: keys), record.stamp))
                     } catch FieldSealing.SealingError.keyMissing {
                         entries[name] = (position, .waiting(record))
                     } catch {
@@ -386,6 +408,8 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
+        // A device that writes the zone deletes a deleted row's file there too (final review I-1).
+        let cleansFiles = !readOnly && !householdIsShared
         try Task.checkCancellation()
         let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
@@ -401,18 +425,27 @@ public actor SyncEngineCore {
             // Records that waited for their key and now open (ruling R15) go first, as received then, with their
             // stamps, through the same checked apply; a newer version in this pull replaces one.
             let arriving = Set(ordered.map(\.0))
-            for (payload, stamp) in try SyncTranslator.takeWaitingForKey(keys: keys, db: db, now: now) where !arriving.contains(payload.recordName) {
+            for (opened, stamp) in try SyncTranslator.takeWaitingForKey(keys: keys, db: db, now: now) where !arriving.contains(opened.recordName) {
+                let payload = try Self.serverDated(opened, stamp: stamp, deviceUser: user, receivedAt: now, db: db)
                 incoming.append(.save(payload))
                 stamps[payload.recordName] = stamp
-                if payload.movedTo != nil, payload.mergedInto == nil { markers[payload.recordName] = payload }
+                if payload.isMoveMarker { markers[payload.recordName] = payload }
                 if payload.recordType == SyncZoneRouter.companionRecordType { companions.insert(payload.recordName) }
             }
             for (name, entry) in ordered {
                 switch entry {
-                case .save(let payload, let stamp):
+                case .save(let received, let stamp):
+                    // A deletion marker (step 7a) is a delete: only where the record lives here, as a deletion below.
+                    if received.isDeletionMarker,
+                       let local = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [name]), local != zone,
+                       try !SyncZoneMoves.knowsMarker(uuid: name, zone: local, db: db) {
+                        try SyncPresence.add(uuid: name, zone: zone, db: db)
+                        continue
+                    }
+                    let payload = try Self.serverDated(received, stamp: stamp, deviceUser: user, receivedAt: now, db: db)
                     incoming.append(.save(payload))
                     stamps[name] = stamp
-                    if payload.movedTo != nil, payload.mergedInto == nil { markers[name] = payload }
+                    if payload.isMoveMarker { markers[name] = payload }
                     if payload.recordType == SyncZoneRouter.companionRecordType { companions.insert(name) }
                 case .delete(let deletion):
                     // Only where the record lives here: a deletion in a zone it left (or never was in) isn't its delete.
@@ -434,7 +467,10 @@ public actor SyncEngineCore {
             }
             // Files kept for later deleted on another device: their hashes, so the copies here go once the rows have.
             var waitingDeleted: [String] = []
-            for case (let name, .delete) in ordered {
+            let deletionMarkers = incoming.compactMap { change -> String? in
+                if case .save(let payload) = change, payload.isDeletionMarker { return payload.recordName } else { return nil }
+            }
+            for name in ordered.compactMap({ if case .delete = $0.1 { return $0.0 } else { return nil } }) + deletionMarkers {
                 if let id = try SyncRecordStore.localId(table: SyncFileTables.importWaitingFile, uuid: name, db: db),
                    let sha = try String.fetchOne(db, sql: "SELECT sha256 FROM importWaitingFile WHERE id = ?", arguments: [id]) {
                     waitingDeleted.append(sha)
@@ -525,9 +561,10 @@ public actor SyncEngineCore {
                 }
             }
             // Document files (sync spec §9.1): the zone key adopted, each document's file reference kept.
-            report.unreadable += try Self.takeDocumentFiles(zoneKeys: keyRecords, saves: incoming.compactMap { if case .save(let payload) = $0 { return payload } else { return nil } },
-                                       deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } },
-                                       zone: zone, keyStore: self.keyStore, db: db, now: now)
+            report.unreadable += try Self.takeDocumentFiles(zoneKeys: keyRecords,
+                                       saves: incoming.compactMap { if case .save(let payload) = $0, !payload.isDeletionMarker { return payload } else { return nil } },
+                                       deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } } + deletionMarkers,
+                                       zone: zone, keyStore: self.keyStore, db: db, now: now, cleansFiles: cleansFiles)
             for case .save(let payload) in incoming {
                 guard let prior = before[payload.recordName] else { continue }
                 if case .staged? = results[payload.recordName] { continue }
@@ -540,6 +577,7 @@ public actor SyncEngineCore {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
+            if zone == SyncZones.household, self.householdIsShared { try SyncHouseholdMembership.joined(db: db) }
             return (report, waitingDeleted)
         }
         // A row deleted remotely takes its local copy with it (never one whose hash has a row here again).
@@ -599,7 +637,11 @@ public actor SyncEngineCore {
             guard try SharingSetup.isConfirmed(db: db) else { return }
             let owner = try viewerPerson.flatMap { try SyncRecordStore.localId(table: "person", uuid: $0, db: db) }
             try SyncZoneMoves.reconcile(owner: owner, zones: zoneSet, db: db, now: reconcileTime)
+            // Step 7a: anything else placement reads changed (a link, a pin, a property category, a document's kind):
+            // every record placed differently now is queued, so this push moves it. One query when nothing changed.
+            try SyncPlacementSweep.run(zones: zoneSet, db: db, now: reconcileTime)
         }
+        try await cleanOrphanFilesOnce()
         let busy = try await db.read { db in
             try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
                 || !SyncZoneMoves.unfinished(db: db).isEmpty || !SyncCleanup.all(db: db).isEmpty
@@ -670,21 +712,78 @@ public actor SyncEngineCore {
                     let zones = try await db.read { db in
                         guardian == nil ? try Self.zones(of: chunk, db: db) : try Self.presentZones(of: chunk, db: db).filter { zoneSet.contains($0.key) }
                     }
+                    // Step 7a: in the household a delete is a deletion marker saved over the record (the server says who
+                    // deleted it); elsewhere a hard delete.
+                    var markerResults: [String: SaveResult] = [:]
                     for (zone, names) in zones.sorted(by: { $0.key < $1.key }) {
-                        try await transport.delete(names, zone: zone)
-                    }
-                    try await db.write { db in
-                        try SyncChangeTracker.acknowledge(chunk, db: db)
-                        for (zone, names) in zones {
-                            for name in names { try SyncPresence.remove(uuid: name, zone: zone, db: db) }
+                        guard zone == SyncZones.household else {
+                            try await transport.delete(names, zone: zone)
+                            continue
                         }
-                        for change in chunk {
+                        let tables = Dictionary(chunk.map { ($0.uuid, $0.table) }, uniquingKeysWith: { first, _ in first })
+                        let records = names.compactMap { name in tables[name].map { (name: name, table: $0) } }
+                        let stamps = try await db.read { db in try Self.deletedStamps(names, zone: zone, db: db) }
+                        for result in try await saveDeletionMarkers(records, stamps: stamps, limits: limits, guardian: guardian) {
+                            markerResults[result.recordName] = result
+                            if case .zoneNotFound = result.outcome { missingZones.insert(zone) }
+                        }
+                    }
+                    let taken = markerResults
+                    let deleteTime = clock()
+                    let done = try await db.write { db -> [PendingChange] in
+                        // A delete is done once its marker is on the server (or the record is gone there).
+                        var waiting: Set<String> = []
+                        for (name, result) in taken {
+                            switch result.outcome {
+                            case .saved(let stamp):
+                                try db.execute(sql: "UPDATE syncTombstone SET systemFields = ? WHERE uuid = ? AND mergedInto IS NULL",
+                                               arguments: [stamp.systemFields, name])
+                            case .deleted:
+                                break
+                            case .changed(let server):
+                                // Another version is there: the marker goes again over it.
+                                try db.execute(sql: "UPDATE syncTombstone SET systemFields = ? WHERE uuid = ? AND mergedInto IS NULL",
+                                               arguments: [server.stamp.systemFields, name])
+                                waiting.insert(name)
+                            default:
+                                waiting.insert(name)
+                            }
+                        }
+                        let done = chunk.filter { !waiting.contains($0.uuid) }
+                        try SyncChangeTracker.acknowledge(done, db: db)
+                        for (zone, names) in zones {
+                            for name in names where !waiting.contains(name) {
+                                if zone == SyncZones.household, case .saved? = taken[name]?.outcome {
+                                    // The marker holds the record's place there.
+                                    try SyncPresence.add(uuid: name, zone: zone, db: db)
+                                } else {
+                                    try SyncPresence.remove(uuid: name, zone: zone, db: db)
+                                }
+                            }
+                        }
+                        for change in done {
                             try SyncCompanions.remove(name: SyncZoneRouter.companionRecordName(accountUuid: change.uuid), db: db)
                         }
+                        // Final review I-1: a deleted record's sealed file goes too, in every zone its delete went to
+                        // (durable: `SyncCleanup` tries it on every push until the server takes it). A file record is
+                        // named for its own record only, so no other record's file is ever named here.
+                        let doneNames = Set(done.map(\.uuid))
+                        for (zone, names) in zones {
+                            for name in names where doneNames.contains(name) {
+                                guard let file = try SyncDocumentFile.reference(uuid: name, db: db) else { continue }
+                                try SyncCleanup.add(zone: zone, recordName: file.recordName, db: db)
+                            }
+                        }
+                        for name in doneNames where try SyncDocumentFile.reference(uuid: name, db: db) != nil {
+                            try SyncDocumentFile.setReference(nil, uuid: name, db: db, now: deleteTime)
+                        }
                         _ = try SyncBatch.closeUploaded(db: db)
+                        return done
                     }
-                    report.deleted += chunk.count
+                    report.deleted += done.count
                 }
+                // The files of what was just deleted (I-1) go in this push.
+                if !deletes.isEmpty { try await cleanUp() }
                 if !missingZones.isEmpty {
                     guard !recovered else { throw SyncTransportError.zoneNotFound(missingZones.sorted().joined(separator: ",")) }
                     recovered = true
@@ -725,6 +824,23 @@ public actor SyncEngineCore {
         }
         try await releaseLeaseIfDone(key)
         return report
+    }
+
+    /// Final review I-1: on the first push after install, the household's orphan file records (`HouseholdOrphanFiles`)
+    /// are deleted, once ownership is confirmed and the household key is here, on a device that owns the household (a
+    /// member's is read-only). A failure is logged and tried again on the next push.
+    private func cleanOrphanFilesOnce() async throws {
+        guard !householdIsShared, zoneList.contains(SyncZones.household) else { return }
+        let due = try await db.read { db in try SharingSetup.isConfirmed(db: db) && !HouseholdOrphanFiles.isDone(db: db) }
+        guard due, (try? keyStore.allKeys(zone: SyncZones.household))?.isEmpty == false else { return }
+        do {
+            try await HouseholdOrphanFiles.clean(transport: transport, keys: keyStore, db: db)
+        } catch {
+            Self.log.error("Sync: the household's orphan files weren't cleaned (\(String(describing: error), privacy: .public)); tried again next push")
+            return
+        }
+        let now = clock()
+        try await db.write { db in try SyncImportGate.setState(Data([1]), key: HouseholdOrphanFiles.doneKey, db: db, now: now) }
     }
 
     /// The zone's current key for this push (made for a zone of this device's own when it has none, ruling R15).
@@ -940,7 +1056,7 @@ public actor SyncEngineCore {
         var servers: [ZonedName: (SyncPayload?, SyncServerRecord)] = [:]
         for (name, result) in results {
             if case .changed(let server) = result.outcome {
-                servers[name] = (try? SyncLargePayload.payload(from: server.wire, keys: try keyStore.allKeys(zone: name.zone)), server)
+                servers[name] = (try? SyncLargePayload.payload(from: server, keys: try keyStore.allKeys(zone: name.zone)), server)
             }
         }
         let now = clock()
@@ -1013,6 +1129,21 @@ public actor SyncEngineCore {
                         delta.merged += 1
                         continue
                     }
+                    if let payload, payload.isDeletionMarker, change.kind == .insert {
+                        // Deleted there (step 7a), and made again here (an Undo's revival, a record sent again): it goes
+                        // again over the marker.
+                        try Self.storeStamp(server.stamp, uuid: name.name, db: db)
+                        try SyncPresence.add(uuid: name.name, zone: name.zone, db: db)
+                        delta.merged += 1
+                        continue
+                    }
+                    if let payload, payload.isDeletionMarker {
+                        // Deleted there while edited here: the delete is taken (a delete wins over an edit made offline;
+                        // the Mac judges it first), through the checked merge below.
+                        merges.append(try Self.serverDated(payload, stamp: server.stamp, deviceUser: user, receivedAt: now, db: db))
+                        mergeStamps[name.name] = server.stamp
+                        continue
+                    }
                     if let payload, payload.movedTo != nil {
                         // The place is held by a marker: its version is taken and the record goes again over it.
                         try SyncZoneMoves.takeServerStamp(uuid: name.name, tableName: change.table, zone: name.zone,
@@ -1040,7 +1171,7 @@ public actor SyncEngineCore {
                             }
                             delta.saved += 1
                         } else {
-                            merges.append(payload)
+                            merges.append(try Self.serverDated(payload, stamp: server.stamp, deviceUser: user, receivedAt: now, db: db))
                             mergeStamps[name.name] = server.stamp
                         }
                         continue
@@ -1056,7 +1187,7 @@ public actor SyncEngineCore {
                         delta.refused += 1
                         continue
                     }
-                    merges.append(payload)
+                    merges.append(try Self.serverDated(payload, stamp: server.stamp, deviceUser: user, receivedAt: now, db: db))
                     mergeStamps[name.name] = server.stamp
                 case .deleted:
                     if try SyncTombstoneRow.fetchOne(db, key: name.name)?.mergedInto != nil {
@@ -1223,6 +1354,34 @@ public actor SyncEngineCore {
         try SyncMerge.queue(uuid: uuid, table: "account", localId: id, kind: .update, db: db)
     }
 
+    /// Saves the deletion markers (step 7a) of the household records `records` (deleted here): sealed with the household
+    /// key, checked by the guard, each over the version this device last saw there (`stamps`; without one, the server's
+    /// version comes back as `.changed` and the marker goes again over it).
+    private func saveDeletionMarkers(_ records: [(name: String, table: String)], stamps: [String: Data], limits: SyncOperationLimits,
+                                     guardian: SyncZoneGuard?) async throws -> [SaveResult] {
+        let zone = SyncZones.household
+        let markers = records.map { SyncPayload.deletionMarker(uuid: $0.name, tableName: $0.table, zone: zone) }
+        guard !markers.isEmpty else { return [] }
+        try await review(markers, guardian: guardian)
+        let key = try await sealingKey(zone: zone)
+        let wires = try markers.map { try SyncLargePayload.wire(for: $0, key: key.key).0 }
+        var results: [SaveResult] = []
+        for operation in Self.operations(wires, limits: limits) {
+            results += try await save(operation, ifUnchanged: stamps)
+        }
+        return results
+    }
+
+    /// The server versions deleted records were last seen at in `zone` (their tombstones' stamps, kept at delete time).
+    static func deletedStamps(_ names: [String], zone: String, db: Database) throws -> [String: Data] {
+        try names.reduce(into: [String: Data]()) { result, name in
+            if let stamp = try Data.fetchOne(db, sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ? AND zone = ? AND mergedInto IS NULL",
+                                             arguments: [name, zone]) {
+                result[name] = stamp
+            }
+        }
+    }
+
     /// Finishes the moves this device knows of (`SyncZoneMoves.unfinished`), each judged against where the record is
     /// *now*, not where it was when the move was decided:
     /// - **gone here** (deleted): its old copy and every old file record are deleted in the zone it left;
@@ -1309,14 +1468,39 @@ public actor SyncEngineCore {
         }
         // The deletes go once no marker is still pending there (the marker covers the old copy first).
         var deletes: [String: [String]] = [:]
+        // Step 7a: a record deleted here whose old copy is in the household gets a deletion marker there, not a hard
+        // delete (the server says who deleted it), over the old copy's version.
+        var deletionMarkers: [(name: String, table: String)] = []
+        var deletionStamps: [String: Data] = [:]
         for plan in plans {
             let name = ZonedName(zone: plan.move.zone, name: plan.move.uuid)
             var markerDone = plan.marker == nil
             if case .saved? = results[name]?.outcome { markerDone = true }
             if case .deleted? = results[name]?.outcome { markerDone = true }
-            if markerDone, !plan.deletes.isEmpty { deletes[plan.move.zone, default: []] += plan.deletes }
+            guard markerDone, !plan.deletes.isEmpty else { continue }
+            var planDeletes = plan.deletes
+            if plan.move.zone == SyncZones.household, plan.current == nil, planDeletes.contains(plan.move.uuid),
+               try await db.read({ db in try SyncPresence.isIn(uuid: plan.move.uuid, zone: SyncZones.household, db: db) }) {
+                planDeletes.removeAll { $0 == plan.move.uuid }
+                deletionMarkers.append((plan.move.uuid, plan.move.tableName))
+                if let stamp = try await db.read({ db in try SyncZoneMoves.markerStamp(uuid: plan.move.uuid, zone: SyncZones.household, db: db) }) {
+                    deletionStamps[plan.move.uuid] = stamp
+                }
+            }
+            if !planDeletes.isEmpty { deletes[plan.move.zone, default: []] += planDeletes }
         }
         var deleted: Set<ZonedName> = []
+        var markedDeleted: [String: SaveResult] = [:]
+        if !deletionMarkers.isEmpty {
+            for result in try await saveDeletionMarkers(deletionMarkers, stamps: deletionStamps, limits: limits, guardian: guardian) {
+                markedDeleted[result.recordName] = result
+                switch result.outcome {
+                case .saved, .deleted: deleted.insert(ZonedName(zone: SyncZones.household, name: result.recordName))
+                case .zoneNotFound: missing.insert(SyncZones.household)
+                default: break
+                }
+            }
+        }
         for (zone, names) in deletes.sorted(by: { $0.key < $1.key }) {
             do {
                 try await transport.delete(names, zone: zone)
@@ -1327,7 +1511,16 @@ public actor SyncEngineCore {
         }
         let taken = results
         let removed = deleted
+        let marked = markedDeleted
         try await db.write { db in
+            for (name, result) in marked {
+                guard let plan = plans.first(where: { $0.move.uuid == name && $0.move.zone == SyncZones.household }) else { continue }
+                if case .changed(let server) = result.outcome {
+                    // Edited there meanwhile: the deletion marker goes again over that version.
+                    try SyncZoneMoves.markerAgain(uuid: name, tableName: plan.move.tableName, zone: SyncZones.household,
+                                                  systemFields: server.stamp.systemFields, db: db)
+                }
+            }
             for plan in plans {
                 let move = plan.move
                 let name = ZonedName(zone: move.zone, name: move.uuid)
@@ -1630,6 +1823,17 @@ public actor SyncEngineCore {
         return try AccessRevalidation.revalidating(db: db, body)
     }
 
+    /// Step 7a: a version another iCloud user saved (the server's writer, `SyncPayload.serverWriter`) has its clocks
+    /// clamped to the server's time of the save (`SyncMerge.clamped`) before any merge, on every device, so all agree.
+    /// Versions of this device's own user are taken as they are, as is one the server names no writer for.
+    /// A version without the server's time of the save (`.distantPast`) is clamped to `receivedAt`, when it arrived here.
+    static func serverDated(_ payload: SyncPayload, stamp: SyncServerStamp, deviceUser: String?, receivedAt: Date, db: Database) throws -> SyncPayload {
+        guard payload.serverWriter != nil else { return payload }
+        let selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
+        guard try AccessRevalidation.attributedWriter(payload, selfUser: selfUser, db: db) != .selfUser else { return payload }
+        return SyncMerge.clamped(payload, to: stamp.modifiedAt > .distantPast ? stamp.modifiedAt : receivedAt)
+    }
+
     static func deviceUser(db: Database) throws -> String? {
         try String.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter WHERE id = 1")
     }
@@ -1653,7 +1857,9 @@ enum SyncLargePayload {
         var stub = SyncPayload(recordType: payload.recordType, recordName: payload.recordName, zone: payload.zone, fields: [:])
         stub.largePayload = SyncLargePayloadReference(assetField: assetField)
         var inner = try SyncWireRecord(stub)
-        inner.assets[assetField] = try encoder.encode(payload)
+        var packed = payload
+        packed.serverWriter = nil
+        inner.assets[assetField] = try encoder.encode(packed)
         return (try FieldSealing.seal(inner, key: key), true)
     }
 
@@ -1669,6 +1875,15 @@ enum SyncLargePayload {
             throw SyncTransportError.unreadableRecord(wire.recordName)
         }
         payload.zone = wire.zone
+        return payload
+    }
+
+    /// The payload a server record holds, with the server's writer (step 7a): whatever the sender put in
+    /// `serverWriter` is overwritten by who the server says saved it (`SyncPayload.unnamedServerWriter` when it names
+    /// no one: judged as an unknown writer, never by the payload's clocks).
+    static func payload(from server: SyncServerRecord, keys: [String: SymmetricKey]) throws -> SyncPayload {
+        var payload = try payload(from: server.wire, keys: keys)
+        payload.serverWriter = server.lastModifiedBy ?? SyncPayload.unnamedServerWriter
         return payload
     }
 }

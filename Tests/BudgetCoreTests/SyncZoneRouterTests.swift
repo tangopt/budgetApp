@@ -212,13 +212,14 @@ final class SyncZoneRouterTests: XCTestCase {
             router = try SyncZoneRouter(db: db)
             XCTAssertEqual(try router.assignment(table: "document", localId: shop), .household)
 
-            // An unlinked document is shared; one linked only to a shared record too.
+            // An unlinked document that isn't a property document is private (step 7a: the admin's, no one inserted it
+            // here); one linked only to a shared record is shared.
             try db.execute(sql: """
                 INSERT INTO document(sha256, storedRelativePath, originalFileName, byteCount, addedAt) VALUES (?, 'x', 'synthetic.pdf', 1, ?)
                 """, arguments: [String(repeating: "3", count: 64), Date()])
             let loose = db.lastInsertedRowID
             router = try SyncZoneRouter(db: db)
-            XCTAssertEqual(try router.assignment(table: "document", localId: loose), .household)
+            XCTAssertEqual(try router.assignment(table: "document", localId: loose), ZoneAssignment(zone: f.privateZone))
 
             // Raising Private to Everything brings its documents back.
             _ = try SharingLevels.set(.everything, accountId: f.privateAccount, actor: f.admin, db: db)

@@ -86,6 +86,9 @@ public actor SyncScheduler {
     public private(set) var lastSync: Date?
     /// The records every pull received while this scheduler lives (the phone's first-download count).
     public private(set) var receivedRecords = 0
+    /// A pull found this device no longer in the household it reaches through its shared database
+    /// (`SyncPullReport.leftHousehold`): the owner drops its data and stops this scheduler (step 7a).
+    public private(set) var leftHousehold = false
     private var lastSyncLoaded = false
     /// Consecutive failures (the backoff's exponent).
     private var failures = 0
@@ -290,6 +293,7 @@ public actor SyncScheduler {
         // A push that sent nothing because it waits for the key isn't a sync (Task 1 review N2).
         if pulled || report.push.keyWait == nil { lastSync = now }
         receivedRecords += report.pull.received
+        if report.pull.leftHousehold { leftHousehold = true }
         // The key marker unreachable (offline) continues the offline spell: its backoff and "since" carry on (N1).
         if report.push.keyWaitCause == nil {
             failures = 0

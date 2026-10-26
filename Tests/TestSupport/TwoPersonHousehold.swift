@@ -7,8 +7,15 @@ import BudgetCore
 /// (`memberDevice`). The admin's devices share `adminKeys` (their iCloud Keychain: the household key and A's
 /// private key); the member's `memberKeys` share only the household key. Every save goes through `audit`, so a
 /// test can check that nothing placed privately reached the household. Synthetic data only.
+///
+/// Step 7a: the cloud is the admin's iCloud user (`adminICloudUser`); the member's device acts as her own
+/// (`memberICloudUser`, `cloud.session(as:)`), an accepted participant of the household zone's share. Both record
+/// names are on the Mac's appUsers.
 public final class TwoPersonHousehold {
     public typealias Device = (db: DatabaseQueue, engine: SyncEngineCore)
+
+    public static let adminICloudUser = "fake-owner"
+    public static let memberICloudUser = "fake-member"
 
     public let cloud: FakeCloud
     /// The admin's devices' transport: every household save they make is judged, as it is made, by the Mac's router.
@@ -55,17 +62,30 @@ public final class TwoPersonHousehold {
     /// The household, with `SharingFixture` on the admin's Mac; `levels` (account id to level) replace the
     /// fixture's, written as they are (no blockers checked). `macDocuments` / `phoneDocuments`: where those devices
     /// keep files, when a test syncs files. `revalidatesAccess`: the admin's Mac re-validates what it pulls (step 6
-    /// Task 9), as the app's Mac does.
+    /// Task 9), as the app's Mac does. `memberInvited` false (step 7a Task 7): the household isn't shared yet, so her
+    /// iCloud user isn't on its share and her appUser has no record name. `memberHasHouseholdKey` false (step 7a Task 8):
+    /// her device starts without the household key, as before the key exchange.
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
-                            phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false) throws -> TwoPersonHousehold {
-        let cloud = FakeCloud()
+                            phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false,
+                            memberInvited: Bool = true, memberHasHouseholdKey: Bool = true) throws -> TwoPersonHousehold {
+        // The admin made the household zone before inviting her (the member can't create it in his database).
+        // Its clock keeps up with the devices' (they stamp `Date()`), so the members' clocks aren't all clamped (step 7a).
+        let cloud = FakeCloud(start: Date(), zones: [SyncZones.household], ownerRecordName: adminICloudUser, followsWallClock: true)
+        if memberInvited {
+            cloud.invite(memberICloudUser, zone: SyncZones.household)
+            cloud.accept(zone: SyncZones.household, as: memberICloudUser)
+        }
         let adminKeys = InMemorySyncKeyStore()
         let memberKeys = InMemorySyncKeyStore()
         let householdKey = DocumentCrypto.newZoneKey()
         try adminKeys.store(householdKey, zone: SyncZones.household)
-        try memberKeys.store(householdKey, zone: SyncZones.household)
+        if memberHasHouseholdKey { try memberKeys.store(householdKey, zone: SyncZones.household) }
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: adminKeys)
-        let memberAudit = ZoneAuditingTransport(wrapping: cloud, keyStore: memberKeys)
+        // Her device's transport: the household through her shared database, her own zone in her private one (both
+        // her session here: one fake cloud holds every database).
+        let memberSession = cloud.session(as: memberICloudUser)
+        let memberAudit = ZoneAuditingTransport(wrapping: SyncZoneSplitTransport(household: memberSession, others: memberSession),
+                                                keyStore: memberKeys)
 
         let mac = try TestDatabase.migrated()
         let (fixture, adminUser, memberUser, personB) = try mac.write { db -> (SharingFixture, String, String, String) in
@@ -77,6 +97,11 @@ public final class TwoPersonHousehold {
             let adminUser = try SyncRecordStore.uuid(for: "appUser", localId: fixture.admin.appUserId, db: db)
             let memberUser = try SyncRecordStore.uuid(for: "appUser", localId: member, db: db)
             let personB = try SyncRecordStore.uuid(for: "person", localId: fixture.personB, db: db)
+            try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?",
+                           arguments: [adminICloudUser, fixture.admin.appUserId])
+            if memberInvited {
+                try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?", arguments: [memberICloudUser, member])
+            }
             try SyncChangeTracker.setWriter(adminUser, db: db)
             return (fixture, adminUser, memberUser, personB)
         }

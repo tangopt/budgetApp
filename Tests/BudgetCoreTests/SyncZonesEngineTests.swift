@@ -853,8 +853,8 @@ final class SyncZonesEngineTests: XCTestCase {
         let shared = try h.uuid("transaction_", f.jointTransaction)
         try write(h.adminMac) { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [f.jointTransaction]) }
         _ = try await h.adminMac.engine.pushPending()
-        let still = try await h.cloud.fetch(shared, zone: SyncZones.household)
-        XCTAssertNil(still, "an earlier-uploaded record's delete reaches the household")
+        let still = try await stored(h, shared, in: SyncZones.household)
+        XCTAssertEqual(still?.deleted, true, "an earlier-uploaded record's delete (a deletion marker, step 7a) reaches the household")
         assertNoHouseholdLeak(h)
     }
 

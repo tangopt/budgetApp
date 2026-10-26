@@ -174,6 +174,10 @@ struct PhoneRoot: View {
     private func content(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         if environment.isDemo {
             PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+        } else if let joining = sync.joinState {
+            // Joining the household (a member's device), or just removed from it.
+            HouseholdJoinView(state: joining, onRetry: { sync.retryJoin() }, onStartAgain: { sync.startKeyExchangeAgain() },
+                              onDismiss: { sync.dismissHouseholdNotice() })
         } else if let state = iCloudUnavailable {
             ICloudUnavailableView(state: state, onOpenSettings: openSettings, onShowLocal: { showsLocalData = true })
         } else if sync.isFirstDownload, case .syncing = sync.status {

@@ -722,6 +722,7 @@ enum PropertyMessages {
         case .accountNotFound: return "That account no longer exists."
         case .categoryGroupNotFound: return "That category group no longer exists."
         case .tenancyNotFound: return "The tenancy no longer exists."
+        case .personOwnsAccounts: return error.message ?? ""
         case .personIsOwner: return "That person owns a share of a property: remove the ownership first."
         case .invalidShare: return "Each share must be more than 0% and at most 100%."
         case .invalidDateRange: return "An end date is before its start date."

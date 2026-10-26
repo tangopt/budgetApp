@@ -54,7 +54,7 @@ enum MacBuild {
 
 /// The real database's sync on the admin's Mac (step 6 Task 13): CloudKit's Production environment, sealed under the
 /// real key scope (`CloudKitTransport.keyScope(demo: false)`), the signed-in user's zones, re-validating only on the
-/// admin's Mac (`SyncTurnOn.macEngineRole`). It runs only when `SyncActivation.realDecision` allows: Mango's own
+/// admin's Mac signed in to the admin's iCloud user (`AccessRevalidation.shouldRevalidate`). It runs only when `SyncActivation.realDecision` allows: Mango's own
 /// database (the file actually opened), never the demo, once "Turn on sync…" has begun the upload (the stage kept in that
 /// database), in a build signed for Production (Debug only with `--sync-real-in-debug`). At every start the iCloud user
 /// signed in on this Mac must be the one that turned sync on (`appUser.cloudKitUserRecordName`); otherwise nothing
@@ -66,6 +66,10 @@ final class RealSync: ObservableObject {
     @Published private(set) var progress: SyncTurnOn.Progress?
     /// Why the real sync doesn't run although the upload began (nil when it runs, or before the turn-on).
     @Published private(set) var refusal: String?
+    /// Settings ▸ Household (step 7a): the member, her share, the key exchange.
+    let household: HouseholdController
+    /// The running engine is the admin's own (signed in to the admin's iCloud user): the Mac that binds and answers.
+    private var enginePrimary = false
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -83,6 +87,8 @@ final class RealSync: ObservableObject {
     private var sessionWatch: AnyCancellable?
     /// The iCloud user matched the admin's in this launch.
     private var identityConfirmed = false
+    /// That iCloud user's record name (step 7a: re-validation runs only for the admin signed in as it).
+    private var confirmedICloudUser: String?
     private var starting = false
     /// A progress read is under way (one at a time: the status stream and the poll both ask).
     private var refreshingProgress = false
@@ -95,6 +101,8 @@ final class RealSync: ObservableObject {
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         self.session = session
+        household = HouseholdController(dbQueue: dbQueue, session: session)
+        household.isRunning = { [weak self] in self?.scheduler != nil && self?.enginePrimary == true }
         // The iCloud account changed while Mango runs: sync stops and the user is checked again (a different one
         // never syncs; Settings ▸ Sync says why).
         accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
@@ -102,13 +110,18 @@ final class RealSync: ObservableObject {
         }
     }
 
-    /// Stops the running sync, forgets the confirmed user and starts again through the full check.
+    /// Stops the running sync, forgets the confirmed user and starts again through the full check. The engine, and with
+    /// it its `CloudKitTransport` (which keeps the iCloud user it first read, for attributing writes), is made again by
+    /// `startEngine` for the user confirmed then, and the household pane's own transport is dropped: no transport outlives an
+    /// account change (step 7a).
     private func accountChanged() async {
         guard identityConfirmed || scheduler != nil else { return }
         Self.log.notice("Real sync: the iCloud account changed; checking who is signed in again")
         identityConfirmed = false
+        confirmedICloudUser = nil
         engineUserId = nil
         sessionWatch = nil
+        enginePrimary = false
         statusTask?.cancel()
         progressTask?.cancel()
         if let running = scheduler {
@@ -116,6 +129,7 @@ final class RealSync: ObservableObject {
             await running.stop()
         }
         status = .off
+        household.accountChanged()
         await startIfAllowed()
     }
 
@@ -168,6 +182,7 @@ final class RealSync: ObservableObject {
         switch SyncTurnOn.iCloudUserCheck(signedIn: signedIn, recorded: recorded ?? nil) {
         case .matches:
             identityConfirmed = true
+            confirmedICloudUser = signedIn
             return true
         case .different, .notRecordedYet:
             refusal = SyncTurnOnFlow.differentICloudUserAtLaunch
@@ -195,23 +210,27 @@ final class RealSync: ObservableObject {
             await running.stop()
         }
         engineUserId = appUserId
-        let made: (SyncTurnOn.MacEngineRole, String)
+        let made: (SyncTurnOn.MacEngineRole, String, Bool)
+        let iCloudUser = confirmedICloudUser
         do {
             made = try await dbQueue.write { db in
                 let actor = try AccessActor.load(appUserId: appUserId, db: db)
-                return (try SyncTurnOn.macEngineRole(signedIn: actor, db: db), try LocalSetting.macDeviceId(db))
+                // Step 7a: only the admin, on the Mac signed in to their own iCloud user, re-validates.
+                let revalidates = try AccessRevalidation.shouldRevalidate(signedInAppUserId: appUserId, iCloudUserRecordName: iCloudUser, db: db)
+                return (try SyncTurnOn.macEngineRole(signedIn: actor, db: db), try LocalSetting.macDeviceId(db), revalidates)
             }
         } catch {
             engineUserId = nil
             Self.log.error("Real sync didn't start (\(String(describing: type(of: error)), privacy: .public))")
             return
         }
-        let (role, deviceId) = made
+        let (role, deviceId, revalidates) = made
+        enginePrimary = revalidates
         let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                     device: SyncDevice(id: deviceId, name: Host.current().localizedName ?? "Mac"),
                                     keyStore: KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: false)),
                                     documents: SyncDocumentFiles(root: evidenceRoot, policy: .eager),
-                                    viewer: role.viewer, revalidatesAccess: role.revalidatesAccess)
+                                    viewer: role.viewer, revalidatesAccess: revalidates)
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
         statusTask = Task { @MainActor [weak self] in
@@ -220,11 +239,13 @@ final class RealSync: ObservableObject {
                 self.status = status
                 Self.log.info("Real sync status: \(Self.describe(status), privacy: .public)")
                 await self.refreshProgress()
+                // A sync finished: look for her acceptance and her key request.
+                if case .idle = status { await self.household.refresh(contactCloud: true) }
             }
         }
         watchProgress()
         await scheduler.start()
-        Self.log.info("Real sync started (re-validating: \(role.revalidatesAccess, privacy: .public))")
+        Self.log.info("Real sync started (re-validating: \(revalidates, privacy: .public))")
         Task { await scheduler.requestSync(.launch) }
     }
 
