@@ -66,10 +66,10 @@ public enum SharingCopy {
     // MARK: Settings ▸ Sharing (Mac)
 
     public static let paneTitle = "Sharing"
-    public static let setupExplanation = "Before anything is shared, say who owns each account. You do this once. Afterwards each owner chooses how much of their accounts the other person sees, one account at a time."
+    public static let setupExplanation = "Each account's owner and how much of it the other person sees are set in the account itself, on the Mac. Until then, your accounts start shared as balance only and property accounts in full when sync is turned on."
     public static let setOwnersButton = "Set owners…"
     /// A member before the admin has saved the ownership sheet.
-    public static let waitingForOwners = "The admin hasn't said who owns each account yet. Once they have, your accounts and their levels show here."
+    public static let waitingForOwners = "The admin hasn't turned on sharing yet. Once they have, your accounts and their levels show here; each account's sharing is set in the account itself."
     public static let myAccounts = "My accounts"
     public static let myAccountsNote = "How much of each of your accounts the other person sees."
     public static let noOwnAccounts = "You don't own any accounts in Mango yet."
@@ -77,7 +77,21 @@ public enum SharingCopy {
     public static let jointAccountsNote = "Joint accounts are always shared in full."
     public static let taxAndIncome = "My tax years and income"
     public static let taxAndIncomeNote = "Your tax years, employment and payroll documents and HMRC pages. Taxes stay shared in full for now."
-    public static let badgeHelp = "How much of this account the other person sees. Change it in Settings ▸ Sharing."
+    public static let badgeHelp = "How much of this account the other person sees. Change it in the account's Edit… ▸ Sharing."
+    /// Settings ▸ Sharing's pointer: per-account sharing lives in the account (sync-ui, 2026-10-26).
+    public static let accountsPointer = "Who owns each account and how much of it the other person sees are set in the account itself: Accounts, then the account's Edit… ▸ Sharing."
+
+    // MARK: An account's Sharing section (Mac, Accounts ▸ Edit…)
+
+    public static let sectionTitle = "Sharing"
+    public static let ownerLabel = "Owner"
+    public static let levelLabel = "Shared as"
+    public static let jointLevelNote = "Joint accounts are always shared in full."
+    /// Shown instead of the pickers to someone who can't change them.
+    public static func notYours(owner: String) -> String { "Only \(owner) changes how this account is shared." }
+    public static let notYoursJoint = "Only the household's admin changes a joint account."
+    /// Before ownership is confirmed: saving confirms every account with the defaults.
+    public static let confirmsDefaultsNote = "Saving also gives your other accounts their starting sharing: yours as balance only, property accounts in full."
     /// Sign-in refused: this database holds another person's private accounts (`SharingSignIn`).
     public static let otherPersonsMacUser = "This Mac user holds someone else's private accounts. Sign in on your own Mac user."
     /// Settings ▸ Sharing while locked, and before sign-in is set up.

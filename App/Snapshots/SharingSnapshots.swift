@@ -5,38 +5,29 @@ import BudgetCore
 import GRDB
 
 /// The sharing routes (step 6 Task 10), on the demo's synthetic data (`DemoSharing`: Person A the admin, "A", owning
-/// every account but the joint one). Settings ▸ Sharing before the sheet and the sheet itself use a copy of the demo
-/// with its owners taken back off; the member's routes sign in as Person B (an app user with no password, made in the
+/// every account but the joint one). Each account's Sharing section is in Edit account (sync-ui); the one before the
+/// owners are confirmed uses a copy of the demo with its owners taken back off; the member's routes sign in as Person B (an app user with no password, made in the
 /// demo copy) for that route only (`SnapshotSession` signs the snapshot user back in before the next).
 @MainActor
 enum SharingSnapshots {
     static var routes: [SnapshotRoute] {
         [
-            SnapshotRoute(name: "settings-sharing-setup", title: "Settings ▸ Sharing, before the owners are set") { context in
-                let copy = try await unconfirmedCopy(context)
-                return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing, sharingModel: SharingSettingsModel(dbQueue: copy))))
-            },
-            SnapshotRoute(name: "settings-sharing-ownership_sheet", title: "Who owns each account? (one joint, the rest the admin's)") { context in
-                let copy = try await unconfirmedCopy(context)
-                let admin = try await copy.write { db in try AccessActor.admin(db: db) }
-                var rows = try await copy.read { db in try SharingSetup.proposal(admin: admin, db: db) }
-                guard let joint = rows.firstIndex(where: { $0.displayName == "Rainy Day Saver" }) else { throw SnapshotMissing("Rainy Day Saver") }
-                rows[joint].owner = .joint
-                rows[joint].level = .everything
-                let name = try await copy.read { db in try AppUser.fetchOne(db, key: admin.appUserId)?.displayName } ?? ""
-                return AnyView(SnapshotSheetCanvas(sheet: OwnershipSheet(rows: rows, adminName: name, onSave: { _ in })))
-            },
-            SnapshotRoute(name: "settings-sharing", title: "Settings ▸ Sharing: my accounts, joint accounts, tax years and income") { _ in
+            SnapshotRoute(name: "settings-sharing", title: "Settings ▸ Sharing: tax years and income, accounts' sharing is in Accounts") { _ in
                 AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
             },
-            SnapshotRoute(name: "settings-sharing-lower_warning", title: "Settings ▸ Sharing: lowering Euro Current to Balance only") { context in
-                try await confirmation(context, account: "Euro Current", to: .balanceOnly)
-            },
-            SnapshotRoute(name: "settings-sharing-raise_note", title: "Settings ▸ Sharing: raising Travel Card to Everything") { context in
-                try await confirmation(context, account: "Travel Card", to: .everything)
-            },
-            SnapshotRoute(name: "settings-sharing-hidden_blocked", title: "Settings ▸ Sharing: Hidden refused for an account a property needs") { context in
-                try await confirmation(context, account: "Euro Current", to: .hidden)
+            editSheet("accounts-edit-sharing", "Edit account: Sharing, A's card at Category totals", account: "Travel Card"),
+            editSheet("accounts-edit-sharing-lower", "Edit account: Sharing, lowering Euro Current to Balance only (counted, warned)",
+                      account: "Euro Current", preset: .init(level: .balanceOnly)),
+            editSheet("accounts-edit-sharing-to_joint", "Edit account: Sharing, A's card made Joint", account: "Travel Card",
+                      preset: .init(joint: true)),
+            editSheet("accounts-edit-sharing-tallest", "Edit account: the tallest case (UK card lowered from Category totals to Balance only, warning shown) scrolls within 1100×700",
+                      account: "Travel Card", preset: .init(level: .balanceOnly)),
+            editSheet("accounts-edit-sharing-joint", "Edit account: Sharing, a joint account (always Everything)", account: "Rainy Day Saver"),
+            editSheet("accounts-edit-sharing-hidden_blocked", "Edit account: Sharing, Hidden refused for an account a property needs",
+                      account: "Euro Current", preset: .init(level: .hidden)),
+            SnapshotRoute(name: "accounts-edit-sharing-unconfirmed", title: "Edit account: Sharing before the owners are confirmed (Save confirms the defaults)") { context in
+                let copy = try await unconfirmedCopy(context)
+                return try await editSheetView(copy, account: "Rainy Day Saver", preset: .init(joint: true))
             },
             SnapshotRoute(name: "auth-member_refused", title: "Lock screen: Person B refused on A's Mac user (it holds A's private accounts)") { context in
                 let member = try await memberUser(context)
@@ -51,7 +42,7 @@ enum SharingSnapshots {
                 model.snapshotShowRefusal(refusal, for: member.id)
                 return AnyView(LockScreen(model: model))
             },
-        ] + turnOnRoutes + [
+        ] + turnOnRoutes + sidebarRoutes + [
             SnapshotCatalog.screen("accounts", "sharing_badges", "Accounts: lock badges on A's accounts below Everything", .accounts) { models, context in
                 models.accounts.selectedAccountId = context.accountId("Travel Card")
             },
@@ -81,7 +72,7 @@ enum SharingSnapshots {
                 try await signInMember(context)
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .dashboard)))
             },
-            SnapshotRoute(name: "settings-sharing-member", title: "Settings ▸ Sharing as Person B on her own database: no accounts of her own, no Set owners…") { context in
+            SnapshotRoute(name: "settings-sharing-member", title: "Settings ▸ Sharing as Person B on her own database") { context in
                 try await becomeMembersDatabase(context)
                 try await signInMember(context)
                 return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
@@ -95,7 +86,7 @@ enum SharingSnapshots {
         func sheet(_ name: String, _ title: String, _ facts: SyncTurnOnFlow.Facts, error: String? = nil) -> SnapshotRoute {
             SnapshotRoute(name: name, title: title) { _ in
                 AnyView(SnapshotSheetCanvas(sheet: TurnOnSyncSheetContent(screen: SyncTurnOnFlow.screen(facts), error: error, onBackUp: {},
-                                                                          onSetOwners: {}, onStartUpload: {}, onClose: {})))
+                                                                          onStartUpload: {}, onClose: {})))
             }
         }
         func pane(_ name: String, _ title: String, status: SyncStatus, running: Bool, report: SyncReport?, real: SyncSettingsPane.Real) -> SnapshotRoute {
@@ -106,10 +97,10 @@ enum SharingSnapshots {
             }
         }
         let backup = "/synthetic/Budget/" + SyncTurnOn.backupPrefix + "20261026-101500"
-        func facts(_ stage: SyncTurnOn.Stage, confirmed: Bool = true, blockers: [SyncTurnOn.Blocker] = [], sent: Int = 0, total: Int = 0,
+        func facts(_ stage: SyncTurnOn.Stage, blockers: [SyncTurnOn.Blocker] = [], sent: Int = 0, total: Int = 0,
                    status: SyncStatus = .off, refusal: String? = nil) -> SyncTurnOnFlow.Facts {
             SyncTurnOnFlow.Facts(progress: SyncTurnOn.Progress(stage: stage, backupPath: stage >= .backedUp ? backup : nil, total: total, sent: sent),
-                                 ownershipConfirmed: confirmed, blockers: blockers, checked: true, syncStatus: status, syncRefusal: refusal)
+                                 blockers: blockers, checked: true, syncStatus: status, syncRefusal: refusal)
         }
         // The status line reads the real clock (`TimelineView`): two minutes before now.
         let lastSync = Date().addingTimeInterval(-120)
@@ -120,11 +111,9 @@ enum SharingSnapshots {
         let report = SyncReport(pull: pulled, push: pushed)
         return [
             sheet("settings-sync-turn_on", "Turn on sync: blocked by a test's key and no iCloud account",
-                  facts(.notStarted, confirmed: false, blockers: [.strayHouseholdKey, .strayPrivateKey, .noICloudAccount])),
-            sheet("settings-sync-turn_on-ownership", "Turn on sync: backed up, owners next",
-                  facts(.backedUp, confirmed: false)),
-            sheet("settings-sync-turn_on-ready", "Turn on sync: owners set, ready to start the upload",
-                  facts(.ownershipConfirmed)),
+                  facts(.notStarted, blockers: [.strayHouseholdKey, .strayPrivateKey, .noICloudAccount])),
+            sheet("settings-sync-turn_on-ready", "Turn on sync: backed up, ready to start the upload",
+                  facts(.backedUp)),
             sheet("settings-sync-turn_on-uploading", "Turn on sync: uploading",
                   facts(.uploading, sent: 1_248, total: 3_006, status: .syncing(.pushing))),
             sheet("settings-sync-turn_on-paused", "Turn on sync: upload paused while offline",
@@ -163,17 +152,36 @@ enum SharingSnapshots {
         return manager.dbQueue
     }
 
-    /// The confirmation a level picked in Settings ▸ Sharing opens, its records counted, over the window.
-    private static func confirmation(_ context: SnapshotContext, account name: String, to level: SharingLevel) async throws -> AnyView {
-        let (row, preview, other) = try await context.dbQueue.read { db -> (SharingOverview.AccountRow, SharingOverview.LevelChangePreview, String) in
-            guard let account = try Account.filter(Column("name") == name).fetchOne(db), let id = account.id else { throw SnapshotMissing(name) }
-            let admin = try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1") ?? 0
-            let other = try String.fetchOne(db, sql: "SELECT name FROM person WHERE id != ? ORDER BY id LIMIT 1", arguments: [admin]) ?? SharingCopy.otherPersonFallback
-            return (SharingOverview.AccountRow(id: id, displayName: account.displayName, bankName: account.bankName, level: account.sharingLevel),
-                    try SharingOverview.preview(accountId: id, to: level, db: db), other)
+    /// Edit account for the demo account `name`, with a sharing choice already made, over the window.
+    private static func editSheet(_ route: String, _ title: String, account name: String,
+                                  preset: AccountSharingDraft.Preset? = nil) -> SnapshotRoute {
+        SnapshotRoute(name: route, title: title, settleFactor: 1.5) { context in
+            try await editSheetView(context.dbQueue, account: name, preset: preset)
         }
-        let change = SharingLevelChangeFlow.Pending(account: row, to: level, preview: preview)
-        return AnyView(SnapshotSheetCanvas(sheet: LevelChangeConfirm(change: change, otherName: other, onCancel: {}, onChange: {})))
+    }
+
+    private static func editSheetView(_ dbQueue: DatabaseQueue, account name: String, preset: AccountSharingDraft.Preset?) async throws -> AnyView {
+        let model = AccountsViewModel(dbQueue: dbQueue)
+        _ = model.load()
+        guard let account = try await dbQueue.read({ db in try Account.filter(Column("name") == name).fetchOne(db) }) else { throw SnapshotMissing(name) }
+        return AnyView(SnapshotSheetCanvas(sheet: EditAccountSheet(viewModel: model, account: account, sharingPreset: preset)))
+    }
+
+    /// The sidebar's sync row in each state, over the Dashboard (`SidebarSyncRow`; nothing runs, the state is given).
+    static var sidebarRoutes: [SnapshotRoute] {
+        func route(_ tab: String, _ title: String, _ row: SyncSidebarStatus) -> SnapshotRoute {
+            SnapshotRoute(name: "sidebar-sync-\(tab)", title: "Sidebar: \(title)", settleFactor: 1.5) { context in
+                AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .dashboard))
+                    .environment(\.sidebarSyncOverride, row))
+            }
+        }
+        return [
+            route("uploading", "the first upload, 1,248 of 3,006", .syncing(sent: 1_248, total: 3_006)),
+            route("syncing", "syncing", .syncing(sent: nil, total: nil)),
+            route("synced", "synced two minutes ago", .synced(Date().addingTimeInterval(-120))),
+            route("paused", "paused while offline", .paused),
+            route("attention", "needs attention", .attention),
+        ]
     }
 
     /// Person B as a member with no password (made once in the demo copy).

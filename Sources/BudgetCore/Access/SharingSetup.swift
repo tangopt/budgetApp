@@ -1,19 +1,20 @@
 import Foundation
 import GRDB
 
-/// The one-time "Who owns each account?" sheet (sharing spec 2026-10-25 §7): the admin gives every account
-/// its owner (themselves or Joint) and starting level, once, on the Mac.
+/// Confirming who owns each account (sharing spec 2026-10-25 §7), once, on the Mac, as the admin: every account
+/// without an owner gets one (the admin, or Joint) and its starting level. Since sync-ui (2026-10-26) there is no
+/// sheet for it: the turn-on's start and an account's Sharing section confirm the defaults (`confirmDefaults`).
 ///
 /// Its rule, which the area map applies too (`AccessAreaMap`): only the admin, only while ownership is
 /// unconfirmed (no `personSharing.ownershipConfirmedAt` yet), only through `save`. Afterwards only an
-/// account's owner changes its level (`SharingLevels.set`) and nobody changes an owner (a deliberate later
-/// flow, not step 6).
+/// account's owner changes its level (`SharingLevels.set`), and only the admin moves an account between
+/// theirs and Joint (`SharingLevels.setOwner`).
 public enum SharingSetup {
     public enum Owner: Equatable, Sendable {
         case person(Int64)
         case joint
 
-        var personId: Int64? {
+        public var personId: Int64? {
             if case .person(let id) = self { return id }
             return nil
         }
@@ -93,6 +94,20 @@ public enum SharingSetup {
             try SyncZoneMoves.storeFacts(before, db: db, now: now)
             return .commit
         }
+    }
+
+    /// Confirms ownership with the defaults, as the admin, when it isn't confirmed yet: every unowned account the
+    /// admin's at its default level (`proposal`: property-linked at Everything, the rest at Balance only). Nothing
+    /// when already confirmed (owners and levels set since are kept). The turn-on's start and an account's Sharing
+    /// section use it, so no separate ownership step is needed; the admin changes owners and levels per account
+    /// afterwards. Returns how many accounts it gave an owner.
+    @discardableResult
+    public static func confirmDefaults(admin: AccessActor, db: Database, now: Date) throws -> Int {
+        guard admin.isAdmin else { throw SharingError.notAdmin }
+        guard try !isConfirmed(db: db) else { return 0 }
+        let rows = try proposal(admin: admin, db: db)
+        try save(rows, admin: admin, db: db, now: now)
+        return rows.count
     }
 
     private static func write(_ rows: [Row], admin: AccessActor, db: Database, now: Date) throws {

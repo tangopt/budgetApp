@@ -222,7 +222,10 @@ struct ContentView: View {
             // The sidebar's selection keeps the system accent whatever the theme.
             .tint(nil)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                SidebarFooter(session: environment.session)
+                VStack(spacing: 0) {
+                    SidebarSyncRow(realSync: environment.realSync)
+                    SidebarFooter(session: environment.session)
+                }
             }
             // The whole column, title bar and Settings button included: without it the sidebar is
             // the content area's colour in dark mode (see `SidebarMaterial`).

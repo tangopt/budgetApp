@@ -18,16 +18,16 @@ final class SyncTurnOnFlowTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    private func facts(_ stage: SyncTurnOn.Stage, confirmed: Bool = false, blockers: [SyncTurnOn.Blocker] = [], checked: Bool = true,
+    private func facts(_ stage: SyncTurnOn.Stage, blockers: [SyncTurnOn.Blocker] = [], checked: Bool = true,
                        sent: Int = 0, total: Int = 0, status: SyncStatus = .off, refusal: String? = nil,
                        work: SyncTurnOnFlow.Work = .none) -> SyncTurnOnFlow.Facts {
         let path = stage >= .backedUp ? "/synthetic/Budget/budget.sqlite.pre-sync-backup-20261026-101500" : nil
         return SyncTurnOnFlow.Facts(progress: SyncTurnOn.Progress(stage: stage, backupPath: path, total: total, sent: sent),
-                                    ownershipConfirmed: confirmed, blockers: blockers, checked: checked, syncStatus: status,
+                                    blockers: blockers, checked: checked, syncStatus: status,
                                     syncRefusal: refusal, work: work)
     }
 
-    /// Before anything: only Back up; owners and the upload wait; blockers listed with their copy.
+    /// Before anything: only Back up; the upload waits; blockers listed with their copy.
     func testBeforeTheBackupOnlyBackUpIsOpen() {
         let screen = SyncTurnOnFlow.screen(facts(.notStarted, blockers: [.strayHouseholdKey, .noICloudAccount]))
         XCTAssertEqual(screen.blockerLines, [SyncTurnOn.text(.strayHouseholdKey), "Sign in to iCloud in System Settings first."])
@@ -35,68 +35,57 @@ final class SyncTurnOnFlowTests: XCTestCase {
         XCTAssertEqual(screen.backUpButton, "Back up now")
         XCTAssertTrue(screen.canBackUp)
         XCTAssertEqual(screen.backupLine, SyncTurnOnFlow.backUpExplanation)
-        XCTAssertEqual(screen.ownership, .waiting)
-        XCTAssertFalse(screen.canSetOwners, "the backup comes before any write, the owners included")
-        XCTAssertEqual(screen.ownershipLine, "After the backup.")
         XCTAssertEqual(screen.upload, .waiting)
+        XCTAssertEqual(screen.uploadLine, "After the backup.")
         XCTAssertTrue(screen.showsStartUpload)
         XCTAssertFalse(screen.canStartUpload)
     }
 
-    /// A copy, the demo or a member never back up or set owners from here.
+    /// A copy, the demo or a member never back up or start the upload from here.
     func testNothingIsWrittenForACopyTheDemoOrAMember() {
         for blocker in [SyncTurnOn.Blocker.notAdmin, .notAppDatabase, .demoDatabase] {
             let screen = SyncTurnOnFlow.screen(facts(.backedUp, blockers: [blocker]))
             XCTAssertFalse(screen.canBackUp, "\(blocker)")
-            XCTAssertFalse(screen.canSetOwners, "\(blocker)")
             XCTAssertFalse(screen.canStartUpload, "\(blocker)")
         }
     }
 
-    func testAfterTheBackupTheOwnersAreNext() {
+    func testAfterTheBackupTheUploadIsNext() {
         let screen = SyncTurnOnFlow.screen(facts(.backedUp))
         XCTAssertEqual(screen.backUp, .done)
         XCTAssertEqual(screen.backupLine, "Backed up: budget.sqlite.pre-sync-backup-20261026-101500")
         XCTAssertEqual(screen.backUpButton, "Back up again")
-        XCTAssertEqual(screen.ownership, .current)
-        XCTAssertTrue(screen.canSetOwners)
-        XCTAssertEqual(screen.upload, .waiting)
-        XCTAssertEqual(screen.uploadLine, "After the owners are set.")
-        XCTAssertFalse(screen.canStartUpload)
+        XCTAssertEqual(screen.upload, .current)
+        XCTAssertTrue(screen.canStartUpload)
     }
 
-    /// Owners saved, nothing blocks: Start upload is the only way the upload starts; any blocker, an unanswered check
+    /// Backed up, nothing blocks: Start upload is the only way the upload starts; any blocker, an unanswered check
     /// or work under way keeps it disabled.
     func testStartUploadOnlyWhenNothingBlocks() {
         for stage in [SyncTurnOn.Stage.backedUp, .ownershipConfirmed, .keysReady] {
-            let ready = SyncTurnOnFlow.screen(facts(stage, confirmed: true))
-            XCTAssertEqual(ready.ownership, .done)
-            XCTAssertEqual(ready.ownershipLine, "Done")
-            XCTAssertFalse(ready.canSetOwners)
+            let ready = SyncTurnOnFlow.screen(facts(stage))
             XCTAssertEqual(ready.upload, .current)
             XCTAssertTrue(ready.canStartUpload, "\(stage)")
-            XCTAssertEqual(ready.uploadLine, "Nothing goes to iCloud until you press Start upload.")
+            XCTAssertEqual(ready.uploadLine, SyncTurnOnFlow.uploadExplanation)
         }
-        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed, confirmed: true, blockers: [.strayPrivateKey])).canStartUpload)
-        let unchecked = SyncTurnOnFlow.screen(facts(.ownershipConfirmed, confirmed: true, checked: false))
+        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed, blockers: [.strayPrivateKey])).canStartUpload)
+        let unchecked = SyncTurnOnFlow.screen(facts(.ownershipConfirmed, checked: false))
         XCTAssertFalse(unchecked.canStartUpload)
         XCTAssertTrue(unchecked.showsCheckAgain, "iCloud didn't answer: Check again")
-        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed, confirmed: true, checked: false, work: .checking)).showsCheckAgain)
-        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed, confirmed: true)).showsCheckAgain)
-        let starting = SyncTurnOnFlow.screen(facts(.keysReady, confirmed: true, work: .starting))
+        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed, checked: false, work: .checking)).showsCheckAgain)
+        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.ownershipConfirmed)).showsCheckAgain)
+        let starting = SyncTurnOnFlow.screen(facts(.keysReady, work: .starting))
         XCTAssertFalse(starting.canStartUpload)
         XCTAssertFalse(starting.canBackUp)
         XCTAssertEqual(starting.uploadLine, "Starting the upload…")
-        // Owners confirmed before the backup (Settings ▸ Sharing): the backup still comes first.
-        let early = SyncTurnOnFlow.screen(facts(.notStarted, confirmed: true))
-        XCTAssertEqual(early.ownership, .waiting)
-        XCTAssertFalse(early.canStartUpload)
+        // Owners confirmed before the backup (an account's Sharing section): the backup still comes first.
+        XCTAssertFalse(SyncTurnOnFlow.screen(facts(.notStarted)).canStartUpload)
     }
 
     /// Uploading: the counts, "paused" while offline, the refusal when sync can't run; no Start, no backup, no
     /// blockers; then done.
     func testUploadingShowsProgressPausedAndDone() {
-        let uploading = SyncTurnOnFlow.screen(facts(.uploading, confirmed: true, blockers: [.strayHouseholdKey], sent: 1_200, total: 3_006,
+        let uploading = SyncTurnOnFlow.screen(facts(.uploading, blockers: [.strayHouseholdKey], sent: 1_200, total: 3_006,
                                                     status: .syncing(.pushing)))
         XCTAssertEqual(uploading.uploadLine, "Uploading 1200 of 3006 records")
         XCTAssertEqual(uploading.uploadTone, .neutral)
@@ -106,17 +95,16 @@ final class SyncTurnOnFlowTests: XCTestCase {
         XCTAssertFalse(uploading.canBackUp)
         XCTAssertNil(uploading.backUpButton)
         XCTAssertEqual(uploading.blockerLines, [])
-        XCTAssertEqual(uploading.ownership, .done)
 
-        let paused = SyncTurnOnFlow.screen(facts(.uploading, confirmed: true, sent: 10, total: 20, status: .offline(since: Date(), retryAt: nil)))
+        let paused = SyncTurnOnFlow.screen(facts(.uploading, sent: 10, total: 20, status: .offline(since: Date(), retryAt: nil)))
         XCTAssertEqual(paused.uploadLine, "Upload paused — it continues where it stopped.")
         XCTAssertEqual(paused.uploadTone, .amber)
 
-        let refused = SyncTurnOnFlow.screen(facts(.uploading, confirmed: true, sent: 10, total: 20, refusal: SyncTurnOnFlow.differentICloudUserAtLaunch))
+        let refused = SyncTurnOnFlow.screen(facts(.uploading, sent: 10, total: 20, refusal: SyncTurnOnFlow.differentICloudUserAtLaunch))
         XCTAssertEqual(refused.uploadLine, SyncTurnOnFlow.differentICloudUserAtLaunch)
         XCTAssertEqual(refused.uploadTone, .amber)
 
-        let done = SyncTurnOnFlow.screen(facts(.done, confirmed: true, sent: 20, total: 20, status: .idle(lastSync: Date())))
+        let done = SyncTurnOnFlow.screen(facts(.done, sent: 20, total: 20, status: .idle(lastSync: Date())))
         XCTAssertEqual(done.upload, .done)
         XCTAssertEqual(done.uploadLine, "Your data is in iCloud.")
         XCTAssertNil(done.fraction)
