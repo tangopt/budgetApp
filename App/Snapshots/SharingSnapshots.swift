@@ -15,12 +15,12 @@ enum SharingSnapshots {
             SnapshotRoute(name: "settings-sharing", title: "Settings ▸ Sharing: tax years and income, accounts' sharing is in Accounts") { _ in
                 AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
             },
-            editSheet("accounts-edit-sharing", "Edit account: Sharing, A's card at Balance only", account: "Travel Card"),
+            editSheet("accounts-edit-sharing", "Edit account: Sharing, A's card at Category totals", account: "Travel Card"),
             editSheet("accounts-edit-sharing-lower", "Edit account: Sharing, lowering Euro Current to Balance only (counted, warned)",
                       account: "Euro Current", preset: .init(level: .balanceOnly)),
             editSheet("accounts-edit-sharing-to_joint", "Edit account: Sharing, A's card made Joint", account: "Travel Card",
                       preset: .init(joint: true)),
-            editSheet("accounts-edit-sharing-tallest", "Edit account: the tallest case (UK card, lowering it, warning shown) scrolls within 1100×700",
+            editSheet("accounts-edit-sharing-tallest", "Edit account: the tallest case (UK card lowered from Category totals to Balance only, warning shown) scrolls within 1100×700",
                       account: "Travel Card", preset: .init(level: .balanceOnly)),
             editSheet("accounts-edit-sharing-joint", "Edit account: Sharing, a joint account (always Everything)", account: "Rainy Day Saver"),
             editSheet("accounts-edit-sharing-hidden_blocked", "Edit account: Sharing, Hidden refused for an account a property needs",

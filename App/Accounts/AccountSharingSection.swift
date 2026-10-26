@@ -139,7 +139,8 @@ struct AccountSharingSection: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    if state.isConfirmed {
+                    // Only when something moves zone (a lower level that keeps the records private moves none).
+                    if state.isConfirmed, preview.affectedCount > 0 {
                         Text(SharingCopy.moves(count: preview.affectedCount)).figureText()
                     }
                     if preview.isLowering {

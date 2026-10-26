@@ -118,6 +118,12 @@ final class AccountSharingTests: XCTestCase {
             try SyncTurnOn.confirmOwnershipAtStart(admin: admin, db: db, now: Self.day)
             XCTAssertNil(try Account.fetchOne(db, key: joint)?.ownerPersonId)
             XCTAssertEqual(try Account.fetchOne(db, key: card)?.sharingLevel, .categoryTotals)
+
+            // Never once the keys are made: only at the start.
+            try SyncTurnOn.prepareKeys(zones: [SyncZones.household], keyStore: InMemorySyncKeyStore(), db: db, now: Self.day)
+            XCTAssertThrowsError(try SyncTurnOn.confirmOwnershipAtStart(admin: admin, db: db, now: Self.day)) {
+                XCTAssertEqual($0 as? SyncTurnOn.TurnOnError, .wrongStage(.keysReady))
+            }
         }
     }
 
@@ -308,6 +314,93 @@ final class AccountSharingTests: XCTestCase {
         assertAuditsClean(h)
     }
 
+    /// Joint→mine with the reply of the household marker's save lost part-way: the next sync finishes the move, the
+    /// member ends up holding none of the account's records, and no readable copy reached her zone or the household.
+    func testJointToMineFinishesAfterALostHouseholdReply() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await syncEveryone(h)
+        let all = try transactionUuids(h, account: f.joint)
+        XCTAssertFalse(all.isEmpty)
+
+        try write(h.adminMac.db) { db in try SharingLevels.setOwner(.person(f.personA), level: .balanceOnly, accountId: f.joint, actor: f.admin, db: db) }
+        h.macTransport.loseReply(to: all[0], in: SyncZones.household)
+        do {
+            _ = try await h.adminMac.engine.pushPending()
+            XCTFail("the lost reply stops the push")
+        } catch SyncTransportError.networkUnavailable {}
+        try await syncEveryone(h)
+
+        XCTAssertEqual(try held(all, on: h.memberDevice), 0, "the member holds none of them")
+        XCTAssertEqual(try zones(all, on: h.adminMac), [f.privateZone])
+        for uuid in all {
+            let wire = try await h.cloud.fetch(uuid, zone: SyncZones.household)
+            let payload = try wire.map { try SyncLargePayload.payload(from: $0.wire, keys: try h.adminKeys.allKeys(zone: SyncZones.household)) }
+            XCTAssertEqual(payload?.movedTo, f.privateZone, "the household holds only a marker")
+        }
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending"), 0)
+        XCTAssertEqual(try read(h.adminMac.db) { db in try SyncZoneMoves.unfinished(db: db) }, [])
+        assertAuditsClean(h)
+    }
+
+    /// The owner change made on the admin's second Mac: the first pulls it and ends settled (nothing pending, the records
+    /// in A's private zone), the member drops them, the audits stay clean.
+    func testJointToMineMadeOnTheSecondMac() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await syncEveryone(h)
+        let all = try transactionUuids(h, account: f.joint)
+
+        let adminUser = try h.uuid("appUser", f.admin.appUserId)
+        let jointUuid = try h.uuid("account", f.joint)
+        let personA2 = try XCTUnwrap(try h.localId("person", uuid: f.personAUuid, on: h.adminMac2))
+        try write(h.adminMac2.db) { db in
+            let actor = try AccessActor.load(appUserId: try XCTUnwrap(try SyncRecordStore.localId(table: "appUser", uuid: adminUser, db: db)), db: db)
+            let joint2 = try XCTUnwrap(try SyncRecordStore.localId(table: "account", uuid: jointUuid, db: db))
+            try SharingLevels.setOwner(.person(personA2), level: .balanceOnly, accountId: joint2, actor: actor, db: db)
+        }
+        try await syncEveryone(h)
+
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM account WHERE id = ? AND ownerPersonId = ? AND sharingLevel = 'balanceOnly'",
+                                 [f.joint, f.personA]), 1, "Mac 1 took the change")
+        XCTAssertEqual(try zones(all, on: h.adminMac), [f.privateZone])
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending"), 0)
+        XCTAssertEqual(try count(h.adminMac2, "SELECT COUNT(*) FROM syncPending"), 0)
+        XCTAssertEqual(try held(all, on: h.memberDevice), 0)
+        XCTAssertEqual(try held(all, on: h.adminPhone), all.count)
+        assertAuditsClean(h)
+    }
+
+    /// A member's device forging an owner change (A's account made joint, so its records would come to her) is
+    /// reverted by the admin's re-validating Mac, and her device takes the owner back.
+    func testAMembersForgedOwnerChangeIsReverted() async throws {
+        let h = try TwoPersonHousehold.make(revalidatesAccess: true)
+        let f = h.fixture
+        try await h.syncAll()
+        let accountUuid = try h.uuid("account", f.privateAccount)
+        let memberAccount = try XCTUnwrap(try h.localId("account", uuid: accountUuid, on: h.memberDevice))
+        try write(h.memberDevice.db) { db in
+            try db.execute(sql: "UPDATE account SET ownerPersonId = NULL, sharingLevel = 'everything' WHERE id = ?", arguments: [memberAccount])
+        }
+        try await h.memberDevice.engine.pushPending()
+        try await h.adminMac.engine.syncNow()
+        try await h.memberDevice.engine.pull()
+
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM account WHERE id = ? AND ownerPersonId = ? AND sharingLevel = 'balanceOnly'",
+                                 [f.privateAccount, f.personA]), 1, "the Mac keeps A's owner and level")
+        let personAOnMember = try XCTUnwrap(try h.localId("person", uuid: f.personAUuid, on: h.memberDevice))
+        XCTAssertEqual(try count(h.memberDevice, "SELECT COUNT(*) FROM account WHERE id = ? AND ownerPersonId = ? AND sharingLevel = 'balanceOnly'",
+                                 [memberAccount, personAOnMember]), 1, "her device takes them back")
+        let reverted: String? = try read(h.adminMac.db) { db in
+            try String.fetchOne(db, sql: "SELECT group_concat(area || ':' || fields, ' | ') FROM syncAccessRevert WHERE tableName = 'account'")
+        }
+        XCTAssertNotNil(reverted)
+        XCTAssertTrue(reverted?.contains("ownerPersonId") == true, reverted ?? "nothing reverted")
+        XCTAssertEqual(try held(try transactionUuids(h, account: f.privateAccount).filter { uuid in
+            try read(h.adminMac.db) { db in try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [uuid]) } == f.privateZone
+        }, on: h.memberDevice), 0, "nothing private reached her")
+    }
+
     // MARK: The sidebar's sync row
 
     func testSidebarSyncRow() {
@@ -317,7 +410,9 @@ final class AccountSharingTests: XCTestCase {
         typealias Row = SyncSidebarStatus
 
         XCTAssertNil(Row.make(isRunning: false, status: .off, progress: nil, refusal: nil), "sync off: nothing shown")
-        XCTAssertEqual(Row.make(isRunning: false, status: .off, progress: uploading, refusal: SyncTurnOnFlow.iCloudUserUnknown), .attention)
+        XCTAssertEqual(Row.make(isRunning: false, status: .off, progress: uploading, refusal: SyncTurnOnFlow.differentICloudUserAtLaunch), .attention)
+        XCTAssertEqual(Row.make(isRunning: false, status: .off, progress: uploading, refusal: SyncTurnOnFlow.iCloudUserUnknown), .paused,
+                       "offline at launch: it retries by itself")
         XCTAssertEqual(Row.make(isRunning: true, status: .syncing(.pushing), progress: uploading, refusal: nil), .syncing(sent: 1_248, total: 3_006))
         XCTAssertEqual(Row.make(isRunning: true, status: .idle(lastSync: now), progress: uploading, refusal: nil), .syncing(sent: 1_248, total: 3_006),
                        "the first upload between pushes is still syncing")

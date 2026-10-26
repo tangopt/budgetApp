@@ -15,8 +15,9 @@ public enum SyncSidebarStatus: Equatable, Sendable {
 
     /// The row for the real sync's state; nil hides it.
     public static func make(isRunning: Bool, status: SyncStatus, progress: SyncTurnOn.Progress?, refusal: String?) -> SyncSidebarStatus? {
-        // Turned on, but this launch can't sync (another iCloud user, say).
-        if refusal != nil { return .attention }
+        // Turned on, but this launch can't sync: waiting for iCloud to say who is signed in (offline at launch, retried by
+        // itself) is a pause; anything else (another iCloud user, a build that can't sync) needs the person.
+        if let refusal { return refusal == SyncTurnOnFlow.iCloudUserUnknown ? .paused : .attention }
         guard isRunning else { return nil }
         let upload = progress.flatMap { $0.stage == .uploading && $0.total > 0 ? $0 : nil }
         switch status {

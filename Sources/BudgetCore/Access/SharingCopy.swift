@@ -66,10 +66,10 @@ public enum SharingCopy {
     // MARK: Settings ▸ Sharing (Mac)
 
     public static let paneTitle = "Sharing"
-    public static let setupExplanation = "Before anything is shared, say who owns each account. You do this once. Afterwards each owner chooses how much of their accounts the other person sees, one account at a time."
+    public static let setupExplanation = "Each account's owner and how much of it the other person sees are set in the account itself, on the Mac. Until then, your accounts start shared as balance only and property accounts in full when sync is turned on."
     public static let setOwnersButton = "Set owners…"
     /// A member before the admin has saved the ownership sheet.
-    public static let waitingForOwners = "The admin hasn't said who owns each account yet. Once they have, your accounts and their levels show here."
+    public static let waitingForOwners = "The admin hasn't turned on sharing yet. Once they have, your accounts and their levels show here; each account's sharing is set in the account itself."
     public static let myAccounts = "My accounts"
     public static let myAccountsNote = "How much of each of your accounts the other person sees."
     public static let noOwnAccounts = "You don't own any accounts in Mango yet."

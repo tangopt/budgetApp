@@ -385,11 +385,13 @@ public enum SyncTurnOn {
 
     /// The upload's start (sync-ui, 2026-10-26: the sheet no longer asks who owns each account): once backed up, the
     /// admin confirms ownership with the defaults when it isn't confirmed yet (`SharingSetup.confirmDefaults`; owners and
-    /// levels already set are kept), and the stage becomes `ownershipConfirmed`. Refuses before the backup and for
-    /// anyone but the household's admin; nothing is written then.
+    /// levels already set are kept), and the stage becomes `ownershipConfirmed`. Refuses before the backup, once the keys
+    /// are made or the upload began (only `backedUp` and `ownershipConfirmed` take it), and for anyone but the
+    /// household's admin; nothing is written then.
     public static func confirmOwnershipAtStart(admin: AccessActor, db: Database, now: Date) throws {
         let current = try stage(db: db)
-        guard current >= .backedUp else { throw TurnOnError.wrongStage(current) }
+        // Never once the keys are made or the upload began: only at the start.
+        guard current == .backedUp || current == .ownershipConfirmed else { throw TurnOnError.wrongStage(current) }
         guard admin.isAdmin, try AccessActor.admin(db: db).appUserId == admin.appUserId else { throw SharingError.notAdmin }
         try SharingSetup.confirmDefaults(admin: admin, db: db, now: now)
         try markOwnershipConfirmed(db: db, now: now)
