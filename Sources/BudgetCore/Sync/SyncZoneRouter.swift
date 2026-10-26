@@ -18,6 +18,10 @@ public enum SyncZones {
 
     static func isPrivate(_ zone: String) -> Bool { personUuid(ofPrivateZone: zone) != nil }
 
+    /// Built-in document kinds (`document.kind` raw values) whose library area is Property: a document of one of these
+    /// kinds (or of a custom kind whose area is `property`) is household even when nothing links it (step 7a).
+    static let propertyDocumentKinds: Set<String> = Set(DocumentKind.allCases.filter { ImportNaming.area(of: $0) == "Property" }.map(\.rawValue))
+
     /// Where a household record may name an account below Everything that isn't Hidden (`table.column` to
     /// the levels it may at): the summaries the level allows, its property-money transactions (§10), its
     /// transfer category, its property link and an evidence requirement's exclusion list. Any other
@@ -103,7 +107,9 @@ public enum SyncZoneRouterError: Error, Equatable {
 ///    References into two people's private zones are refused (`spansPrivateZones`).
 /// 5. A **document** takes the most private zone among its referrers (`documentReferrers`; a run file by its
 ///    run), `household` when none is private, the admin's private zone when only shared runs' files name it
-///    (two people's zones: refused). Its `documentFile` follows the document.
+///    (two people's zones: refused). Its `documentFile` follows the document. With no referrer at all (step 7a):
+///    `household` for a property document (a built-in kind whose area is Property, or a custom kind whose area is
+///    `property`), else the private zone of the person who inserted it (its insert clock's writer), else the admin's.
 /// 6. An **import run** that touched an account below Everything (a batch on it, or a change naming it,
 ///    its transactions or its batches) is P, summary and all; two owners: refused.
 /// 7. An **import change** goes to P of the account its recorded row names (directly, or through a
@@ -384,7 +390,7 @@ public final class SyncZoneRouter {
     /// Rule 5: the most private zone among the document's referrers. An import run file counts by its run:
     /// private when the run is; a file of a shared run places nothing by itself, so a document known only
     /// from shared runs' files can't be told apart and goes to the admin's private zone. No referrer at all:
-    /// `household`. Two people's zones: refused.
+    /// `unlinkedPlacement`. Two people's zones: refused.
     private func documentPlacement(_ document: Int64, ignoring: Set<String>) throws -> ZoneAssignment {
         let inner = ignoring.union(["document"])
         var zones: Set<String> = []
@@ -405,7 +411,34 @@ public final class SyncZoneRouter {
         guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: "document", localId: document) }
         if let zone = zones.first { return ZoneAssignment(zone: zone) }
         if sharedRunFiles, !placedShared { return ZoneAssignment(zone: try adminZone()) }
-        return .household
+        if placedShared { return .household }
+        return try unlinkedPlacement(document)
+    }
+
+    /// A document nothing links (step 7a, spec 2026-10-26: documents not linked to any record stay private to their
+    /// owner unless they are property documents): `household` for a property document; else the private zone of the
+    /// person whose app user inserted it (the insert clock's writer); else the admin's.
+    private func unlinkedPlacement(_ document: Int64) throws -> ZoneAssignment {
+        guard let row = try Row.fetchOne(db.cachedStatement(sql: """
+            SELECT d.kind, d.customKindId, k.area,
+                   (SELECT a.personId FROM syncFieldClock c
+                    JOIN syncRecord u ON u.tableName = 'appUser' AND u.uuid = c.modifiedBy
+                    JOIN appUser a ON a.id = u.localId
+                    WHERE c.tableName = 'document' AND c.localId = d.id AND c.field = ?) AS inserterPerson
+            FROM document d LEFT JOIN customDocumentKind k ON k.id = d.customKindId
+            WHERE d.id = ?
+            """), arguments: [SyncMerge.insertClock, document]) else { return ZoneAssignment(zone: try adminZone()) }
+        let isProperty: Bool
+        if (row["customKindId"] as Int64?) != nil {
+            isProperty = (row["area"] as String?) == DocumentArea.property.rawValue
+        } else {
+            isProperty = (row["kind"] as String?).map(SyncZones.propertyDocumentKinds.contains) ?? false
+        }
+        if isProperty { return .household }
+        if let person: Int64 = row["inserterPerson"], let uuid = personUuids[person] {
+            return ZoneAssignment(zone: SyncZones.privateZone(personUuid: uuid))
+        }
+        return ZoneAssignment(zone: try adminZone())
     }
 
     /// Rule 6: the private zone of the accounts below Everything the run touched, nil when none.

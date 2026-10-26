@@ -52,6 +52,9 @@ public struct SyncZoneGuard {
     private let companions: [String: String]
     /// Records that were saved to the household (`syncPresence`): the only ones a household marker may name.
     private let inHousehold: Set<String>
+    /// Documents nothing links that aren't property documents (step 7a), by UUID, to their inserter's private zone
+    /// ("private" when it can't be named): never household.
+    private let unlinkedDocuments: [String: String]
 
     private static let uuidPattern = try! NSRegularExpression(
         pattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", options: [.caseInsensitive])
@@ -120,6 +123,35 @@ public struct SyncZoneGuard {
         privateRecords = records
         companions = Dictionary(stubs.keys.map { (SyncZoneRouter.companionRecordName(accountUuid: $0), $0) }, uniquingKeysWith: { a, _ in a })
         inHousehold = Set(try String.fetchAll(db, sql: "SELECT uuid FROM syncPresence WHERE zone = ?", arguments: [SyncZones.household]))
+        unlinkedDocuments = try Self.unlinkedDocuments(db: db, personUuid: personUuid)
+    }
+
+    /// Step 7a: a document no row of the schema's document references names, whose kind (custom kind: its area) isn't
+    /// Property, by UUID, to the private zone of the person whose app user inserted it ("private" when unknown).
+    private static func unlinkedDocuments(db: Database, personUuid: [Int64: String]) throws -> [String: String] {
+        var referenced: [String] = []
+        for table in SyncSchema.tables {
+            for (column, target) in table.foreignKeys.merging(SyncSchema.logicalReferences(of: table.name), uniquingKeysWith: { a, _ in a })
+            where target == "document" {
+                referenced.append("SELECT 1 FROM \(SyncChangeTracker.quoted(table.name)) r WHERE r.\(SyncChangeTracker.quoted(column)) = d.id")
+            }
+        }
+        let propertyKinds = SyncZones.propertyDocumentKinds.sorted().map { "'\($0)'" }.joined(separator: ",")
+        var result: [String: String] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT s.uuid, (SELECT a.personId FROM syncFieldClock c
+                            JOIN syncRecord u ON u.tableName = 'appUser' AND u.uuid = c.modifiedBy
+                            JOIN appUser a ON a.id = u.localId
+                            WHERE c.tableName = 'document' AND c.localId = d.id AND c.field = ?) AS inserterPerson
+            FROM document d JOIN syncRecord s ON s.tableName = 'document' AND s.localId = d.id
+            LEFT JOIN customDocumentKind k ON k.id = d.customKindId
+            WHERE NOT (CASE WHEN d.customKindId IS NOT NULL THEN COALESCE(k.area = ?, 0) ELSE COALESCE(d.kind IN (\(propertyKinds)), 0) END)
+            \(referenced.map { "AND NOT EXISTS (\($0))" }.joined(separator: "\n"))
+            """, arguments: [SyncMerge.insertClock, DocumentArea.property.rawValue]) {
+            let zone = (row["inserterPerson"] as Int64?).flatMap { personUuid[$0] }.map(SyncZones.privateZone(personUuid:))
+            result[row["uuid"]] = zone ?? "private"
+        }
+        return result
     }
 
     /// What a push does with a chunk: send it, or stop sending to the zones named (Task 5 logs each violation
@@ -153,7 +185,8 @@ public struct SyncZoneGuard {
 
     /// Throws the first `Violation`:
     /// - a household payload that is a private record, an `accountDetails` record, not a synced record type,
-    ///   a stub account carrying a column it leaves out (`SyncZoneRouter.privateAccountColumns`), or whose
+    ///   a stub account carrying a column it leaves out (`SyncZoneRouter.privateAccountColumns`), a document nothing
+///   links that isn't a property document (step 7a), or whose
     ///   fields (or batch tag, redirect, deleted references) contain a private record's UUID, a stub account's
     ///   UUID outside `SyncZones.stubReferences`, or an account's private details;
     /// - a payload in a zone that is neither `household` nor a person's private zone;
@@ -247,6 +280,9 @@ public struct SyncZoneGuard {
 
         if let zone = privateRecords[payload.recordName] { throw violation(zone, "a private record") }
         if payload.recordType == "importWaitingFile" { throw violation("private", "a kept file, which is never shared") }
+        if payload.recordType == "document", let zone = unlinkedDocuments[payload.recordName] {
+            throw violation(zone, "a document linked to nothing that isn't a property document")
+        }
         if payload.recordType == "account", let stub = stubAccounts[payload.recordName],
            let carried = SyncZoneRouter.privateAccountColumns.first(where: { payload.fields[$0] != nil }) {
             throw violation(stub.zone ?? "private", "carries \(carried), which stays private")

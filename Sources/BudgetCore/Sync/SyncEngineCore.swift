@@ -612,6 +612,9 @@ public actor SyncEngineCore {
             guard try SharingSetup.isConfirmed(db: db) else { return }
             let owner = try viewerPerson.flatMap { try SyncRecordStore.localId(table: "person", uuid: $0, db: db) }
             try SyncZoneMoves.reconcile(owner: owner, zones: zoneSet, db: db, now: reconcileTime)
+            // Step 7a: anything else placement reads changed (a link, a pin, a property category, a document's kind):
+            // every record placed differently now is queued, so this push moves it. One query when nothing changed.
+            try SyncPlacementSweep.run(zones: zoneSet, db: db, now: reconcileTime)
         }
         let busy = try await db.read { db in
             try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil

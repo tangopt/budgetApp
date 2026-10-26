@@ -733,6 +733,9 @@ extension SyncEngineCore {
         for payload in saves where SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil {
             if let reference = payload.documentFile {
                 try SyncDocumentFile.setReference(reference, uuid: payload.recordName, db: db, now: now)
+            } else if payload.movedTo != nil, try SyncFileTables.row(uuid: payload.recordName, db: db) == nil {
+                // A move marker took the row out of view here (a zone this device doesn't follow): its file reference goes too.
+                try SyncDocumentFile.setReference(nil, uuid: payload.recordName, db: db, now: now)
             }
         }
         // Only once the row is gone here (a document linked by another record is never deleted, §5.3).
