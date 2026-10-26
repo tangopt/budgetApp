@@ -11,10 +11,14 @@ import os
 /// - **Only what the merge would take** from the incoming side (`SyncMerge.remoteTakes`: a value that differs
 ///   from the Mac's and that wins), each field by the writer of its own clock (`clock.by`) and the payload's
 ///   `origin`, field by field, as `AccessAreaMap` and `AccessPolicy.allows` decide (an owner's say included).
+///   Columns a copy leaves out (`omittedFields`) that this device would clear count as set to null by its sender,
+///   unless the Mac's own placement of the record leaves them out too (`revertsOfClears`).
 /// - **Whose changes:** only other users'. The Mac's own user (its `syncWriter`, else the household's admin) is
 ///   never judged again: the ownership sheet's writes, read after ownership was confirmed, would be "denied".
 ///   A field with no clock, or a clock without a writer dated before ownership was confirmed, dates from
-///   before tracking and counts as the household's; a writerless clock after that is judged as nobody's.
+///   before tracking and counts as the household's; a writerless clock after that is judged as nobody's (the Mac's
+///   own writes are never writerless: everything it writes outside `ActorWrite.perform` takes its default writer,
+///   `ActorWrite.useDefaultWriter`).
 /// - **Origins:** the payload's (never the Mac's `syncRecord.origin`). An `.import` origin counts only when the
 ///   record comes with an import batch known here (`importRunUuid` of a batch this device holds, or of a run
 ///   it has): otherwise it is judged as a hand edit.
@@ -22,7 +26,8 @@ import os
 ///   the Mac's value wins on every device after the next round; a new record without permission is not written,
 ///   its delete is queued and a tombstone keeps it from coming back. Nothing a filed year reads moves on the Mac
 ///   (the Mac's values stay), and `FiledYearSyncCheck` still judges the apply as a whole.
-/// - **Logged** in `syncAccessRevert` (`recentReverts`: "Reverted a change by B: no permission for Property");
+/// - **Logged** in `syncAccessRevert` (`recentReverts`: "Reverted a change by B: no permission for Property", or
+///   "…: no permission: only the owner can change this");
 ///   the system log line names a table and an area, never a person or a value.
 /// - **Limit (step 6):** deletions carry no writer (a CloudKit delete has no fields), so they can't be judged:
 ///   they apply, and the Mac logs each one it applies while re-validating (step 7 attributes them).
@@ -33,12 +38,27 @@ public enum AccessRevalidation {
         case revert(fields: [String], area: AccessArea, writerAppUserUuid: String?)
     }
 
-    /// One writer's fields reverted for one area.
+    /// Why a change was reverted.
+    enum Reason: String, Equatable {
+        /// The writer lacks Edit in the revert's area.
+        case area
+        /// Only the record's owner may make it (an account's level, a person's own sharing).
+        case ownerOnly
+        /// Nobody may (a joint account's level, an owner after set-up, a table no rule knows).
+        case nobody
+    }
+
+    /// One writer's fields reverted for one area and reason.
     struct Revert: Equatable {
         var fields: [String]
         var area: AccessArea
         var writer: String?
+        var reason: Reason = .area
     }
+
+    /// What `syncAccessRevert.area` holds for the reasons that aren't an area.
+    static let ownerOnlyKey = "ownerOnly"
+    static let nobodyKey = "denied"
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -84,6 +104,8 @@ public enum AccessRevalidation {
     static func mayNeedJudging(_ payload: SyncPayload, selfUser: String?) -> Bool {
         guard let selfUser else { return true }
         if payload.clocks.values.contains(where: { $0.by != selfUser }) { return true }
+        // A copy leaving columns out clears them as its sender's change.
+        if !(payload.omittedFields ?? []).isEmpty, payload.modifiedBy != selfUser { return true }
         return payload.clocks[SyncMerge.insertClock] == nil && payload.modifiedBy != nil && payload.modifiedBy != selfUser
     }
 
@@ -98,7 +120,8 @@ public enum AccessRevalidation {
             guard let actor = try writerActor(writer, clock: clock, selfUser: selfUser, db: db) else { return [] }
             let decision = try decide(table: table, origin: origin, change: .insert, fields: Set(payload.fields.keys), row: payload.fields, db: db)
             if try allows(actor, decision, db: db) { return [] }
-            return [Revert(fields: payload.fields.keys.sorted(), area: try failingArea(actor, decision, table: table, db: db), writer: writer)]
+            let (area, reason) = try failure(actor, decision, table: table, db: db)
+            return [Revert(fields: payload.fields.keys.sorted(), area: area, writer: writer, reason: reason)]
         }
         guard let localId = try SyncRecordStore.localId(table: table, uuid: payload.recordName, db: db) else { return [] }
         let taken = try SyncMerge.remoteTakes(payload, local: local, table: table, localId: localId, db: db)
@@ -110,12 +133,41 @@ public enum AccessRevalidation {
             guard let actor = try writerActor(clock?.by, clock: clock, selfUser: selfUser, db: db) else { continue }
             let decision = try decide(table: table, origin: origin, change: .update(before: local), fields: [field], row: after, db: db)
             if try allows(actor, decision, db: db) { continue }
-            let area = try failingArea(actor, decision, table: table, db: db)
-            if let index = reverts.firstIndex(where: { $0.writer == clock?.by && $0.area == area }) {
-                reverts[index].fields.append(field)
-            } else {
-                reverts.append(Revert(fields: [field], area: area, writer: clock?.by))
-            }
+            let (area, reason) = try failure(actor, decision, table: table, db: db)
+            add(field, writer: clock?.by, area: area, reason: reason, to: &reverts)
+        }
+        return reverts
+    }
+
+    private static func add(_ field: String, writer: String?, area: AccessArea, reason: Reason, to reverts: inout [Revert]) {
+        if let index = reverts.firstIndex(where: { $0.writer == writer && $0.area == area && $0.reason == reason }) {
+            reverts[index].fields.append(field)
+        } else {
+            reverts.append(Revert(fields: [field], area: area, writer: writer, reason: reason))
+        }
+    }
+
+    /// Columns an incoming copy leaves out that this device would clear (`SyncTranslator.leftOut`), judged once the
+    /// merge is in: a column the Mac's own placement of the record leaves out too is cleared (a level lowered, a
+    /// private batch); any other clear is a change by the copy's sender, judged as setting the column to null. Returns
+    /// the reverts (those columns keep the Mac's value).
+    static func revertsOfClears(_ cleared: [String], payload: SyncPayload, local: [String: SyncValue], table: String, localId: Int64,
+                                selfUser: String?, db: Database) throws -> [Revert] {
+        let candidates = cleared.filter { (local[$0] ?? .null) != .null }
+        guard !candidates.isEmpty else { return [] }
+        let placed = Set((try? SyncZoneRouter(db: db).assignment(table: table, localId: localId))?.omittedFields ?? [])
+        let origin = try judgedOrigin(payload, db: db)
+        var reverts: [Revert] = []
+        for field in candidates where !placed.contains(field) {
+            let writer = payload.clocks[field]?.by ?? payload.modifiedBy
+            let clock = payload.clocks[field] ?? payload.modifiedAt.map { SyncClock(at: $0, by: writer) }
+            guard let actor = try writerActor(writer, clock: clock, selfUser: selfUser, db: db) else { continue }
+            var after = local.merging(payload.fields) { $1 }
+            after[field] = .null
+            let decision = try decide(table: table, origin: origin, change: .update(before: local), fields: [field], row: after, db: db)
+            if try allows(actor, decision, db: db) { continue }
+            let (area, reason) = try failure(actor, decision, table: table, db: db)
+            add(field, writer: writer, area: area, reason: reason, to: &reverts)
         }
         return reverts
     }
@@ -167,13 +219,15 @@ public enum AccessRevalidation {
         return try AccessPolicy.allows(actor, decision, db: db)
     }
 
-    /// The first area of `decision` the writer lacks; else (an owner's say, nobody's) the table's own area.
-    private static func failingArea(_ actor: AccessActor?, _ decision: AccessDecision, table: String, db: Database) throws -> AccessArea {
+    /// Why `decision` fails for the writer: the first area they lack; else an owner's say they don't have, or nobody's,
+    /// under the table's own area.
+    private static func failure(_ actor: AccessActor?, _ decision: AccessDecision, table: String, db: Database) throws -> (AccessArea, Reason) {
         for area in decision.areas {
-            guard let actor else { return area }
-            if try !AccessPolicy.can(actor, .edit, area, db: db) { return area }
+            guard let actor else { return (area, .area) }
+            if try !AccessPolicy.can(actor, .edit, area, db: db) { return (area, .area) }
         }
-        return AccessAreaMap.tableArea(table) ?? decision.areas.first ?? .budgetAndAccounts
+        let area = AccessAreaMap.tableArea(table) ?? decision.areas.first ?? .budgetAndAccounts
+        return (area, decision.containsNobody ? .nobody : .ownerOnly)
     }
 
     // MARK: Reverting
@@ -204,8 +258,25 @@ public enum AccessRevalidation {
         for revert in reverts {
             try db.execute(sql: """
                 INSERT INTO syncAccessRevert(at, writerAppUserUuid, area, tableName, uuid, fields) VALUES (?, ?, ?, ?, ?, ?)
-                """, arguments: [now, revert.writer, revert.area.storageKey, table, uuid, revert.fields.sorted().joined(separator: ",")])
-            log.notice("Reverted an incoming change to a \(table, privacy: .public) record: no permission for \(revert.area.title, privacy: .public)")
+                """, arguments: [now, revert.writer, storedReason(revert), table, uuid, revert.fields.sorted().joined(separator: ",")])
+            log.notice("Reverted an incoming change to a \(table, privacy: .public) record: \(reasonText(storedReason(revert)), privacy: .public)")
+        }
+    }
+
+    private static func storedReason(_ revert: Revert) -> String {
+        switch revert.reason {
+        case .area: return revert.area.storageKey
+        case .ownerOnly: return ownerOnlyKey
+        case .nobody: return nobodyKey
+        }
+    }
+
+    /// The log's reason for a stored `syncAccessRevert.area`.
+    static func reasonText(_ stored: String) -> String {
+        switch stored {
+        case ownerOnlyKey: return "no permission: only the owner can change this"
+        case nobodyKey: return "no permission: nobody can change this"
+        default: return "no permission for \(AccessArea(storageKey: stored)?.title ?? "this area")"
         }
     }
 
@@ -224,8 +295,7 @@ public enum AccessRevalidation {
                 guard let id = try SyncRecordStore.localId(table: "appUser", uuid: uuid, db: db) else { return nil }
                 return try String.fetchOne(db, sql: "SELECT displayName FROM appUser WHERE id = ?", arguments: [id])
             } ?? unknownWriterName
-            let area = AccessArea(storageKey: row["area"])?.title ?? "this area"
-            return "Reverted a change by \(name): no permission for \(area)"
+            return "Reverted a change by \(name): \(reasonText(row["area"]))"
         }
     }
 }

@@ -233,7 +233,8 @@ final class SyncZoneRouterTests: XCTestCase {
         let queue = try TestDatabase.demo()
         try queue.write { db in
             try prepareDemo(db)
-            let started = Date()
+            // CPU time of this thread (the write runs here), so a busy machine doesn't make it flake.
+            let started = ThreadCPUTime.seconds()
             let router = try SyncZoneRouter(db: db)
             var routed = 0
             var zones: [String: Int] = [:]
@@ -243,7 +244,7 @@ final class SyncZoneRouterTests: XCTestCase {
                     routed += 1
                 }
             }
-            let seconds = Date().timeIntervalSince(started)
+            let seconds = ThreadCPUTime.seconds() - started
             print("SyncZoneRouterTests: routed \(routed) demo records in \(String(format: "%.3f", seconds)) s")
             XCTAssertLessThan(seconds, 1)
             XCTAssertGreaterThan(routed, 1_000)

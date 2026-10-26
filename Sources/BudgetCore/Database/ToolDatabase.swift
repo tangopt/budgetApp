@@ -15,7 +15,12 @@ public enum ToolDatabase {
     }
 
     /// Opens the database at `path` (created when missing, unless `configuration` is read only).
+    /// A writable one writes as the household's admin outside `ActorWrite.perform` (`ActorWrite.useDefaultWriter`).
     public static func open(path: String, configuration: Configuration = Configuration()) throws -> DatabaseQueue {
-        try DatabaseQueue(path: path, configuration: self.configuration(configuration))
+        let queue = try DatabaseQueue(path: path, configuration: self.configuration(configuration))
+        if !configuration.readonly {
+            try queue.write { db in try ActorWrite.useDefaultWriter(appUserId: nil, db: db) }
+        }
+        return queue
     }
 }

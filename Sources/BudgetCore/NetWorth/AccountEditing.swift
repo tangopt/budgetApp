@@ -29,16 +29,18 @@ public enum AccountEditing {
     /// Count toward net worth (`Account.includeInNetWorth`).
     /// `owner`: who adds it. Once ownership is confirmed (`SharingSetup.isConfirmed`) the account is theirs,
     /// at their default level (`SharingDefaults`: Balance only). nil, or before the ownership sheet: joint at
-    /// Everything (an account added as joint, the tools, and accounts the sheet will assign).
+    /// Everything (an account added as joint, the tools, and accounts the sheet will assign). `joint`: added as joint
+    /// (both people's) whoever adds it.
     @discardableResult
     public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode = .imported, openingBalanceEntered: Int?, asOf: Date,
-                           details: AccountDetails = AccountDetails(), includeInNetWorth: Bool = true, owner: AccessActor? = nil) throws -> Account {
+                           details: AccountDetails = AccountDetails(), includeInNetWorth: Bool = true, owner: AccessActor? = nil,
+                           joint: Bool = false) throws -> Account {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
         let details = try details.normalized()
         var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
                               sortOrder: try AccountOrdering.orderForNewAccount(db: db), includeInNetWorth: includeInNetWorth)
         account.apply(details)
-        if let owner, try SharingSetup.isConfirmed(db: db) {
+        if !joint, let owner, try SharingSetup.isConfirmed(db: db) {
             account.ownerPersonId = owner.personId
             account.sharingLevel = SharingDefaults.level(ownerPersonId: owner.personId, isPropertyLinked: false)
         }

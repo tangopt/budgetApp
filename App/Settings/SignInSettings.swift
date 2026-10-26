@@ -140,14 +140,14 @@ final class SignInSettingsModel: ObservableObject {
     // Each of these runs as the person signed in: the store's "caller verified the user" rests on that.
 
     func changePassword(_ password: String) async throws {
-        guard let id = me?.id else { throw AppUserStoreError.noSuchUser }
-        try await session.bookkeeping { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+        guard me?.id != nil else { throw AppUserStoreError.noSuchUser }
+        try await session.changeOwnPassword(password)
     }
 
     func regenerateRecoveryKey() async {
         guard let id = me?.id else { return }
         await run {
-            let key = try await self.session.bookkeeping { try AppUserStore.regenerateRecoveryKey($0, appUserId: id) }
+            let key = try await self.session.regenerateOwnRecoveryKey()
             self.sheet = .recoveryKey(key: key, owner: nil)
         }
     }

@@ -246,6 +246,8 @@ final class ImportCenterModel: ObservableObject {
     /// Applies the review as one undoable run, confirmed by whoever is signed in now — not
     /// whoever opened the review (the lock may have changed hands).
     func confirm() {
+        // Nobody signed in (the lock came down meanwhile): nothing is imported (never as the admin).
+        guard SignedInActor.state != .signedOut else { return }
         session.confirm(confirmedBy: currentAppUserId())
     }
 
@@ -451,7 +453,8 @@ final class ImportCenterModel: ObservableObject {
     /// nothing when it was undone; throws when the run is gone or already undone.
     func undo(_ runId: Int64) async throws -> [ImportUndoConflict] {
         // As the signed-in user (step 6: Edit on Import).
-        try await session.undo(runId, undoneBy: currentAppUserId())
+        guard SignedInActor.state != .signedOut else { throw SignedOutWrite() }
+        return try await session.undo(runId, undoneBy: currentAppUserId())
     }
 }
 

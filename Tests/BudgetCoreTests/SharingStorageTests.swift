@@ -187,7 +187,8 @@ final class SharingStorageTests: XCTestCase {
         try reopened.dbQueue.read { db in
             let writer = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT appUserUuid, origin FROM syncWriter WHERE id = 1"))
             XCTAssertEqual(writer["origin"] as String?, nil)
-            XCTAssertEqual(writer["appUserUuid"] as String?, "u1")
+            // And the writer is the database's default again (Task 9 fix round 1: the admin; here, with no app users, none).
+            XCTAssertEqual(writer["appUserUuid"] as String?, nil)
         }
     }
 

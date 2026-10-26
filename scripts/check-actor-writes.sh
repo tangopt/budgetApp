@@ -8,10 +8,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 if ! found="$(find App -name '*.swift' -print0 | sort -z | xargs -0 perl -ne '
-    # A write call whose first argument is not an area (`.write(.property)`, `.write(area, …)`), and not a file write
-    # or a view model calling its own (actor) write helper (`self.write(…)`).
+    # A write call whose first argument is not an area (`.write(.property)`, `.write(area, …)`, the Tax screen
+    # `self.write(selectedTaxArea, …)`), and not a file write.
     if ($ARGV !~ m{^App/(AppEnvironment[.]swift$|Snapshots/|Auth/|Sync/)} && $_ !~ m{^\s*//}
-        && /(?<!\bself)[.](write|writeWithoutTransaction|barrierWriteWithoutTransaction|unsafeReentrantWrite|asyncWrite|inDatabase)\s*([{]|[(](?!\s*([.][a-zA-Z]|area\b|to:|contentsOf:|Data[(])))/) {
+        && /[.](write|writeWithoutTransaction|barrierWriteWithoutTransaction|unsafeReentrantWrite|asyncWrite|inDatabase|inTransaction)\s*([{]|[(](?!\s*([.][a-zA-Z]|area\b|selectedTaxArea\b|to:|contentsOf:|Data[(])))/) {
         print "$ARGV:$.: $_";
     }
     close ARGV if eof;')"; then

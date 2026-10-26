@@ -322,9 +322,10 @@ final class AccountSummaryBuilderTests: XCTestCase {
                 ON CONFLICT(personId) DO UPDATE SET ownershipConfirmedAt = excluded.ownershipConfirmedAt
                 """, arguments: [owner, Date(timeIntervalSince1970: 0)])
 
-            let started = Date()
+            // CPU time of this thread (the write runs here), so a busy machine doesn't make it flake.
+            let started = ThreadCPUTime.seconds()
             let outcome = try AccountSummaryBuilder.rebuild(ownerPersonId: owner, db: db, today: today)
-            let seconds = Date().timeIntervalSince(started)
+            let seconds = ThreadCPUTime.seconds() - started
             print("AccountSummaryBuilderTests: rebuilt \(outcome.inserted) demo summaries in \(String(format: "%.3f", seconds)) s")
             XCTAssertGreaterThan(outcome.inserted, 0)
             XCTAssertLessThan(seconds, 0.5)

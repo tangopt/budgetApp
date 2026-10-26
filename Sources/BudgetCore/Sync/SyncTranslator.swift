@@ -469,13 +469,16 @@ public enum SyncTranslator {
         // Step 6 Task 9: on the Mac, what the writer had no permission for is reverted (`AccessRevalidation`).
         var reverts: [AccessRevalidation.Revert] = []
         var selfUser: String?
+        // The record as this device held it, when what came in is judged (its clears too, after the merge).
+        var judgedLocal: [String: SyncValue]?
         if AccessRevalidation.isOn(db: db), !redirected {
             selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
             if !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser) {
                 // Only the Mac's own user wrote it: nothing to judge.
             } else if let localId = existing {
-                let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields
-                reverts = try AccessRevalidation.reverts(for: payload, local: local ?? [:], selfUser: selfUser, db: db)
+                let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields ?? [:]
+                judgedLocal = local
+                reverts = try AccessRevalidation.reverts(for: payload, local: local, selfUser: selfUser, db: db)
                 for field in reverts.flatMap(\.fields) { values[field] = nil }
             } else if let revert = try AccessRevalidation.reverts(for: payload, local: nil, selfUser: selfUser, db: db).first {
                 try AccessRevalidation.remove(revert, payload: payload, selfUser: selfUser, db: db, now: now)
@@ -491,6 +494,14 @@ public enum SyncTranslator {
             if let localId = existing {
                 result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
                                              adopted: redirected, now: now)
+                if let judgedLocal, !cleared.isEmpty {
+                    // A clear the Mac's own placement doesn't explain is a change, judged like the others.
+                    let refused = try AccessRevalidation.revertsOfClears(cleared, payload: payload, local: judgedLocal, table: schema.name,
+                                                                        localId: localId, selfUser: selfUser, db: db)
+                    let kept = Set(refused.flatMap(\.fields))
+                    cleared.removeAll { kept.contains($0) }
+                    reverts += refused
+                }
                 if !reverts.isEmpty {
                     try AccessRevalidation.restamp(reverts, payload: payload, table: schema.name, localId: localId, selfUser: selfUser, db: db, now: now)
                 }

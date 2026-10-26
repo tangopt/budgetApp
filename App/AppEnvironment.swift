@@ -15,18 +15,43 @@ struct LaunchBackupError: LocalizedError {
 /// Who the app's data writes are made as (step 6 Task 9): the user signed in now, kept by the session (`SessionModel`)
 /// where any thread can read it.
 enum SignedInActor {
-    private static let current = OSAllocatedUnfairLock<Int64?>(initialState: nil)
+    enum State: Equatable, Sendable {
+        /// Sign-in isn't set up (no app users yet): nothing to check, nobody to stamp.
+        case notSetUp
+        /// Locked, or no session yet: the app writes nothing.
+        case signedOut
+        case signedIn(appUserId: Int64)
+    }
 
-    /// The signed-in app user's id; nil while locked or before sign-in is set up.
-    static var appUserId: Int64? {
+    private static let current = OSAllocatedUnfairLock<State>(initialState: .signedOut)
+
+    static var state: State {
         get { current.withLock { $0 } }
         set { current.withLock { $0 = newValue } }
     }
 
-    /// Their actor; nil with nobody signed in (`ActorWrite.perform(orAdmin:)` then writes as the admin, as hub jobs do).
-    static func actor(db: Database) throws -> AccessActor? {
-        try ActorWrite.actor(appUserId: appUserId, db: db)
+    /// The signed-in app user's id; nil while locked or before sign-in is set up.
+    static var appUserId: Int64? {
+        if case .signedIn(let id) = state { return id }
+        return nil
     }
+
+    /// The actor a write made now is made as: the signed-in user; nil before sign-in is set up (nothing to check).
+    /// Signed out, it throws (fix round 1 M-2: never stamped as the admin).
+    static func actor(for state: State, db: Database) throws -> AccessActor? {
+        switch state {
+        case .signedIn(let id): return try AccessActor.load(appUserId: id, db: db)
+        case .notSetUp: return nil
+        case .signedOut: throw SignedOutWrite()
+        }
+    }
+
+    static func actor(db: Database) throws -> AccessActor? { try actor(for: state, db: db) }
+}
+
+/// A data write asked for while nobody is signed in: refused, nothing written.
+struct SignedOutWrite: LocalizedError {
+    var errorDescription: String? { "Sign in to change this." }
 }
 
 /// Every data write the app makes goes through these (`scripts/check-actor-writes.sh` keeps it so): it runs as the
@@ -34,24 +59,30 @@ enum SignedInActor {
 /// and `origin` on what it changes (`ActorWrite.perform`).
 extension DatabaseWriter {
     func write<T>(_ area: AccessArea, origin: WriteOrigin = .edit, _ body: (Database) throws -> T) throws -> T {
-        try write { db in
-            try ActorWrite.perform(orAdmin: try SignedInActor.actor(db: db), area: area, origin: origin, db: db) { try body(db) }
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try write { db in
+            try ActorWrite.perform(orAdmin: try SignedInActor.actor(for: state, db: db), area: area, origin: origin, db: db) { try body(db) }
         }
     }
 
     func write<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit,
                             _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        let appUserId = SignedInActor.appUserId
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
         return try await write { db in
-            try ActorWrite.perform(orAdmin: try ActorWrite.actor(appUserId: appUserId, db: db), area: area, origin: origin, db: db) {
+            try ActorWrite.perform(orAdmin: try SignedInActor.actor(for: state, db: db), area: area, origin: origin, db: db) {
                 try body(db)
             }
         }
     }
 
-    /// The signed-in user's actor, for BudgetCore entry points that write by themselves (`EvidenceLibrary.link`).
+    /// The signed-in user's actor, for BudgetCore entry points that write by themselves (`EvidenceLibrary.link`);
+    /// throws `SignedOutWrite` when nobody is signed in.
     func signedInActor() throws -> AccessActor? {
-        try write { db in try SignedInActor.actor(db: db) }
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try write { db in try SignedInActor.actor(for: state, db: db) }
     }
 }
 

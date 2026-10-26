@@ -8,6 +8,9 @@ public enum SharingCopy {
     public static let sheetTitle = "Who owns each account?"
     public static let sheetNote = "Every account is yours unless you mark it Joint. Joint accounts are always shared in full."
     public static let jointChoice = "Joint"
+    /// Add account's choice: added as joint (both people's) rather than the person adding it.
+    public static let addJointLabel = "Joint account"
+    public static let addJointNote = "Shared by both of you, in full. Otherwise the account is yours, shown to the other person as its balance only."
 
     /// The sheet's owner picker: the admin's display name, then Joint.
     public static func ownerChoices(adminName: String) -> [String] { [adminName, jointChoice] }

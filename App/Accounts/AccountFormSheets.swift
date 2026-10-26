@@ -17,6 +17,7 @@ struct AddAccountSheet: View {
     @State private var asOf = AppClock.now
     @State private var details = AccountDetailsDraft()
     @State private var includeInNetWorth = true
+    @State private var joint = false
     /// Set when Save is pressed with invalid details: every field shows its error.
     @State private var revealErrors = false
     @State private var error: String?
@@ -59,6 +60,11 @@ struct AddAccountSheet: View {
                     }
                 }
                 NetWorthToggle(isOn: $includeInNetWorth)
+                LabeledContent(SharingCopy.addJointLabel) {
+                    Toggle(SharingCopy.addJointLabel, isOn: $joint)
+                        .labelsHidden()
+                        .sheetFieldNote(SharingCopy.addJointNote)
+                }
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
@@ -72,7 +78,7 @@ struct AddAccountSheet: View {
         }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
         finish(viewModel.addAccount(name: name, currency: currency, kind: kind, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details,
-                                      includeInNetWorth: includeInNetWorth), error: $error, dismiss: dismiss)
+                                      includeInNetWorth: includeInNetWorth, joint: joint), error: $error, dismiss: dismiss)
     }
 }
 

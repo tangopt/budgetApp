@@ -2,6 +2,7 @@
 import AppKit
 import BudgetCore
 import GRDB
+import OSLog
 
 /// How long Mango waits without input before locking (Settings ▸ Sign-in). Stored in `auth.lockTimeout`
 /// as minutes, 0 meaning Never.
@@ -78,7 +79,7 @@ final class SessionModel: ObservableObject {
 
     @Published private(set) var state: State {
         didSet {
-            SignedInActor.appUserId = currentAppUserId
+            publishWriter()
             if state == .locked && oldValue != .locked { autoPrompt.lockBegan() }
         }
     }
@@ -155,11 +156,11 @@ final class SessionModel: ObservableObject {
         self.gate = SignInGate(dbQueue: dbQueue)
         if SnapshotMode.isActive, let snapshotUser {
             state = .signedIn(snapshotUser)
-            SignedInActor.appUserId = snapshotUser.id
+            publishWriter()
             return
         }
         state = isSetUp ? .locked : .notSetUp
-        SignedInActor.appUserId = nil
+        publishWriter()
         observeSystemLocks()
         SheetCovers.shared.trackTransients()
         Task { await refreshCandidates() }
@@ -197,10 +198,38 @@ final class SessionModel: ObservableObject {
         afterSignIn = thenOfferTouchID ? .offerTouchID : nil
     }
 
-    /// Sign-in bookkeeping on the signed-in user's own credentials (their password, their recovery key): not data,
-    /// so no permission is checked (step 6 `scripts/check-actor-writes.sh` leaves App/Auth to it).
-    func bookkeeping<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await dbQueue.write(body)
+    /// Who the app's writes are made as (`SignedInActor`), and the database's default writer for what BudgetCore
+    /// writes on its own (`ActorWrite.useDefaultWriter`): the signed-in user, else the admin.
+    private func publishWriter() {
+        let id: Int64?
+        switch state {
+        case .signedIn(let user):
+            id = user.id
+            SignedInActor.state = user.id.map { .signedIn(appUserId: $0) } ?? .notSetUp
+        case .locked:
+            id = nil
+            SignedInActor.state = .signedOut
+        case .notSetUp:
+            id = nil
+            SignedInActor.state = .notSetUp
+        }
+        do {
+            try dbQueue.write { db in try ActorWrite.useDefaultWriter(appUserId: id, db: db) }
+        } catch {
+            Logger(subsystem: "com.personal.budget", category: "Auth").error("Setting the default writer failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The signed-in user's own new password (sign-in bookkeeping: their credentials aren't synced data).
+    func changeOwnPassword(_ password: String) async throws {
+        guard let id = currentAppUserId else { throw AppUserStoreError.noSuchUser }
+        try await dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+    }
+
+    /// A new recovery key for the signed-in user (sign-in bookkeeping).
+    func regenerateOwnRecoveryKey() async throws -> String {
+        guard let id = currentAppUserId else { throw AppUserStoreError.noSuchUser }
+        return try await dbQueue.write { try AppUserStore.regenerateRecoveryKey($0, appUserId: id) }
     }
 
     /// The Touch ID offer answered (turned on or not now).

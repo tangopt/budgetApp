@@ -85,10 +85,12 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails, includeInNetWorth: Bool) -> SaveOutcome {
+    /// Once ownership is confirmed the account is the signed-in user's (Balance only), unless added as `joint`.
+    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails, includeInNetWorth: Bool,
+                    joint: Bool = false) -> SaveOutcome {
         perform { db in
             let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details,
-                                                 includeInNetWorth: includeInNetWorth)
+                                                 includeInNetWorth: includeInNetWorth, owner: try SignedInActor.actor(db: db), joint: joint)
             return account.id
         } onSuccess: { [weak self] id in
             self?.selectedAccountId = id

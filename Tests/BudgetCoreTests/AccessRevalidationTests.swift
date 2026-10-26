@@ -214,7 +214,12 @@ final class AccessRevalidationTests: XCTestCase {
             let level: String? = try value(device, "SELECT sharingLevel FROM account WHERE id = ?", [try local(h, "account", h.fixture.shared, on: device)])
             XCTAssertEqual(level, SharingLevel.everything.rawValue)
         }
-        XCTAssertEqual(try reverts(h), ["Reverted a change by B: no permission for Budget & accounts"])
+        // Her device also re-placed the account's records for the lower level (stubs leaving columns out): the Mac's
+        // placement doesn't leave them out, so those clears are reverted too (the fixture's rows have no writer and
+        // postdate its ownership confirmation, so they are logged as nobody's).
+        XCTAssertEqual(try reverts(h).filter { $0.contains("by B") }, ["Reverted a change by B: no permission: only the owner can change this"])
+        let refusedLevel: String? = try value(h.adminMac, "SELECT fields FROM syncAccessRevert WHERE area = 'ownerOnly'", [])
+        XCTAssertEqual(refusedLevel, "sharingLevel")
     }
 
     func testMemberNewCategoryIsRemoved() async throws {
@@ -291,6 +296,82 @@ final class AccessRevalidationTests: XCTestCase {
         // so it is held there for attention, as any incoming change to a filed year is.
         let memberReport = try await h.memberDevice.engine.pull()
         XCTAssertEqual(memberReport.held, 1)
+    }
+
+    // MARK: Fix round 1
+
+    /// I-2: what the Mac writes outside `ActorWrite.perform` (hub jobs, BudgetCore's own writers, tools) is stamped
+    /// with its default writer, the admin, so a Mac restored from a backup that pulls those records back keeps them:
+    /// nothing reverted, nothing deleted.
+    func testRestoredMacKeepsItsOwnWritesMadeOutsidePerform() async throws {
+        let h = try await household()
+        let restored = try DatabaseQueue()
+        try h.adminMac.db.backup(to: restored)
+        let joint = h.fixture.jointTransaction
+        let category = try write(h.adminMac) { db -> String in
+            // As the app (or a tool) opens it: no writer of its own, the default one.
+            try SyncChangeTracker.setWriter(nil, db: db)
+            try ActorWrite.useDefaultWriter(appUserId: nil, db: db)
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Upkeep note' WHERE id = ?", arguments: [joint])
+            try HMRCRates.set(db: db, startYear: 2025, currencyCode: "EUR", gbpPerUnit: 0.85, source: .manual, notes: "Synthetic")
+            try db.execute(sql: "INSERT INTO category(name, type) VALUES ('Synthetic upkeep category', 'expense')")
+            return try SyncRecordStore.uuid(for: "category", localId: db.lastInsertedRowID, db: db)
+        }
+        try await h.adminMac.engine.pushPending()
+        let engine = SyncEngineCore(db: restored, transport: h.cloud, device: SyncDevice(id: "admin-mac", name: "Mac"), keyStore: h.adminKeys,
+                                    viewer: SyncViewer(personUuid: h.fixture.personAUuid), revalidatesAccess: true)
+        try await engine.pull()
+        let restoredDevice: Device = (restored, engine)
+        XCTAssertEqual(try note(h, joint, on: restoredDevice), "Upkeep note")
+        XCTAssertNotNil(try h.localId("category", uuid: category, on: restoredDevice), "its own new record stays")
+        let rates: Int? = try value(restoredDevice, "SELECT COUNT(*) FROM hmrcRate WHERE startYear = 2025", [])
+        XCTAssertEqual(rates, 1)
+        let logged: Int? = try value(restoredDevice, "SELECT COUNT(*) FROM syncAccessRevert", [])
+        XCTAssertEqual(logged, 0)
+        let deletes = try read(restoredDevice) { db in try SyncChangeTracker.pending(db: db).filter { $0.kind == .delete }.count }
+        XCTAssertEqual(deletes, 0, "no delete sent")
+    }
+
+    /// I-3: a copy that leaves a column out (`omittedFields`) clears it here only when the Mac's own placement leaves
+    /// it out too; otherwise the clear is judged as a change, and one the writer may not make keeps the Mac's value.
+    func testClearedColumnTheWriterMayNotEditIsKept() async throws {
+        let h = try await household()
+        let joint = h.fixture.jointTransaction
+        try write(h.adminMac) { db in try db.execute(sql: "UPDATE transaction_ SET note = 'Mac note' WHERE id = ?", arguments: [joint]) }
+        try await h.adminMac.engine.pushPending()
+        let member = try memberUserUuid(h)
+        let admin = try h.uuid("appUser", h.fixture.admin.appUserId)
+        try write(h.adminMac) { db in
+            let uuid = try SyncRecordStore.uuid(for: "transaction_", localId: joint, db: db)
+            var payload = try XCTUnwrap(SyncTranslator.outgoing(PendingChange(table: "transaction_", localId: joint, uuid: uuid, kind: .update), db: db))
+            // A modified client's copy: the note left out, sent by B.
+            payload.fields["note"] = nil
+            payload.clocks["note"] = nil
+            payload.omittedFields = ["note"]
+            payload.modifiedBy = member
+            payload.modifiedAt = Date()
+            _ = try AccessRevalidation.revalidating(db: db) { try SyncTranslator.apply([.save(payload)], db: db, deviceUser: admin) }
+        }
+        XCTAssertEqual(try note(h, joint, on: h.adminMac), "Mac note", "the clear was not allowed")
+        XCTAssertEqual(try reverts(h), ["Reverted a change by B: no permission for Budget & accounts"])
+    }
+
+    /// I-1: an account added after ownership is confirmed is its creator's at Balance only, unless added as joint.
+    func testNewAccountIsItsCreatorsUnlessJoint() throws {
+        let h = try TwoPersonHousehold.make()
+        let admin = h.fixture.admin
+        let (own, joint) = try write(h.adminMac) { db -> (Account, Account) in
+            try ActorWrite.perform(admin, area: .budgetAndAccounts, db: db) {
+                (try AccountEditing.add(db: db, name: "Synthetic new", currency: .gbp, kind: .cash, openingBalanceEntered: nil, asOf: Date(),
+                                        owner: admin, joint: false),
+                 try AccountEditing.add(db: db, name: "Synthetic new joint", currency: .gbp, kind: .cash, openingBalanceEntered: nil, asOf: Date(),
+                                        owner: admin, joint: true))
+            }
+        }
+        XCTAssertEqual(own.ownerPersonId, h.fixture.personA)
+        XCTAssertEqual(own.sharingLevel, .balanceOnly)
+        XCTAssertNil(joint.ownerPersonId)
+        XCTAssertEqual(joint.sharingLevel, .everything)
     }
 
     // MARK: At the source

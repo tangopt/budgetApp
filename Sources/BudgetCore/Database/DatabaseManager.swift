@@ -12,6 +12,13 @@ public final class DatabaseManager {
         } else {
             dbQueue = try DatabaseQueue(configuration: configuration)
         }
+        try useDefaultWriter()
+    }
+
+    /// Writes made outside `ActorWrite.perform` (tools, hub jobs, BudgetCore's own upkeep) are the admin's until the
+    /// app's session names its user (`ActorWrite.useDefaultWriter`).
+    private func useDefaultWriter() throws {
+        try dbQueue.write { db in try ActorWrite.useDefaultWriter(appUserId: nil, db: db) }
     }
 
     /// Tests only: runs migrations up to and including `target`.
@@ -27,6 +34,7 @@ public final class DatabaseManager {
         registerMigrations(&migrator)
         try migrator.migrate(dbQueue)
         try refreshSyncTriggers()
+        try useDefaultWriter()
     }
 
     /// The sync change-tracking triggers, matched to `SyncSchema` after every migration (so a column a
