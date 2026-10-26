@@ -147,6 +147,7 @@ final class SyncTurnOnTests: XCTestCase {
             _ = try self.write(queue) { db in try SyncTurnOn.beginUpload(admin: admin, cloudKitUserRecordName: "_user", db: db, now: self.day) }
         }
         assertThrows(.uploadNotFinished(remaining: total)) { try self.write(queue) { db in try SyncTurnOn.markDone(db: db, now: self.day) } }
+        XCTAssertFalse(try read(queue) { db in try SyncTurnOn.isUploadFinished(db: db) })
 
         // The upload.
         let cloud = FakeCloud()
@@ -154,7 +155,9 @@ final class SyncTurnOnTests: XCTestCase {
         audit.judge(with: TwoPersonHousehold.router(queue))
         try await macEngine(queue, audit, keys: keys).pushPending()
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .uploading, backupPath: second.path, total: total, sent: total))
+        XCTAssertTrue(try read(queue) { db in try SyncTurnOn.isUploadFinished(db: db) })
         try write(queue) { db in try SyncTurnOn.markDone(db: db, now: day) }
+        XCTAssertFalse(try read(queue) { db in try SyncTurnOn.isUploadFinished(db: db) }, "done: nothing more to mark")
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .done, backupPath: second.path, total: total, sent: total))
         // Done stays done.
         try write(queue) { db in

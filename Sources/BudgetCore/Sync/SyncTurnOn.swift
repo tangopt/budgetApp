@@ -422,6 +422,11 @@ public enum SyncTurnOn {
         return total
     }
 
+    /// Whether `markDone` would move the stage on now: uploading, nothing waiting to go up. Reads only.
+    public static func isUploadFinished(db: Database) throws -> Bool {
+        try stage(db: db) == .uploading && pendingCount(db: db) == 0
+    }
+
     /// Step 5: the first upload has finished (nothing pending). Refuses before the upload began and while records wait;
     /// once done it changes nothing.
     public static func markDone(db: Database, now: Date) throws {

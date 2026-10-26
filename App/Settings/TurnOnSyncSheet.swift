@@ -81,6 +81,9 @@ final class TurnOnSyncModel: ObservableObject {
             if checked, error == SyncTurnOnFlow.checkFailed { error = nil }
             followRealSync()
         } catch {
+            // Nothing stale may let Start upload through: unchecked until a refresh succeeds.
+            facts.checked = false
+            facts.blockers = []
             self.error = error.localizedDescription
         }
     }

@@ -1,5 +1,6 @@
 // App/Sync/RealSync.swift
 import AppKit
+import CloudKit
 import Combine
 import Foundation
 import GRDB
@@ -83,6 +84,9 @@ final class RealSync: ObservableObject {
     /// The iCloud user matched the admin's in this launch.
     private var identityConfirmed = false
     private var starting = false
+    /// A progress read is under way (one at a time: the status stream and the poll both ask).
+    private var refreshingProgress = false
+    private var accountWatch: NSObjectProtocol?
 
     /// One per database in this process: windows on the same database share it (`AppEnvironment.load`), so one engine
     /// syncs it.
@@ -91,6 +95,28 @@ final class RealSync: ObservableObject {
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         self.session = session
+        // The iCloud account changed while Mango runs: sync stops and the user is checked again (a different one
+        // never syncs; Settings ▸ Sync says why).
+        accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.accountChanged() }
+        }
+    }
+
+    /// Stops the running sync, forgets the confirmed user and starts again through the full check.
+    private func accountChanged() async {
+        guard identityConfirmed || scheduler != nil else { return }
+        Self.log.notice("Real sync: the iCloud account changed; checking who is signed in again")
+        identityConfirmed = false
+        engineUserId = nil
+        sessionWatch = nil
+        statusTask?.cancel()
+        progressTask?.cancel()
+        if let running = scheduler {
+            scheduler = nil
+            await running.stop()
+        }
+        status = .off
+        await startIfAllowed()
     }
 
     var isRunning: Bool { scheduler != nil }
@@ -218,16 +244,21 @@ final class RealSync: ObservableObject {
 
     /// Reads the turn-on's progress; once uploading with nothing left waiting, the stage becomes done.
     func refreshProgress() async {
+        guard !refreshingProgress else { return }
+        refreshingProgress = true
+        defer { refreshingProgress = false }
         do {
-            var progress = try await dbQueue.read { db in try SyncTurnOn.progress(db: db) }
-            if progress.stage == .uploading, scheduler != nil {
+            // Reads only, until nothing waits to go up: then the one write that marks it done.
+            let read = try await dbQueue.read { db in
+                (try SyncTurnOn.progress(db: db), try SyncTurnOn.isUploadFinished(db: db))
+            }
+            var progress = read.0
+            let finishedNow = read.1
+            if finishedNow, scheduler != nil {
                 let finished = try await dbQueue.write { db -> Bool in
-                    do {
-                        try SyncTurnOn.markDone(db: db, now: Date())
-                        return true
-                    } catch SyncTurnOn.TurnOnError.uploadNotFinished {
-                        return false
-                    }
+                    guard try SyncTurnOn.isUploadFinished(db: db) else { return false }
+                    try SyncTurnOn.markDone(db: db, now: Date())
+                    return true
                 }
                 if finished {
                     progress = try await dbQueue.read { db in try SyncTurnOn.progress(db: db) }
@@ -332,9 +363,15 @@ enum TurnOnSteps {
     /// The iCloud side of the blockers (only in a build signed for the container): the account, its user, and what
     /// the real key store and the server hold for each zone (`SyncTurnOn.keyFacts`, reads only). Throws when the
     /// server can't be asked.
+    /// iCloud couldn't say (offline, temporarily unavailable): the sheet says it couldn't reach iCloud, with Check again.
+    struct CouldNotReachICloud: Error {}
+
     static func iCloudFacts(zones: [String]) async throws -> (available: Bool, recordName: String?, keys: [SyncTurnOn.ZoneKeyFacts]) {
-        let available = await CloudKitAccountStatus.current() == .available
-        guard available else { return (false, nil, []) }
+        switch await CloudKitAccountStatus.current() {
+        case .available: break
+        case .noAccount, .restricted: return (false, nil, [])
+        case .couldNotDetermine: throw CouldNotReachICloud()
+        }
         let recordName = try? await CloudKitAccountStatus.userRecordName()
         let keys = try await SyncTurnOn.keyFacts(zones: zones, keyStore: KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: false)),
                                                  transport: CloudKitTransport())
