@@ -408,6 +408,18 @@ public enum SyncTranslator {
             // at the local id it had here when that is free (ruling R7).
             try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
             reviveAt = localId
+        } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil,
+                  try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ? AND kind = 'delete')", arguments: [uuid]) ?? false {
+            // A delete made here and not sent yet wins over any version arriving before it goes (often this device's
+            // own upload coming back, the row deleted before the pull): the row stays deleted and its tombstone (with
+            // the stamp its marker goes over) stays, so the delete is never stuck. Any table, documents included. A
+            // record sent again because the server lost it (ruling R12) still comes back, visibly, as below.
+            if payload.resent == true {
+                takeBack = true
+            } else {
+                try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+                return .discarded("deleted here")
+            }
         } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
             // A delete wins over an edit made while offline, except that a document is sent again by a
             // device that kept it because a record links to it (`kept`): it comes back.

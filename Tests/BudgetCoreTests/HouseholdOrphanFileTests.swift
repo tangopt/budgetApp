@@ -46,9 +46,8 @@ final class HouseholdOrphanFileTests: XCTestCase {
         return (id, try f.h.uuid("document", id))
     }
 
-    /// Syncs until nothing is left to send (at least twice: the Mac's own upload comes back on a pull).
+    /// Syncs until nothing is left to send.
     private func settle(_ h: TwoPersonHousehold) async throws {
-        _ = try await h.adminMac.engine.syncNow()
         for _ in 0..<4 {
             _ = try await h.adminMac.engine.syncNow()
             let left = try read(h.adminMac.db) { db in
@@ -130,6 +129,8 @@ final class HouseholdOrphanFileTests: XCTestCase {
         let live = try await addDeed(f)
         let deleted = try await addDeed(f)
         try await settle(f.h)
+        // Its own upload pulled back first, so nothing here learns the file again (an old build forgot it).
+        _ = try await f.h.adminMac.engine.syncNow()
         try markCleaned(f.h)
         // Step 6 era: a file whose document was hard-deleted (absent on the server), and one whose document is a
         // deletion marker (deleted by a build that didn't take files).
