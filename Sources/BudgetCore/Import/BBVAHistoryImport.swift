@@ -372,7 +372,7 @@ public enum BBVAHistoryImport {
 
     /// Everything, in the caller's write transaction; throws (nothing to keep) on any refusal
     /// or failed verification.
-    public static func apply(db: Database, input: Input, today: Date = Date()) throws -> Report {
+    public static func apply(db: Database, input: Input, today: Date = Date(), owner: AccessActor? = nil) throws -> Report {
         try validate(input)
         try checkNotApplied(db: db)
         try checkNames(db: db)
@@ -381,7 +381,7 @@ public enum BBVAHistoryImport {
         let first = input.months[0]
         let openingDate = first.range.start
         let account = try AccountEditing.add(db: db, name: accountName, currency: .eur, kind: .cash, openingBalanceEntered: first.openingMinorUnits,
-                                             asOf: openingDate, details: AccountDetails(alias: accountAlias, region: .europe))
+                                             asOf: openingDate, details: AccountDetails(alias: accountAlias, region: .europe), owner: owner)
         let accountId = account.id!
         try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Opening balance (statement \(first.label))", accountId])
         // After the ordered accounts (`AccountEditing.add`); none ordered leaves it nil.
@@ -399,7 +399,7 @@ public enum BBVAHistoryImport {
         // The tenant-deposit liability, its tied transfer category moved into the group.
         let depositAccount = try AccountEditing.add(db: db, name: depositAccountName, currency: .eur, kind: .credit,
                                                     openingBalanceEntered: input.depositOpening.map { NetWorthCalculator.enteredBalance(signedMinorUnits: $0.minorUnits, accountKind: .credit) },
-                                                    asOf: input.depositOpening?.date ?? openingDate, details: AccountDetails(region: .europe))
+                                                    asOf: input.depositOpening?.date ?? openingDate, details: AccountDetails(region: .europe), owner: owner)
         let depositAccountId = depositAccount.id!
         if input.depositOpening != nil {
             try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Tenant deposit held (opening)", depositAccountId])

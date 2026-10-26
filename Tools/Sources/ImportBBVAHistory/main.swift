@@ -80,15 +80,29 @@ do {
     try manager.migrate()
     print("Database: \(dbPath)\(dryRun ? " (dry run — everything will be rolled back)" : "")")
     print("Input: \(input.rows.count) rows, \(input.months.count) statement months (\(input.months.first!.label) … \(input.months.last!.label))")
+    // The summary comes from a pass that is always rolled back; a real run asks, then writes.
     var report: BBVAHistoryImport.Report?
+    var question: (owner: AccessActor, prompt: String)?
     try manager.dbQueue.inDatabase { db in
+        question = try ToolOwnership.question(db: db)
         try db.inTransaction {
-            report = try BBVAHistoryImport.apply(db: db, input: input)
-            return dryRun ? .rollback : .commit
+            report = try BBVAHistoryImport.apply(db: db, input: input, owner: question?.owner)
+            return .rollback
         }
     }
     if let report { print(report.text) }
-    print(dryRun ? "Dry run: rolled back." : "Committed.")
+    if dryRun { print("Dry run: rolled back."); exit(0) }
+    if let question {
+        print(question.prompt, terminator: "")
+        guard ToolOwnership.isYes(readLine()) else { print(ToolOwnership.declined); exit(0) }
+    }
+    try manager.dbQueue.inDatabase { db in
+        try db.inTransaction {
+            _ = try BBVAHistoryImport.apply(db: db, input: input, owner: question?.owner)
+            return .commit
+        }
+    }
+    print("Committed.")
 } catch let error as BBVAHistoryImport.ImportError {
     FileHandle.standardError.write("Refused (rolled back, nothing saved): \(error.localizedDescription)\n".data(using: .utf8)!)
     exit(1)

@@ -12,6 +12,8 @@ public enum PropertyError: Error, Equatable {
     case tenancyNotFound
     /// The person owns (or owned) a share of a property: remove the ownership first.
     case personIsOwner
+    /// The person owns `count` accounts: hand them on first (step 7a F-5).
+    case personOwnsAccounts(count: Int)
     /// A share outside 0–100% (exclusive of 0).
     case invalidShare
     /// A range whose end is before its start.
@@ -74,7 +76,21 @@ public enum People {
     @discardableResult
     public static func delete(db: Database, id: Int64) throws -> Bool {
         guard try PropertyOwner.filter(Column("personId") == id).fetchCount(db) == 0 else { throw PropertyError.personIsOwner }
+        let owned = try Account.filter(Column("ownerPersonId") == id).fetchCount(db)
+        guard owned == 0 else { throw PropertyError.personOwnsAccounts(count: owned) }
         return try Person.deleteOne(db, key: id)
+    }
+}
+
+extension PropertyError {
+    /// The words for a refusal that needs a count (the rest are the app's).
+    public var message: String? {
+        switch self {
+        case let .personOwnsAccounts(count):
+            return "That person owns \(count) \(count == 1 ? "account" : "accounts"), so they can't be removed."
+        default:
+            return nil
+        }
     }
 }
 

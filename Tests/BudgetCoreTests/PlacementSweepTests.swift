@@ -440,6 +440,30 @@ final class PlacementSweepTests: XCTestCase {
         assertAuditsClean(h)
     }
 
+    /// M1: a real placement change (an account lowered from Everything to Balance only, written without queueing any
+    /// move, as a build or path that doesn't know the moves would) is found by the sweep: its records are re-queued and
+    /// move out of the household; the member drops them.
+    func testLoweredAccountLevelDrivesTheSweepRequeueAndMove() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        let uuid = try h.uuid("transaction_", f.sharedTransaction)
+        try await syncEveryone(h)
+        try assertSettled(h)
+        XCTAssertNotNil(try h.localId("transaction_", uuid: uuid, on: h.memberDevice), "shared while the account is at Everything")
+
+        let queued = try write(h.adminMac) { db -> Int in
+            try db.execute(sql: "DELETE FROM syncPending")
+            try db.execute(sql: "UPDATE account SET sharingLevel = ? WHERE id = ?", arguments: [SharingLevel.balanceOnly.rawValue, f.shared])
+            return try SyncPlacementSweep.run(zones: [SyncZones.household, f.privateZone], db: db, now: Date())
+        }
+        XCTAssertGreaterThan(queued, 0, "the level change re-queued records")
+        XCTAssertGreaterThan(try count(h.adminMac, "SELECT COUNT(*) FROM syncPending WHERE uuid = ?", [uuid]), 0, "the account's transaction among them")
+        try await syncEveryone(h)
+        try await assertMovedToAdminZone(h, "transaction_", uuid)
+        try assertSettled(h)
+        assertAuditsClean(h)
+    }
+
     /// L-3: a custom kind retired into a built-in kind (merged) places its documents as that built-in does.
     func testRetiredCustomKindFollowsTheKindItWasMergedInto() throws {
         let queue = try TestDatabase.migrated()

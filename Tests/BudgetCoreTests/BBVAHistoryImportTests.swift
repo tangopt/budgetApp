@@ -5,12 +5,12 @@ import struct BudgetCore.Category
 import TestSupport
 
 final class BBVAHistoryImportTests: XCTestCase {
-    private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
+    func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
 
     /// A synthetic two-month statement (not real data): opening €1,000.00.
-    private let csv = """
+    let csv = """
     Date,ValueDate,Description,Amount,Balance,kind,matched_text,detail,source_file
     02/01/2023,31/12/2022,COBR. REC. TOT 076 00-000000-0,-500.00,500.00,mortgage_instalment,COBR. REC. TOT,,a.pdf
     03/01/2023,03/01/2023,0000001 TENANTX,1000.00,1500.00,rent_received,TENANTX,,a.pdf
@@ -28,19 +28,19 @@ final class BBVAHistoryImportTests: XCTestCase {
     16/02/2023,16/02/2023,advogada 230216EVN2,-60.00,1465.00,legal_fees,advogad,,b.pdf
     17/02/2023,17/02/2023,IMPOSTO SELO,-1.00,1464.00,bank_fees,IMPOSTO SELO,,b.pdf
     """
-    private let summary = """
+    let summary = """
     period,opening,credits,debits,closing,count,source_file
     2023-01,1000.00,1005.00,-740.00,1265.00,8,a.pdf
     2023-02,1265.00,1000.00,-801.00,1464.00,7,b.pdf
     """
 
-    private func input() throws -> BBVAHistoryImport.Input {
+    func input() throws -> BBVAHistoryImport.Input {
         BBVAHistoryImport.Input(rows: try BBVAHistoryImport.parseClassifiedCSV(csv), months: try BBVAHistoryImport.parseMonthlySummary(summary))
     }
 
     /// Existing accounts like the real database's: Current (unordered) and Revolut (GBP) with
     /// tied transfer categories in "Own accounts", and Revolut's leg of the 12 Jan transfer.
-    private func makeDB() throws -> DatabaseManager {
+    func makeDB() throws -> DatabaseManager {
         let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             let own = try CategoryGroups.create(db: db, name: "Own accounts", type: .transfer)

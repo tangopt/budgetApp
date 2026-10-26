@@ -522,7 +522,7 @@ public enum BBVAFundMortgageImport {
 
     /// Everything, in the caller's write transaction; throws (nothing to keep) on any refusal
     /// or failed verification.
-    public static func apply(db: Database, input: Input) throws -> Report {
+    public static func apply(db: Database, input: Input, owner: AccessActor? = nil) throws -> Report {
         // 1. Prerequisites.
         let accounts = try Account.fetchAll(db)
         for name in [fundAccountName, loanAccountName] where accounts.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
@@ -577,9 +577,9 @@ public enum BBVAFundMortgageImport {
 
         // 3. The accounts (opening balances on the opening days) and the category's new name.
         let fund = try AccountEditing.add(db: db, name: fundAccountName, currency: .eur, kind: .investment, openingBalanceEntered: input.fundOpening.minorUnits,
-                                          asOf: input.fundOpening.date, details: AccountDetails(region: .europe))
+                                          asOf: input.fundOpening.date, details: AccountDetails(region: .europe), owner: owner)
         let loan = try AccountEditing.add(db: db, name: loanAccountName, currency: .eur, kind: .credit, openingBalanceEntered: input.loanOpening.minorUnits,
-                                          asOf: input.loanOpening.date, details: AccountDetails(region: .europe), includeInNetWorth: false)
+                                          asOf: input.loanOpening.date, details: AccountDetails(region: .europe), includeInNetWorth: false, owner: owner)
         let fundId = fund.id!, loanId = loan.id!
         try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Opening: \(input.fundOpening.source)", fundId])
         try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Opening: \(input.loanOpening.source)", loanId])

@@ -5,15 +5,15 @@ import struct BudgetCore.Category
 import TestSupport
 
 final class BBVAFundMortgageImportTests: XCTestCase {
-    private typealias Import = BBVAFundMortgageImport
+    typealias Import = BBVAFundMortgageImport
 
-    private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
+    func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
 
     /// A BBVA account as the history import leaves it: the batch, the Lisbon group's "Mortgage"
     /// category with its learned rule, four instalments, two fund subscriptions and a fee.
-    private func makeDB() throws -> DatabaseManager {
+    func makeDB() throws -> DatabaseManager {
         let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             let bbva = try AccountEditing.add(db: db, name: "BBVA", currency: .eur, kind: .cash, openingBalanceEntered: 2_000_000, asOf: day(2022, 12, 31))
@@ -39,11 +39,11 @@ final class BBVAFundMortgageImportTests: XCTestCase {
         return manager
     }
 
-    private func breakdown(_ capital: Int, _ interest: Int, receipt: Int, tan: Double) -> Import.Breakdown {
+    func breakdown(_ capital: Int, _ interest: Int, receipt: Int, tan: Double) -> Import.Breakdown {
         Import.Breakdown(capitalMinorUnits: capital, interestMinorUnits: interest, receipt: receipt, tan: tan, source: "BBVA instalment notice \(receipt)")
     }
 
-    private func input(januaryOutstanding: Int = 19_910_000) -> Import.Input {
+    func input(januaryOutstanding: Int = 19_910_000) -> Import.Input {
         Import.Input(
             fundOpening: Import.Value(date: day(2022, 12, 31), minorUnits: 500_000, source: "Dec 2022 statement"),
             fundSubscriptionCount: 2,
