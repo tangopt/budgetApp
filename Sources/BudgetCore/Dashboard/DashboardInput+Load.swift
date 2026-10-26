@@ -20,7 +20,8 @@ extension DashboardInput {
             importBatches: try ImportBatch.fetchAll(db),
             rate: try ExchangeRateSetting.currentOrDefault(db: db),
             manualCloses: try PayMonthClose.fetchAll(db),
-            transferLinks: try TransferLink.fetchAll(db)
+            transferLinks: try TransferLink.fetchAll(db),
+            publishedCloses: try actuals.publishedCloses(db)
         )
     }
 }

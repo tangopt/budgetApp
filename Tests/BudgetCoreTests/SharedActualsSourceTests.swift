@@ -44,15 +44,19 @@ final class SharedActualsSourceTests: XCTestCase {
     /// owner's data holds), its spending around the paydays and in the open month, a property-category payment
     /// (shared, §10), transfers both ways between it and a shared account, an opening balance on the Balance only
     /// account, and a Hidden account of A's. Synced: the Mac rebuilds the summaries and pushes, the member pulls.
-    private static func household() async throws -> (TwoPersonHousehold, Extras) {
+    /// `salaryInBalanceOnly`: the salaries go into the Balance only account instead, so no summary carries them.
+    private static func household(salaryInBalanceOnly: Bool = false) async throws -> (TwoPersonHousehold, Extras) {
         let h = try TwoPersonHousehold.make()
         let f = h.fixture
         let extras = try await h.adminMac.db.write { db -> Extras in
             try db.execute(sql: "INSERT INTO category(name, type) VALUES ('Income', 'income')")
             let income = db.lastInsertedRowID
             for month in 7...10 {
-                try Self.addTransaction(db, account: f.totals, on: Self.day(2026, month, month == 10 ? 23 : 25, hour: 0), 300_000, category: income)
+                try Self.addTransaction(db, account: salaryInBalanceOnly ? f.privateAccount : f.totals, on: Self.day(2026, month, month == 10 ? 23 : 25, hour: 0),
+                                        300_000, category: income)
             }
+            // A small Income credit in the open month (after the 23 October payday): no payday for the owner.
+            try Self.addTransaction(db, account: f.totals, on: Self.day(2026, 10, 25), 700, category: income)
             for (month, dayOfMonth, amount) in [(8, 2, -1_200), (8, 25, -800), (8, 26, -650), (9, 10, -2_300), (9, 25, -410), (10, 23, -90), (10, 24, -333)] {
                 try Self.addTransaction(db, account: f.totals, on: Self.day(2026, month, dayOfMonth), amount, category: f.plainCategory)
             }
@@ -96,7 +100,8 @@ final class SharedActualsSourceTests: XCTestCase {
     private static func gridTotals(_ db: Database, _ source: any ActualsSource, leavingOut: Set<Int64> = []) throws -> [String: [String: Int]] {
         let transactions = try source.transactions(db)
         let categories = try Category.fetchAll(db)
-        let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
+        let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories,
+                                                                         publishedCloses: try source.publishedCloses(db)),
                                    manualCloses: try PayMonthClose.fetchAll(db), today: Self.today)
         let facing = TransferLinks.budgetFacing(transactions, links: try TransferLink.fetchAll(db)).filter { !leavingOut.contains($0.id!) }
         let gbp = CurrencyConversion(accounts: try Account.fetchAll(db), rate: try ExchangeRateSetting.currentOrDefault(db: db)).toGBP(facing)
@@ -112,20 +117,46 @@ final class SharedActualsSourceTests: XCTestCase {
         return result
     }
 
-    private static func closeDates(_ db: Database, _ source: any ActualsSource) throws -> [Date] {
+    /// June to December 2026: each pay month's close date and whether it is closed.
+    private static func payMonths(_ db: Database, _ source: any ActualsSource) throws -> [PayMonthState] {
         let transactions = try source.transactions(db)
-        let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: try Category.fetchAll(db)),
+        let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: try Category.fetchAll(db),
+                                                                         publishedCloses: try source.publishedCloses(db)),
                                    manualCloses: try PayMonthClose.fetchAll(db), today: Self.today)
-        return (6...11).map { calendar.closeDate(of: PayMonth(year: 2026, month: $0)) }
+        return (6...12).map { month in
+            let month = PayMonth(year: 2026, month: month)
+            return PayMonthState(close: calendar.closeDate(of: month), isClosed: calendar.isClosed(month))
+        }
+    }
+
+    private struct PayMonthState: Equatable {
+        var close: Date
+        var isClosed: Bool
     }
 
     func testGridTotalsWithSummariesEqualFullData() async throws {
-        let (h, extras) = try await Self.household()
+        let (owner, others) = try await gridTotalsOnBothSides(salaryInBalanceOnly: false)
+        XCTAssertEqual(others, owner)
+        XCTAssertEqual(owner["Income"]?["2026-09"], 300_000)
+        XCTAssertNotNil(owner["Synthetic flat rent"]?["2026-09"], "property money of private accounts counts (§10)")
+    }
+
+    /// The salary in a Balance only account: no summary carries it, but its balance points publish the closes.
+    func testPayMonthsFollowTheOwnersPublishedCloses() async throws {
+        let (owner, others) = try await gridTotalsOnBothSides(salaryInBalanceOnly: true)
+        XCTAssertEqual(others, owner)
+        XCTAssertNil(owner["Income"]?["2026-09"], "the salary itself is private")
+        XCTAssertEqual(owner["Income"]?["2026-11"], 700)
+    }
+
+    /// The owner's figures (less what the levels don't share) and the member's, after checking their pay months match.
+    private func gridTotalsOnBothSides(salaryInBalanceOnly: Bool) async throws -> (owner: [String: [String: Int]], member: [String: [String: Int]]) {
+        let (h, extras) = try await Self.household(salaryInBalanceOnly: salaryInBalanceOnly)
         let f = h.fixture
         let admin = try Self.viewer(h.adminMac, admin: true)
         let member = try Self.viewer(h.memberDevice, admin: false)
 
-        let (owner, ownerCloses) = try await h.adminMac.db.read { db -> ([String: [String: Int]], [Date]) in
+        let (owner, ownerMonths) = try await h.adminMac.db.read { db -> ([String: [String: Int]], [PayMonthState]) in
             // Balance only shares no categories: its transactions the router keeps private are what the member can't
             // count. Hidden shares nothing.
             let router = try SyncZoneRouter(db: db)
@@ -134,20 +165,20 @@ final class SharedActualsSourceTests: XCTestCase {
             XCTAssertFalse(balanceOnlyPrivate.isEmpty)
             let hidden = try Set(Int64.fetchAll(db, sql: "SELECT id FROM transaction_ WHERE accountId = ?", arguments: [extras.hidden]))
             XCTAssertFalse(hidden.isEmpty)
-            return (try Self.gridTotals(db, SharedActualsSource(viewer: admin), leavingOut: balanceOnlyPrivate.union(hidden)), try Self.closeDates(db, SharedActualsSource(viewer: admin)))
+            return (try Self.gridTotals(db, SharedActualsSource(viewer: admin), leavingOut: balanceOnlyPrivate.union(hidden)), try Self.payMonths(db, SharedActualsSource(viewer: admin)))
         }
-        let (others, memberCloses) = try await h.memberDevice.db.read { db in
-            (try Self.gridTotals(db, SharedActualsSource(viewer: member)), try Self.closeDates(db, SharedActualsSource(viewer: member)))
+        let (others, memberMonths) = try await h.memberDevice.db.read { db in
+            (try Self.gridTotals(db, SharedActualsSource(viewer: member)), try Self.payMonths(db, SharedActualsSource(viewer: member)))
         }
-        XCTAssertEqual(memberCloses, ownerCloses, "the member's pay months end on the owner's paydays")
-        XCTAssertEqual(ownerCloses[2], Self.day(2026, 8, 25, hour: 0))
-        XCTAssertEqual(others, owner)
-        XCTAssertEqual(owner["Income"]?["2026-09"], 300_000)
-        XCTAssertNotNil(owner["Synthetic flat rent"]?["2026-09"], "property money of private accounts counts (§10)")
+        XCTAssertEqual(memberMonths, ownerMonths, "the member's pay months end on the owner's paydays")
+        XCTAssertEqual(ownerMonths[2].close, Self.day(2026, 8, 25, hour: 0))
+        XCTAssertEqual(ownerMonths[4].close, Self.day(2026, 10, 23, hour: 0))
+        XCTAssertFalse(ownerMonths[5].isClosed, "November is open: its Income credit doesn't close it")
 
         // Without the summaries the member's figures would differ.
         let withoutSummaries = try await h.memberDevice.db.read { db in try Self.gridTotals(db, LocalActualsSource()) }
         XCTAssertNotEqual(withoutSummaries, owner)
+        return (owner, others)
     }
 
     // MARK: Drill-down
@@ -168,7 +199,8 @@ final class SharedActualsSourceTests: XCTestCase {
             let plain = try XCTUnwrap(SyncRecordStore.localId(table: "category", uuid: try h.uuid("category", f.plainCategory), db: db))
             let totals = try XCTUnwrap(SyncRecordStore.localId(table: "account", uuid: try h.uuid("account", f.totals), db: db))
             let transactions = try SharedActualsSource(viewer: member).transactions(db)
-            let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: try Category.fetchAll(db)),
+            let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: try Category.fetchAll(db),
+                                                                             publishedCloses: try SharedActualsSource(viewer: member).publishedCloses(db)),
                                        manualCloses: try PayMonthClose.fetchAll(db), today: Self.today)
             let september = calendar.range(of: PayMonth(year: 2026, month: 9))
 
@@ -254,6 +286,7 @@ final class SharedActualsSourceTests: XCTestCase {
             XCTAssertFalse(transactions.contains(where: SharedActuals.isSummary))
             XCTAssertEqual(transactions, try LocalActualsSource().transactions(db))
             XCTAssertEqual(try source.balanceSnapshots(db), try BalanceSnapshot.fetchAll(db))
+            XCTAssertEqual(try source.publishedCloses(db), [], "the owner's calendar is its own")
             let viaSource = try DashboardInput.load(db: db, today: Self.today, actuals: source), local = try DashboardInput.load(db: db, today: Self.today)
             XCTAssertEqual(viaSource.transactions, local.transactions)
             XCTAssertEqual(viaSource.snapshots, local.snapshots)

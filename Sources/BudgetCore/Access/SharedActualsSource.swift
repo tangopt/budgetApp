@@ -34,8 +34,10 @@ public struct SharingViewer: Equatable, Sendable {
 ///   signed amount, status confirmed, no description, counted as a manual entry (so it never moves "data
 ///   through"). Dated at the end of the pay month as the owner's calendar has it: the end of the day of the
 ///   account's owner's balance point for that month (its close date), or, for a month with no point (the open
-///   month), the end of that month in this device's calendar built the way the Budget grid builds it.
-///   Because a salary total is dated on the owner's payday, the grid's calendar here finds the owner's paydays.
+///   month), the end of that month in this device's calendar with the published closes. Never a payday.
+/// - Published closes (`publishedCloses`): the dates of the summarised accounts' balance points of closed pay
+///   months, which are the owners' close dates, Balance only included. With them the reader's pay calendar ends
+///   each month where the owner's does; its own paydays count only in months with none.
 /// - Synthetic snapshots: id `-point.id`, dated at the end of the point's day, so the month's synthetic
 ///   transactions (dated the same second) are inside it, not added on top. The `current` point is dated no
 ///   earlier than the account's latest transaction here, so balances now are the owner's.
@@ -52,6 +54,18 @@ public struct SharedActualsSource: ActualsSource {
         guard !split.isEverythingInFull else { return all }
         let kept = all.filter { !split.hidden.contains($0.accountId) }
         return kept + (try SummaryTransactions(split: split, kept: kept, db: db).transactions)
+    }
+
+    public func publishedCloses(_ db: Database) throws -> [Date] {
+        let split = try AccountSplit(viewer: viewer, db: db)
+        guard !split.summarised.isEmpty else { return [] }
+        return try Self.publishedCloses(summarised: split.summarised, db: db)
+    }
+
+    static func publishedCloses(summarised: Set<Int64>, db: Database) throws -> [Date] {
+        Array(Set(try AccountBalancePoint
+            .filter(summarised.contains(Column("accountId")) && Column("payMonth") != AccountBalancePoint.currentPayMonth)
+            .fetchAll(db).map(\.date))).sorted()
     }
 
     public func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot] {
@@ -186,9 +200,10 @@ private struct SummaryTransactions {
             }
         }
         if !undated.isEmpty {
-            // This device's calendar as the grid builds it: paydays from what it reads, the dated summaries included.
-            let read = kept + dated.map { Self.transaction($0.row, date: $0.date) }
-            let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: read, categories: try Category.fetchAll(db)),
+            // This device's calendar as the grid builds it: its own paydays and the published closes.
+            let published = try SharedActualsSource.publishedCloses(summarised: split.summarised, db: db)
+            let calendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: kept, categories: try Category.fetchAll(db),
+                                                                             publishedCloses: published),
                                        manualCloses: try PayMonthClose.fetchAll(db), today: Date())
             dated += undated.map { ($0.row, calendar.range(of: $0.month).end) }
         }

@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 /// Where the Dashboard, Budget grid and Forecast get the actuals they total from, and the balance snapshots net
@@ -7,12 +8,17 @@ import GRDB
 public protocol ActualsSource {
     func transactions(_ db: Database) throws -> [Transaction]
     func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot]
+    /// Pay-month closes published by the other person's devices for accounts this device doesn't hold in full,
+    /// for the pay calendar (`PayCalendar.forData(publishedCloses:)`): the reader's pay months follow the owner's.
+    func publishedCloses(_ db: Database) throws -> [Date]
 }
 
 extension ActualsSource {
     public func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot] {
         try BalanceSnapshot.fetchAll(db)
     }
+
+    public func publishedCloses(_ db: Database) throws -> [Date] { [] }
 }
 
 /// All local transactions: the same set the screens read before the seam existed.
