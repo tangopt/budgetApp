@@ -104,6 +104,26 @@ final class EvidenceBrowsingTests: XCTestCase {
         }
     }
 
+    func testChangeKindKeepsEveryOtherDetail() throws {
+        let document = try add("advice.pdf", "a", EvidenceMetadata(kind: .bankDebitAdvice, docDate: Self.date(2025, 6, 1),
+                                                                     amountMinorUnits: 26_400, currency: .eur))
+        var details = EvidenceDocumentDetails(document)
+        details.note = "kept"
+        details.persons = ["Ana"]
+        _ = try library.updateDetails(document.id!, details)
+        let changed = try library.changeKind(document.id!, to: .builtIn(.insuranceReceipt))
+        XCTAssertEqual(changed.kind, .insuranceReceipt)
+        XCTAssertEqual(changed.docDate, Self.date(2025, 6, 1))
+        XCTAssertEqual(changed.amountMinorUnits, 26_400)
+        XCTAssertEqual(changed.currency, .eur)
+        XCTAssertEqual(changed.note, "kept")
+        XCTAssertEqual(changed.persons, ["Ana"])
+        XCTAssertEqual(try library.document(id: document.id!), changed)
+        XCTAssertThrowsError(try library.changeKind(9_999, to: .builtIn(.p60))) {
+            XCTAssertEqual($0 as? EvidenceLibraryError, .documentNotFound)
+        }
+    }
+
     func testPersonsFromText() {
         XCTAssertEqual(EvidenceDocumentDetails.persons(from: "Ana, Bruno; ; ana"), ["Ana", "Bruno"])
         XCTAssertEqual(EvidenceDocumentDetails.persons(from: "  "), [])

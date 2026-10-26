@@ -31,13 +31,14 @@ extension MissingEvidence {
     /// The items to show: only missing ones when `missingOnly`, matching every word of
     /// `text` (case- and accent-insensitive) in the title, requirement, category, account,
     /// source, expected kinds, satisfying documents or waiver note — or an amount equal to the
-    /// expected one. Order is kept.
-    public static func filtered(_ items: [Item], missingOnly: Bool, text: String) -> [Item] {
+    /// expected one. Order is kept. `keptId` (the item the side panel shows) stays whatever its
+    /// status, so linking its document doesn't take it off the list.
+    public static func filtered(_ items: [Item], missingOnly: Bool, text: String, keeping keptId: String? = nil) -> [Item] {
         let terms = text.split(whereSeparator: \.isWhitespace).map { word in
             (folded: fold(String(word)), amount: TransactionSearch.amountToken(String(word)))
         }
         return items.filter { item in
-            if missingOnly, item.isDone { return false }
+            if missingOnly, item.isDone, item.id != keptId { return false }
             guard !terms.isEmpty else { return true }
             let haystack = haystack(item)
             return terms.allSatisfy { term in
@@ -46,7 +47,7 @@ extension MissingEvidence {
         }
     }
 
-    private static func kindName(_ ref: DocumentKindRef, _ item: Item, _ catalog: DocumentKindCatalog?) -> String {
+    static func kindName(_ ref: DocumentKindRef, _ item: Item, _ catalog: DocumentKindCatalog?) -> String {
         if let index = item.expectedKindRefs.firstIndex(of: ref) { return item.expectedKindNames[index] }
         switch ref {
         case .builtIn(let kind): return kind.displayName

@@ -797,4 +797,84 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertNotNil(kept.shortfall)
         XCTAssertEqual(try summary(statement).kind, .bankStatement)
     }
+
+    // MARK: The side panel
+
+    func testAttachedDocumentsSayWhyTheyDontCount() throws {
+        let insurance = try db.write { db in try insertCategory(db, "Home insurance", .expense, group: lisbon) }
+        try requirement("Home insurance", .transactionsInCategory(categoryId: insurance), kinds: [.insuranceReceipt, .insurancePolicy], source: "Insurer")
+        let t = try transaction(Self.date(2025, 6, 1), -26_400, category: insurance, description: "SEGUROS HOME POLICY")
+        let advice = try document(.bankDebitAdvice, docDate: Self.date(2025, 6, 1), name: "Debit advice", linkedTo: .transaction(t))
+        let catalog = DocumentKindCatalog(customKinds: [])
+
+        let missing = try XCTUnwrap(try items(year2025.interval).first)
+        XCTAssertEqual(missing.status, .missing)
+        XCTAssertEqual(missing.otherDocuments.map(\.id), [advice])
+        let attached = MissingEvidence.attached(missing, catalog: catalog)
+        XCTAssertEqual(attached.map(\.id), [advice])
+        XCTAssertEqual(attached.first?.kindName, "Bank debit advice")
+        XCTAssertEqual(attached.first?.shortfall, .wrongKind)
+        XCTAssertEqual(attached.first?.explanation, "Attached: Bank debit advice — not one of the kinds this needs")
+
+        // A qualifying document joins it: the item is done, the advice still says why it doesn't count.
+        let receipt = try document(.insuranceReceipt, docDate: Self.date(2025, 6, 1), name: "Receipt", linkedTo: .transaction(t))
+        let done = try XCTUnwrap(try items(year2025.interval).first)
+        XCTAssertEqual(done.status, .satisfied)
+        let both = MissingEvidence.attached(done, catalog: catalog)
+        XCTAssertEqual(both.map(\.id), [receipt, advice])
+        XCTAssertEqual(both.map(\.shortfall), [nil, .wrongKind])
+        XCTAssertNil(both[0].explanation)
+    }
+
+    func testAttachedDocumentsOfAPeriodicItemAreTheSlotsOwn() throws {
+        try requirement("Condomínio", .periodic(entity: .account(bbva), every: .quarter), kinds: [.condominioReceipt])
+        // First quarter (6 Apr – 5 Jul 2025): a receipt in it, a statement dated in it, an undated receipt;
+        // a receipt of another quarter belongs to that quarter, not to this one.
+        let inSlot = try document(.condominioReceipt, docDate: Self.date(2025, 5, 1), name: "Q1 receipt", linkedTo: .account(bbva))
+        let statement = try document(.bankStatement, docDate: Self.date(2025, 5, 2), name: "Statement", linkedTo: .account(bbva))
+        let undated = try document(.condominioReceipt, name: "Undated receipt", linkedTo: .account(bbva))
+        try document(.condominioReceipt, docDate: Self.date(2025, 12, 1), name: "Q3 receipt", linkedTo: .account(bbva))
+        try document(.bankStatement, docDate: Self.date(2025, 12, 2), name: "Q3 statement", linkedTo: .account(bbva))
+
+        let first = try XCTUnwrap(try items(year2025.interval).first)
+        let attached = MissingEvidence.attached(first, catalog: DocumentKindCatalog(customKinds: []))
+        XCTAssertEqual(Set(attached.map(\.id)), [inSlot, statement, undated])
+        XCTAssertNil(attached.first { $0.id == inSlot }?.shortfall)
+        XCTAssertEqual(attached.first { $0.id == statement }?.shortfall, .wrongKind)
+        XCTAssertEqual(attached.first { $0.id == undated }?.shortfall, .notInPeriod)
+        XCTAssertEqual(attached.first { $0.id == undated }?.explanation, "Attached: Condomínio receipt — has no date or period in this one")
+    }
+
+    func testSuggestionsPutMatchedDocumentsOfAnAcceptedKindFirst() throws {
+        try requirement("IMI", .transactionsInCategory(categoryId: imi), kinds: [.imiNotice, .imiPayment])
+        try transaction(Self.date(2025, 5, 2), -31_250, category: imi)
+        let item = try XCTUnwrap(try items(year2025.interval).first)
+        let matched = try document(.imiPayment, docDate: Self.date(2025, 5, 3), name: "Matched")
+        let near = try document(.imiNotice, docDate: Self.date(2025, 4, 20), name: "Near")
+        let wrongKind = try document(.bankDebitAdvice, docDate: Self.date(2025, 5, 2), name: "Advice")
+        let linked = try document(.imiNotice, docDate: Self.date(2025, 5, 1), name: "Linked")
+        let summaries = try [matched, near, wrongKind, linked].map(summary)
+        let fromMatcher = [
+            EvidenceMatcher.DocumentSuggestion(documentId: wrongKind, score: 300, reasons: ["Amount €312.50"], amountMatched: true, dateInWindow: true),
+            EvidenceMatcher.DocumentSuggestion(documentId: matched, score: 200, reasons: ["Amount €312.50", "1 day after"], amountMatched: true, dateInWindow: true)
+        ]
+        let suggestions = MissingEvidence.suggestions(for: item, summaries: summaries, matched: fromMatcher, excluding: [linked])
+        // The matcher's own (a kind the rule takes), then the checklist's candidates not already shown.
+        XCTAssertEqual(suggestions.map(\.documentId), [matched, near])
+        XCTAssertEqual(suggestions.first?.reasons, ["Amount €312.50", "1 day after"])
+        XCTAssertEqual(MissingEvidence.suggestions(for: item, summaries: summaries, matched: fromMatcher, excluding: [], limit: 1).map(\.documentId), [matched])
+    }
+
+    func testFilteringKeepsTheSelectedItemShown() throws {
+        try requirement("IMI", .transactionsInCategory(categoryId: imi), kinds: [.imiNotice])
+        let paid = try transaction(Self.date(2025, 5, 2), -100, category: imi)
+        try transaction(Self.date(2025, 6, 2), -200, category: imi)
+        try document(.imiNotice, linkedTo: .transaction(paid))
+        let all = try items(year2025.interval)
+        let done = try XCTUnwrap(all.first { $0.status == .satisfied })
+        XCTAssertEqual(MissingEvidence.filtered(all, missingOnly: true, text: "").count, 1)
+        XCTAssertEqual(MissingEvidence.filtered(all, missingOnly: true, text: "", keeping: done.id).map(\.id), all.map(\.id))
+        // The text still applies to it.
+        XCTAssertEqual(MissingEvidence.filtered(all, missingOnly: true, text: "nothing like it", keeping: done.id), [])
+    }
 }
