@@ -114,22 +114,16 @@ struct LinkEvidenceSheet: View {
             self.index = index
             generation += 1
             linkedIds = linked
-            var ranked: [MissingEvidence.Candidate] = []
+            var matched: [EvidenceMatcher.DocumentSuggestion] = []
             if item.target.entity.type == .transaction {
                 let catalog = try await TransactionCatalog.load(dbQueue)
                 let transactionId = item.target.entity.id
-                ranked = await Task.detached(priority: .userInitiated) {
+                matched = await Task.detached(priority: .userInitiated) {
                     EvidenceMatcher.documentSuggestions(for: transactionId, documents: documents, index: catalog.matcherIndex,
                                                         excluding: linked, linkedDebits: paid, limit: 8)
-                        .filter { suggestion in
-                            documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kindRef) } ?? false
-                        }
-                        .map { MissingEvidence.Candidate(documentId: $0.documentId, score: $0.score, reasons: $0.reasons) }
                 }.value
             }
-            let shown = Set(ranked.map(\.documentId))
-            let more = MissingEvidence.candidates(for: item, documents: index.entries.map(\.summary), excluding: linked.union(shown))
-            suggestions = Array((ranked + more).prefix(8))
+            suggestions = MissingEvidence.suggestions(for: item, summaries: index.entries.map(\.summary), matched: matched, excluding: linked)
         } catch {
             errorMessage = "Couldn't load documents: \(error.localizedDescription)"
         }
@@ -190,8 +184,10 @@ struct WaiveEvidenceSheet: View {
         SheetScaffold(title: item.waiver == nil ? "Mark not available" : "Edit waiver", subtitle: item.title,
                       error: errorMessage, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction(item.waiver == nil ? "Mark not available" : "Save") {
-                          errorMessage = viewModel.waive(item, reason: reason, note: note)
-                          if errorMessage == nil { dismiss() }
+                          viewModel.waive(item, reason: reason, note: note) { error in
+                              errorMessage = error
+                              if error == nil { dismiss() }
+                          }
                       }) {
             SheetForm {
                 LabeledContent("Reason") {

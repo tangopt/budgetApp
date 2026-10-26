@@ -55,8 +55,20 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published private(set) var items: [MissingEvidence.Item] = [] {
         didSet {
             sources = MissingEvidence.bySource(items)
+            // The side panel's item gone (its transaction deleted, its rule changed): the panel closes.
+            if let id = selectedItemId, !items.contains(where: { $0.id == id }) { selectedItemId = nil }
             refreshShown()
         }
+    }
+    /// The item the side panel shows (nil: closed). It stays listed whatever the filters say
+    /// about its status, so a change made in the panel doesn't take its row away.
+    @Published var selectedItemId: String? {
+        didSet { if selectedItemId != oldValue { refreshShown() } }
+    }
+
+    /// The side panel's item, as the checklist has it now.
+    var selectedItem: MissingEvidence.Item? {
+        selectedItemId.flatMap { id in items.first { $0.id == id } }
     }
     /// The items shown, by source.
     @Published private(set) var groups: [MissingEvidence.SourceGroup] = []
@@ -182,11 +194,7 @@ final class MissingEvidenceViewModel: ObservableObject {
         let values = ValueObservation
             .tracking { db -> Snapshot in
                 let requirements = try EvidenceRequirements.all(db: db)
-                var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
-                if let propertyId {
-                    let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
-                    items = items.filter { $0.requirement.id.map(related.contains) ?? false }
-                }
+                let items = try Self.checklist(db: db, period: period, propertyId: propertyId, requirements: requirements)
                 return Snapshot(requirements: requirements, items: items, customKinds: try CustomDocumentKind.fetchAll(db))
             }
             .removeDuplicates()
@@ -208,8 +216,20 @@ final class MissingEvidenceViewModel: ObservableObject {
         }
     }
 
+    /// The period's items, only `propertyId`'s rules' when given: what the checklist shows.
+    nonisolated private static func checklist(db: Database, period: DateInterval, propertyId: Int64?,
+                                              requirements: [EvidenceRequirement]? = nil) throws -> [MissingEvidence.Item] {
+        let requirements = try requirements ?? EvidenceRequirements.all(db: db)
+        var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
+        if let propertyId {
+            let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
+            items = items.filter { $0.requirement.id.map(related.contains) ?? false }
+        }
+        return items
+    }
+
     private func refreshShown() {
-        groups = MissingEvidence.bySource(MissingEvidence.filtered(items, missingOnly: missingOnly, text: queryText))
+        groups = MissingEvidence.bySource(MissingEvidence.filtered(items, missingOnly: missingOnly, text: queryText, keeping: selectedItemId))
     }
 
     /// Whether the filters hide everything there is.
@@ -240,11 +260,42 @@ final class MissingEvidenceViewModel: ObservableObject {
         }
     }
 
-    func unlink(documentId: Int64, from item: MissingEvidence.Item) {
+    /// Unlinks (off the main thread, checked against the filed returns); `done` gets the refusal's
+    /// text, if refused (without `done`, the page's banner shows it).
+    func unlink(documentId: Int64, from item: MissingEvidence.Item, done: ((String?) -> Void)? = nil) {
         let library = library, entity = item.target.entity
         Task {
-            guard let result = await guarded({ _ = try library.unlink(documentId, from: entity, actor: try library.database.signedInActor()) }) else { return }
-            errorMessage = result.failure?.localizedDescription
+            guard let result = await guarded({ try library.unlink(documentId, from: entity, actor: try library.database.signedInActor()) }) else { return }
+            // An employment's P60 may be linked to one of its income records instead: nothing to unlink here.
+            let message = switch result {
+            case .success(true): String?.none
+            case .success(false): "It's linked to another record of this item: unlink it in Documents."
+            case .failure(let error): error.localizedDescription
+            }
+            if let done { done(message) } else { errorMessage = message }
+        }
+    }
+
+    /// A change refused, in words.
+    struct Refusal: Error {
+        let message: String
+    }
+
+    /// Files a document as another kind (the side panel's Change kind…), every other detail kept:
+    /// the Documents inspector's save (`EvidenceLibrary.changeKind`), off the main thread and
+    /// checked against the filed returns. `done` gets how many of the checklist's items changed
+    /// status (the document may be linked to several), or the refusal.
+    func changeKind(documentId: Int64, to kind: DocumentKindRef, done: @escaping (Result<Int, Refusal>) -> Void) {
+        let library = library, dbQueue = dbQueue, period = period, propertyId = propertyFilter?.propertyId
+        Task {
+            guard let result = await guarded({ () -> Int in
+                let before = try period.map { period in try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) } }
+                _ = try library.changeKind(documentId, to: kind, actor: try library.database.signedInActor())
+                guard let period, let before else { return 0 }
+                let after = try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) }
+                return MissingEvidence.statusChanges(from: before, to: after)
+            }) else { return }
+            done(result.mapError { Refusal(message: $0.localizedDescription) })
         }
     }
 
@@ -265,33 +316,52 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     // MARK: Waivers
 
-    /// Marks the item not available; the error's text when refused.
-    func waive(_ item: MissingEvidence.Item, reason: EvidenceWaiverReason, note: String?) -> String? {
-        guard let requirementId = item.requirement.id else { return "The rule no longer exists." }
-        do {
-            _ = try dbQueue.write(.property) { db in try EvidenceRequirements.waive(db: db, requirementId: requirementId, target: item.target, reason: reason, note: note) }
-            return nil
-        } catch {
-            return error.localizedDescription
+    /// Marks the item not available, off the main thread; `done` gets the error's text when refused.
+    func waive(_ item: MissingEvidence.Item, reason: EvidenceWaiverReason, note: String?, done: @escaping (String?) -> Void) {
+        guard let requirementId = item.requirement.id else { return done("The rule no longer exists.") }
+        let dbQueue = dbQueue, target = item.target
+        Task {
+            do {
+                _ = try await dbQueue.write(.property) { db in
+                    try EvidenceRequirements.waive(db: db, requirementId: requirementId, target: target, reason: reason, note: note)
+                }
+                done(nil)
+            } catch {
+                done(error.localizedDescription)
+            }
         }
     }
 
+    /// Asks for a document again, off the main thread; a refusal shows in the page's banner.
     func removeWaiver(_ item: MissingEvidence.Item) {
         guard let requirementId = item.requirement.id else { return }
-        do {
-            _ = try dbQueue.write(.property) { db in try EvidenceRequirements.removeWaiver(db: db, requirementId: requirementId, target: item.target) }
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+        let dbQueue = dbQueue, target = item.target
+        Task {
+            do {
+                _ = try await dbQueue.write(.property) { db in
+                    try EvidenceRequirements.removeWaiver(db: db, requirementId: requirementId, target: target)
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     // MARK: Transactions
 
-    /// The item's transaction (transaction scopes), for Show.
-    func transaction(for item: MissingEvidence.Item) -> Transaction? {
+    /// The item's transaction (transaction scopes), for Show, read off the main thread.
+    func transaction(for item: MissingEvidence.Item) async -> Transaction? {
         guard item.target.entity.type == .transaction else { return nil }
-        return try? dbQueue.read { db in try Transaction.fetchOne(db, key: item.target.entity.id) }
+        let dbQueue = dbQueue, id = item.target.entity.id
+        return try? await dbQueue.read { db in try Transaction.fetchOne(db, key: id) }
+    }
+
+    /// Shows the item's transaction elsewhere (Search, on its day and account), or says it's gone.
+    func show(transactionOf item: MissingEvidence.Item, with open: @escaping (Transaction) -> Void) {
+        Task {
+            if let found = await transaction(for: item) { open(found) } else { errorMessage = "The transaction no longer exists." }
+        }
     }
 
     // MARK: Export

@@ -35,7 +35,7 @@ enum SnapshotCatalog {
     /// member's own-database routes (`SharingSnapshots.memberRoutes`) take A's private records out of the demo copy, so they come last.
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + SharingSnapshots.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute] + SharingSnapshots.memberRoutes + [AuthSnapshots.launchLoadsOnceRoute]
+            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + evidencePanelRoutes + [AuthSnapshots.attributionRoute] + SharingSnapshots.memberRoutes + [AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -390,6 +390,71 @@ enum SnapshotCatalog {
     }
 
     // MARK: A transaction's documents
+
+    /// Missing evidence's side panel (2025/26): on a row with no transaction (the property's deed or
+    /// mortgage contract); on the home insurance debit whose receipt is filed as a bank debit advice
+    /// (Missing, and why); on the same debit with its receipt unlinked (suggested, Link); and once
+    /// that receipt is linked through the page (the row Done in place, the panel still on it). Each
+    /// sets the receipt up as it needs it (after the imports, before the member's routes).
+    static let longPlumberDescription = "PLUMBER SERVICES EXEMPLO LDA LISBOA REF 2026-03-05 FATURA 000123 BATHROOM LEAK REPAIR"
+
+    static var evidencePanelRoutes: [SnapshotRoute] {
+        [
+            screen("missing_evidence", "panel_no_transaction", "Missing evidence: the panel on a record's row (no transaction)", .missingEvidence,
+                   settle: 1.5) { models, context in
+                models.missingEvidence.periodChoice = .taxYear(2025)
+                models.missingEvidence.missingOnly = false
+                let items = (try? context.dbQueue.read { db in try MissingEvidence.items(db: db, taxYear: UKTaxYear(startYear: 2025)) }) ?? []
+                // A one-off record's rule first (a deed, a contract), else a record still missing its document, else any record.
+                let records = items.filter { $0.target.entity.type != .transaction }
+                let single = records.first { if case .single = $0.requirement.scope { return true } else { return false } }
+                models.missingEvidence.selectedItemId = (single ?? records.first { $0.status == .missing } ?? records.first)?.id
+            },
+            screen("missing_evidence", "panel_wrong_kind", "Missing evidence: the panel on a debit whose document isn't of a kind it needs",
+                   .missingEvidence, settle: 1.5) { models, context in
+                models.missingEvidence.periodChoice = .taxYear(2025)
+                models.missingEvidence.selectedItemId = try? context.homeInsuranceItem(receiptKind: .bankDebitAdvice, linked: true).id
+            },
+            screen("missing_evidence", "panel_suggestions", "Missing evidence: the panel suggesting the debit's receipt", .missingEvidence,
+                   settle: 1.5) { models, context in
+                models.missingEvidence.periodChoice = .taxYear(2025)
+                models.missingEvidence.selectedItemId = try? context.homeInsuranceItem(receiptKind: .insuranceReceipt, linked: false).id
+            },
+            // A bank description too long for the panel's title: it truncates in the middle.
+            screen("missing_evidence", "panel_long_title", "Missing evidence: the panel on a debit with a long description",
+                   .missingEvidence, settle: 1.5) { models, context in
+                models.missingEvidence.periodChoice = .taxYear(2025)
+                models.missingEvidence.selectedItemId = try? context.plumberItem(description: Self.longPlumberDescription).id
+            },
+            // Inside Tax years (2025/26, Person A, Property A's rules): the page goes narrow beside the panel.
+            // Selected once the tab shows (opening the tab closes a panel left open on the standalone screen).
+            screen("tax_years", "missing_evidence_panel", "Tax years: Missing evidence with the panel on the wrong-kind debit",
+                   .taxYears, settle: 2) { models, context in
+                models.taxYears.selection = context.taxYear("Person A", 2025)
+                models.taxYears.tab = .missingEvidence
+                let id = try? context.homeInsuranceItem(receiptKind: .bankDebitAdvice, linked: true).id
+                let model = models.missingEvidence
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(0.8))
+                    model.selectedItemId = id
+                }
+            },
+            // Linked through the page's own path once the panel shows: the row turns Done where it is
+            // (Missing only still lists it), the panel stays on it, the summary counts one more.
+            screen("missing_evidence", "panel_linked", "Missing evidence: the panel after linking the receipt (status updated)", .missingEvidence,
+                   settle: 2.5) { models, context in
+                let model = models.missingEvidence
+                model.periodChoice = .taxYear(2025)
+                guard let item = try? context.homeInsuranceItem(receiptKind: .insuranceReceipt, linked: false),
+                      let receipt = try? context.homeInsuranceReceipt() else { return }
+                model.selectedItemId = item.id
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.2))
+                    model.link(documentId: receipt.id!, to: item) { _ in }
+                }
+            }
+        ]
+    }
 
     /// The paperclip's popover over a debit with three invented documents (adds them to the demo copy, after the imports):
     /// a repair invoice also on another transaction, a transfer proof, and a receipt whose file isn't on this Mac.
@@ -1101,6 +1166,53 @@ extension SnapshotContext {
 
     func accountId(_ name: String) -> Int64? {
         try? dbQueue.read { db in try Account.filter(Column("name") == name).fetchOne(db)?.id }
+    }
+
+    /// The demo's 2026 home insurance receipt (the 1 Mar 2026 debit's, in 2025/26).
+    func homeInsuranceReceipt() throws -> EvidenceDocument {
+        guard let document = try dbQueue.read({ db in
+            try EvidenceDocument.filter(Column("originalFileName") == "Home insurance receipt 2026.pdf").fetchOne(db)
+        }) else { throw SnapshotMissing("Home insurance receipt 2026.pdf") }
+        return document
+    }
+
+    /// The 5 Mar 2026 plumber debit's checklist item (2025/26), its description changed to `description`.
+    func plumberItem(description: String) throws -> MissingEvidence.Item {
+        let year = UKTaxYear(startYear: 2025)
+        let transactionId = try dbQueue.write { db -> Int64? in
+            let id = try Int64.fetchOne(db, sql: "SELECT id FROM transaction_ WHERE rawDescription IN ('PLUMBER SERVICES', ?) AND date >= ? AND date < ?",
+                                        arguments: [description, year.start, year.end])
+            if let id { try db.execute(sql: "UPDATE transaction_ SET rawDescription = ? WHERE id = ?", arguments: [description, id]) }
+            return id
+        }
+        guard let transactionId else { throw SnapshotMissing("The 2025/26 plumber debit") }
+        let items = try dbQueue.read { db in try MissingEvidence.items(db: db, taxYear: year) }
+        guard let item = items.first(where: { $0.target.entity == .transaction(transactionId) }) else { throw SnapshotMissing("The plumber item") }
+        return item
+    }
+
+    /// The home insurance debit's checklist item (2025/26), with its receipt filed as `receiptKind`
+    /// and linked to it or not (the demo copy changed to match).
+    func homeInsuranceItem(receiptKind: DocumentKind, linked: Bool) throws -> MissingEvidence.Item {
+        var receipt = try homeInsuranceReceipt()
+        let year = UKTaxYear(startYear: 2025)
+        let transactionId = try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM transaction_ WHERE rawDescription = 'SEGUROS EXEMPLO HOME POLICY' AND date >= ? AND date < ?",
+                               arguments: [year.start, year.end])
+        }
+        guard let transactionId, let documentId = receipt.id else { throw SnapshotMissing("The 2025/26 home insurance debit") }
+        try dbQueue.write { db in
+            receipt.kind = receiptKind
+            try receipt.update(db)
+            if linked {
+                _ = try EvidenceLinks.link(db: db, documentId: documentId, to: .transaction(transactionId))
+            } else {
+                _ = try EvidenceLinks.unlink(db: db, documentId: documentId, from: .transaction(transactionId))
+            }
+        }
+        let items = try dbQueue.read { db in try MissingEvidence.items(db: db, taxYear: year) }
+        guard let item = items.first(where: { $0.target.entity == .transaction(transactionId) }) else { throw SnapshotMissing("The home insurance item") }
+        return item
     }
 
     func propertyId() throws -> Int64 {

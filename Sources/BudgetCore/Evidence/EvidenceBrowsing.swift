@@ -100,22 +100,43 @@ extension EvidenceLibrary {
     /// period or persons: an invoice dates the expense it is linked to, a period apportions it, persons say whose
     /// tax payment it is) is refused whole, as a link change is, when it would move a filed or paid return
     /// (`EvidenceLinkGuard.Failure.detailsChangeFiledYear`).
+    /// Written as `actor` (nil: the database's writer, else the admin) with Documents' permission (`ActorWrite`).
     @discardableResult
-    public func updateDetails(_ documentId: Int64, _ details: EvidenceDocumentDetails) throws -> EvidenceDocument {
+    public func updateDetails(_ documentId: Int64, _ details: EvidenceDocumentDetails, actor: AccessActor? = nil) throws -> EvidenceDocument {
         if let start = details.periodStart, let end = details.periodEnd, end < start { throw EvidenceDetailsError.periodEndsBeforeStart }
         if details.amountMinorUnits != nil, details.currency == nil { throw EvidenceDetailsError.amountWithoutCurrency }
-        return try database.write { db in
-            guard let stored = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
-            let document = Self.applying(details, to: stored)
-            let movesFigures = document.kind != stored.kind || document.customKindId != stored.customKindId
-                || document.docDate != stored.docDate || document.periodStart != stored.periodStart
-                || document.periodEnd != stored.periodEnd || document.persons != stored.persons
-            if movesFigures, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
-                try EvidenceLinkGuard.checked(db: db, refusal: EvidenceLinkGuard.Failure.detailsChangeFiledYear) { try document.update(db) }
-            } else {
-                try document.update(db)
+        return try updating(documentId, actor: actor) { _ in details }
+    }
+
+    /// Files the document as `kind` (built-in or custom), every other detail as stored — Missing
+    /// evidence's Change kind…, through `updateDetails`' checks (a change that would move a filed
+    /// or paid return is refused whole, `EvidenceLinkGuard.Failure.detailsChangeFiledYear`).
+    @discardableResult
+    public func changeKind(_ documentId: Int64, to kind: DocumentKindRef, actor: AccessActor? = nil) throws -> EvidenceDocument {
+        try updating(documentId, actor: actor) { stored in
+            var details = EvidenceDocumentDetails(stored)
+            details.kindRef = kind
+            return details
+        }
+    }
+
+    /// Reads the stored document, applies the details `change` makes of it and saves, in one write.
+    private func updating(_ documentId: Int64, actor: AccessActor?,
+                          _ change: (EvidenceDocument) -> EvidenceDocumentDetails) throws -> EvidenceDocument {
+        try database.write { db in
+            try ActorWrite.perform(orAdmin: actor, area: .documents, db: db) {
+                guard let stored = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
+                let document = Self.applying(change(stored), to: stored)
+                let movesFigures = document.kind != stored.kind || document.customKindId != stored.customKindId
+                    || document.docDate != stored.docDate || document.periodStart != stored.periodStart
+                    || document.periodEnd != stored.periodEnd || document.persons != stored.persons
+                if movesFigures, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
+                    try EvidenceLinkGuard.checked(db: db, refusal: EvidenceLinkGuard.Failure.detailsChangeFiledYear) { try document.update(db) }
+                } else {
+                    try document.update(db)
+                }
+                return document
             }
-            return document
         }
     }
 

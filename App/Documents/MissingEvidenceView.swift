@@ -32,35 +32,53 @@ struct MissingEvidenceView: View {
     @State private var exportDocument: MarkdownDocument?
     /// Sources whose rows are folded away.
     @State private var collapsed: Set<String> = []
+    /// The side panel's library reads (made with the page).
+    @StateObject private var panel: MissingEvidencePanelModel
+
+    init(viewModel: MissingEvidenceViewModel, openTransaction: @escaping (Transaction) -> Void, embedded: Bool = false) {
+        self.viewModel = viewModel
+        self.openTransaction = openTransaction
+        self.embedded = embedded
+        _panel = StateObject(wrappedValue: MissingEvidencePanelModel(dbQueue: viewModel.dbQueue, library: viewModel.library))
+    }
 
     /// The narrowest the page lays out at: the summary's two panels side by side
     /// (`TwoUpRow`'s 340 pt each). Embedded, what Tax years has left at a 1100-wide window.
     static let minimumWidth: CGFloat = 700
     static let embeddedMinimumWidth: CGFloat = 600
+    /// Beside the side panel: the progress panel alone on top, the table without its evidence
+    /// and actions columns (the panel has them).
+    static let besidePanelMinimumWidth: CGFloat = 560
+    /// Embedded beside the side panel (what Tax years leaves beside it at a 1100-wide window):
+    /// the narrow layout — a one-line summary, the filters on two lines, and the table with a
+    /// status icon, the item and the amount (`narrow`).
+    static let embeddedBesidePanelMinimumWidth: CGFloat = 290
+
+    /// The side panel's item (nil: closed).
+    private var panelItem: MissingEvidence.Item? { viewModel.selectedItem }
+    /// Embedded with the panel open: the narrow layout.
+    private var narrow: Bool { embedded && panelItem != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-            summary
-            // The property chip stays reachable when its filter leaves nothing to show.
-            if hasChecklist || viewModel.propertyFilter != nil {
-                filterBar
+        // Selecting a row docks its panel beside the page, which narrows to make room (the list
+        // keeps its scroll position, filters and search); ✕ or Escape closes it.
+        PropertyPanelDock(isOpen: panelItem != nil) {
+            page
+        } panel: {
+            if let item = panelItem {
+                MissingEvidencePanel(item: item, viewModel: viewModel, model: panel, openTransaction: openTransaction,
+                                     waive: { waiving = item }, onClose: { viewModel.selectedItemId = nil })
             }
-            messages
-            checklist
-                // The table or empty state takes the rest of the window below the summary.
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        // The page's minimum is measured at this width, where the summary's panels sit side by
-        // side: measured narrower, they stacked and the window's minimum height came to 932 pt
-        // (the checklist scrolls in whatever height is left).
-        .frame(minWidth: embedded ? Self.embeddedMinimumWidth : Self.minimumWidth)
-        // Standalone: padded like Accounts and Budget. Embedded: the page pads the sides and
-        // top; the bottom is ours.
-        .padding(embedded ? [.bottom] : .all, ScreenMetrics.padding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .checkingFiledYears(viewModel.isCheckingFiledYears)
-        .onAppear { viewModel.start() }
-        .onDisappear { viewModel.stop() }
+        .onAppear {
+            viewModel.start()
+            panel.start()
+        }
+        .onDisappear {
+            viewModel.stop()
+            panel.stop()
+        }
         .screenToolbar {
             if !embedded {
                 ToolbarItem(placement: .primaryAction) {
@@ -96,6 +114,29 @@ struct MissingEvidenceView: View {
         }
     }
 
+    private var page: some View {
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
+            summary
+            // The property chip stays reachable when its filter leaves nothing to show.
+            if hasChecklist || viewModel.propertyFilter != nil {
+                filterBar
+            }
+            messages
+            checklist
+                // The table or empty state takes the rest of the window below the summary.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        // The page's minimum is measured at this width, where the summary's panels sit side by
+        // side: measured narrower, they stacked and the window's minimum height came to 932 pt
+        // (the checklist scrolls in whatever height is left).
+        .frame(minWidth: narrow ? Self.embeddedBesidePanelMinimumWidth
+                         : embedded ? Self.embeddedMinimumWidth : panelItem != nil ? Self.besidePanelMinimumWidth : Self.minimumWidth)
+        // Standalone: padded like Accounts and Budget. Embedded: the page pads the sides and
+        // top; the bottom is ours (and, beside the panel, the gap before it).
+        .padding(embedded ? (narrow ? [.bottom, .trailing] : [.bottom]) : .all, ScreenMetrics.padding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     /// The period has items to show (the checklist, not an empty state).
     private var hasChecklist: Bool {
         viewModel.period != nil && !viewModel.requirements.isEmpty && !viewModel.items.isEmpty
@@ -127,17 +168,22 @@ struct MissingEvidenceView: View {
     @ViewBuilder
     private var summary: some View {
         if hasChecklist {
-            if embedded {
+            if narrow {
+                narrowSummary
+            } else if panelItem != nil {
+                // Beside the panel: the progress alone, at its own height (the sources come back when it closes).
+                progressPanel(compact: true)
+            } else if embedded {
                 // Always side by side under the Tax years header: stacked (a `TwoUpRow` at its
                 // narrowest), the summary pushed the page past a 1280×800 window.
                 HStack(alignment: .top, spacing: ScreenMetrics.spacing) {
-                    progressPanel.frame(maxWidth: .infinity)
+                    progressPanel().frame(maxWidth: .infinity)
                     sourcesPanel.frame(maxWidth: .infinity)
                 }
                 .fixedSize(horizontal: false, vertical: true)
             } else {
                 TwoUpRow {
-                    progressPanel
+                    progressPanel()
                 } second: {
                     sourcesPanel
                 }
@@ -156,9 +202,10 @@ struct MissingEvidenceView: View {
         }
     }
 
-    private var progressPanel: some View {
+    /// `compact`: alone above the table (beside the side panel), as tall as its content.
+    private func progressPanel(compact: Bool = false) -> some View {
         let progress = viewModel.progress
-        return Panel(padding: 14, fillsHeight: true) {
+        return Panel(padding: 14, fillsHeight: !compact) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     periodControl
@@ -171,7 +218,7 @@ struct MissingEvidenceView: View {
                     }
                 }
                 // The ring and figures centred in the height the sources beside it take.
-                Spacer(minLength: 12)
+                if compact { Spacer().frame(height: 12) } else { Spacer(minLength: 12) }
                 HStack(alignment: .center, spacing: 16) {
                     ProgressRing(done: progress.done, total: progress.total, size: 68, caption: nil)
                         .accessibilityLabel("Evidence collected")
@@ -184,7 +231,38 @@ struct MissingEvidenceView: View {
                                    captionIsWarning: progress.missing > 0)
                     ])
                 }
-                Spacer(minLength: 0)
+                if !compact { Spacer(minLength: 0) }
+            }
+        }
+    }
+
+    /// Embedded beside the side panel: the year, Rules… and Export, then a small ring and
+    /// "69 of 73 done · 4 missing" (the full summary comes back when the panel closes).
+    private var narrowSummary: some View {
+        let progress = viewModel.progress
+        return Panel(padding: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    periodControl
+                    Spacer(minLength: 8)
+                    HStack(spacing: 10) {
+                        rulesButton.labelStyle(.iconOnly)
+                        exportButton.labelStyle(.iconOnly)
+                    }
+                }
+                HStack(spacing: 8) {
+                    ProgressRing(done: progress.done, total: progress.total, size: 18, lineWidth: 3)
+                        .accessibilityLabel("Evidence collected")
+                    Text("\(progress.done) of \(progress.total) done")
+                        .font(.callout).monospacedDigit()
+                        .figureText()
+                    if progress.missing > 0 {
+                        Text("· \(progress.missing) missing")
+                            .font(.callout).monospacedDigit().foregroundStyle(theme.pending)
+                            .figureText()
+                    }
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -286,8 +364,34 @@ struct MissingEvidenceView: View {
 
     // MARK: Filters
 
+    /// Narrow (embedded beside the panel): Missing/All and the count, then the search and the property chip.
+    @ViewBuilder
     private var filterBar: some View {
-        HStack(spacing: 8) {
+        if narrow {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    showPicker
+                    Spacer(minLength: 8)
+                    itemCount
+                }
+                HStack(spacing: 8) {
+                    SearchField("Search", text: $viewModel.queryText)
+                    propertyChip
+                }
+            }
+        } else {
+            HStack(spacing: 8) {
+                showPicker
+                SearchField("Search descriptions, categories, kinds or an amount", text: $viewModel.queryText)
+                    .frame(maxWidth: 360)
+                propertyChip
+                Spacer(minLength: 8)
+                itemCount
+            }
+        }
+    }
+
+    private var showPicker: some View {
             Picker("Show", selection: $viewModel.missingOnly) {
                 Text("Missing").tag(true)
                 Text("All").tag(false)
@@ -296,8 +400,10 @@ struct MissingEvidenceView: View {
             .labelsHidden()
             .fixedSize()
             .accessibilityLabel("Show")
-            SearchField("Search descriptions, categories, kinds or an amount", text: $viewModel.queryText)
-                .frame(maxWidth: 360)
+    }
+
+    @ViewBuilder
+    private var propertyChip: some View {
             if let filter = viewModel.propertyFilter {
                 Button { viewModel.propertyFilter = nil } label: {
                     HStack(spacing: 4) {
@@ -311,12 +417,13 @@ struct MissingEvidenceView: View {
                 .help("Showing only \(filter.name)'s rules. Click to show everything.")
                 .accessibilityLabel("Property filter: \(filter.name). Remove filter")
             }
-            Spacer(minLength: 8)
-            let shown = viewModel.groups.reduce(0) { $0 + $1.items.count }
-            Text(shown == 1 ? "1 item" : "\(shown) items")
-                .font(.callout).foregroundStyle(.secondary).monospacedDigit()
-                .figureText()
-        }
+    }
+
+    private var itemCount: some View {
+        let shown = viewModel.groups.reduce(0) { $0 + $1.items.count }
+        return Text(shown == 1 ? "1 item" : "\(shown) items")
+            .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+            .figureText()
     }
 
     @ViewBuilder
@@ -361,7 +468,14 @@ struct MissingEvidenceView: View {
         } else {
             ChecklistTable(groups: viewModel.groups, collapsed: $collapsed,
                            progress: { viewModel.progress(source: $0) },
-                           actions: actions(for:))
+                           actions: actions(for:),
+                           besidePanel: panelItem != nil,
+                           narrow: narrow,
+                           selectedId: viewModel.selectedItemId,
+                           select: { viewModel.selectedItemId = $0 },
+                           quickLook: {
+                               if let item = panelItem { MissingEvidencePanel.quickLookPreviewed(item: item, model: panel, catalog: viewModel.kindCatalog) }
+                           })
         }
     }
 
@@ -375,15 +489,16 @@ struct MissingEvidenceView: View {
             waive: { waiving = item },
             removeWaiver: { viewModel.removeWaiver(item) },
             unlink: { documentId in viewModel.unlink(documentId: documentId, from: item) },
-            showTransaction: transaction ? {
-                if let found = viewModel.transaction(for: item) { openTransaction(found) } else { viewModel.errorMessage = "The transaction no longer exists." }
-            } : nil)
+            showTransaction: transaction ? { viewModel.show(transactionOf: item, with: openTransaction) } : nil)
     }
 }
 
 /// The checklist's columns, shared by the header strip and every row so they line up.
 private enum ChecklistColumns {
     static let status: CGFloat = 110
+    /// Narrow (embedded beside the side panel): the status as an icon.
+    static let statusIcon: CGFloat = 30
+    static let narrowAmount: CGFloat = 96
     static let amount: CGFloat = 112
     static let actions: CGFloat = 60
     static let evidenceMin: CGFloat = 150
@@ -399,7 +514,8 @@ private enum ChecklistColumns {
 
     /// The evidence column's width for a table `width` wide: the item takes the width first
     /// (about `itemFirst`), the evidence what's left, between its minimum and maximum. One
-    /// width for the header and every row, so the columns line up.
+    /// width for the header and every row, so the columns line up. Beside the side panel the
+    /// table has no evidence or actions column (`besidePanel`).
     static func evidence(tableWidth width: CGFloat) -> CGFloat {
         let fixed = status + date + amount + actions + 2 * rowInset
         return min(evidenceMax, max(evidenceMin, width - fixed - itemFirst))
@@ -415,7 +531,20 @@ private struct ChecklistTable: View {
     @Binding var collapsed: Set<String>
     let progress: (String) -> MissingEvidence.Progress
     let actions: (MissingEvidence.Item) -> MissingEvidenceRow.Actions
+    /// The side panel is open: no evidence or actions column (the panel has them).
+    var besidePanel = false
+    /// Embedded beside the side panel: a status icon instead of the pill, and no date column.
+    var narrow = false
+    /// The row the side panel shows.
+    var selectedId: String?
+    /// Opens a row's side panel (nil: closes it); nil: rows don't open one.
+    var select: ((String?) -> Void)?
+    /// The space bar: Quick Look on the panel's document.
+    var quickLook: () -> Void = {}
     @Environment(\.theme) private var theme
+    @FocusState private var isFocused: Bool
+    /// The highlighted row while the panel is closed (↑/↓ move it, Return opens it).
+    @State private var cursorId: String?
     /// The rows' height, so a short checklist's card ends with its last row.
     @State private var contentHeight: CGFloat = 0
     /// The table's width, measured once for the header and every row (the evidence column).
@@ -426,24 +555,62 @@ private struct ChecklistTable: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    ForEach(groups, id: \.source) { group in
-                        Section {
-                            if !collapsed.contains(group.source) {
-                                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                                    MissingEvidenceRow(item: item, shaded: index % 2 == 1,
-                                                       evidenceWidth: evidenceWidth, actions: actions(item))
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ForEach(groups, id: \.source) { group in
+                            Section {
+                                if !collapsed.contains(group.source) {
+                                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                                        MissingEvidenceRow(item: item, shaded: index % 2 == 1,
+                                                           evidenceWidth: evidenceWidth, actions: actions(item),
+                                                           besidePanel: besidePanel, narrow: narrow, isSelected: item.id == selectedId,
+                                                           isCursor: selectedId == nil && item.id == cursorId,
+                                                           onSelect: select.map { select in {
+                                                               isFocused = true
+                                                               cursorId = item.id
+                                                               select(item.id == selectedId ? nil : item.id)
+                                                           } })
+                                        .id(item.id)
+                                    }
                                 }
+                            } header: {
+                                groupStrip(group)
                             }
-                        } header: {
-                            groupStrip(group)
                         }
                     }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                .frame(maxHeight: contentHeight > 0 ? contentHeight : .infinity)
+                // The open row in view: when the panel opens on it, and when the panel moves to it.
+                .onAppear { if let selectedId { proxy.scrollTo(selectedId) } }
+                .onChange(of: selectedId) { _, id in
+                    if let id {
+                        cursorId = id
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) }
+                    }
+                }
+                .onChange(of: cursorId) { _, id in
+                    if selectedId == nil, let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
+                }
+                // Up and Down move the panel to the row above or below (folded sources skipped);
+                // with the panel closed, they move the highlight and Return opens it.
+                .onKeyPress(.upArrow) { move(-1, proxy) }
+                .onKeyPress(.downArrow) { move(1, proxy) }
+                .onKeyPress(.return) {
+                    guard let select, selectedId == nil, let cursorId, visibleIds.contains(cursorId) else { return .ignored }
+                    select(cursorId)
+                    return .handled
+                }
+                .onKeyPress(.space) {
+                    guard selectedId != nil else { return .ignored }
+                    quickLook()
+                    return .handled
+                }
             }
-            .frame(maxHeight: contentHeight > 0 ? contentHeight : .infinity)
+            .focusable(select != nil)
+            .focused($isFocused)
+            .focusEffectDisabled()
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(theme.surface)
@@ -451,19 +618,46 @@ private struct ChecklistTable: View {
         .overlay(RoundedRectangle(cornerRadius: Panel<EmptyView, EmptyView>.cornerRadius).strokeBorder(Color(nsColor: .separatorColor)))
     }
 
+    /// The rows shown, in order (folded sources' left out).
+    private var visibleIds: [String] {
+        groups.filter { !collapsed.contains($0.source) }.flatMap { $0.items.map(\.id) }
+    }
+
+    private func move(_ steps: Int, _ proxy: ScrollViewProxy) -> KeyPress.Result {
+        guard let select else { return .ignored }
+        let ids = visibleIds
+        guard !ids.isEmpty else { return .ignored }
+        let next: String
+        if let current = selectedId ?? cursorId, let index = ids.firstIndex(of: current) {
+            next = ids[min(max(index + steps, 0), ids.count - 1)]
+        } else {
+            next = steps > 0 ? ids[0] : ids[ids.count - 1]
+        }
+        if selectedId != nil { select(next) } else { cursorId = next }
+        return .handled
+    }
+
     private var header: some View {
         HStack(spacing: 0) {
-            title("Status").frame(width: ChecklistColumns.status, alignment: .leading)
-            // As wide as the rows' dates.
-            DateText(date: nil).hidden()
-                .overlay(alignment: .leading) { Text("Date").font(.caption).foregroundStyle(.secondary) }
-                .padding(.horizontal, ChecklistColumns.cellPadding)
+            if narrow {
+                Color.clear.frame(width: ChecklistColumns.statusIcon, height: 1)
+            } else {
+                title("Status").frame(width: ChecklistColumns.status, alignment: .leading)
+                // As wide as the rows' dates.
+                DateText(date: nil).hidden()
+                    .overlay(alignment: .leading) { Text("Date").font(.caption).foregroundStyle(.secondary) }
+                    .padding(.horizontal, ChecklistColumns.cellPadding)
+            }
             // The item takes the width first; the evidence column gives way down to its minimum.
             title("Item").frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
-            title("Evidence").frame(width: evidenceWidth, alignment: .leading)
-            title("Amount").frame(width: ChecklistColumns.amount, alignment: .trailing)
-            Color.clear.frame(width: ChecklistColumns.actions, height: 1)
+            if !besidePanel {
+                title("Evidence").frame(width: evidenceWidth, alignment: .leading)
+            }
+            title("Amount").frame(width: narrow ? ChecklistColumns.narrowAmount : ChecklistColumns.amount, alignment: .trailing)
+            if !besidePanel {
+                Color.clear.frame(width: ChecklistColumns.actions, height: 1)
+            }
         }
         .padding(.horizontal, ChecklistColumns.rowInset)
         .padding(.vertical, 5)
@@ -539,6 +733,16 @@ struct MissingEvidenceRow: View {
     /// The evidence column's width (the table's, `ChecklistColumns.evidence`).
     var evidenceWidth: CGFloat = ChecklistColumns.evidenceMin
     let actions: Actions
+    /// Beside the side panel: no evidence or actions column.
+    var besidePanel = false
+    /// Embedded beside the side panel: a status icon instead of the pill, and no date column.
+    var narrow = false
+    /// The row the side panel shows.
+    var isSelected = false
+    /// The keyboard's highlight with the panel closed.
+    var isCursor = false
+    /// A click on the row: opens (or closes) its side panel; nil: rows don't open one.
+    var onSelect: (() -> Void)? = nil
     @Environment(\.theme) private var theme
 
     /// What Add document… and a drop on the row hand the importer: the row's record as the link
@@ -551,31 +755,43 @@ struct MissingEvidenceRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            status
-                .padding(.horizontal, ChecklistColumns.cellPadding)
-                .frame(width: ChecklistColumns.status, alignment: .leading)
-            DateText(date: item.expectedDate ?? item.expectedPeriod?.start)
-                .padding(.horizontal, ChecklistColumns.cellPadding)
+            if narrow {
+                statusIcon
+                    .frame(width: ChecklistColumns.statusIcon)
+            } else {
+                status
+                    .padding(.horizontal, ChecklistColumns.cellPadding)
+                    .frame(width: ChecklistColumns.status, alignment: .leading)
+                DateText(date: item.expectedDate ?? item.expectedPeriod?.start)
+                    .padding(.horizontal, ChecklistColumns.cellPadding)
+            }
             description
                 .padding(.horizontal, ChecklistColumns.cellPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
-            evidence
-                .padding(.horizontal, ChecklistColumns.cellPadding)
-                .frame(width: evidenceWidth, alignment: .leading)
+            if !besidePanel {
+                evidence
+                    .padding(.horizontal, ChecklistColumns.cellPadding)
+                    .frame(width: evidenceWidth, alignment: .leading)
+            }
             amount
                 .padding(.horizontal, ChecklistColumns.cellPadding)
-                .frame(width: ChecklistColumns.amount, alignment: .trailing)
-            trailingActions
-                .padding(.horizontal, ChecklistColumns.cellPadding)
-                .frame(width: ChecklistColumns.actions, alignment: .trailing)
+                .frame(width: narrow ? ChecklistColumns.narrowAmount : ChecklistColumns.amount, alignment: .trailing)
+            if !besidePanel {
+                trailingActions
+                    .padding(.horizontal, ChecklistColumns.cellPadding)
+                    .frame(width: ChecklistColumns.actions, alignment: .trailing)
+            }
         }
         .padding(.horizontal, ChecklistColumns.rowInset)
         .padding(.vertical, 3)
         .frame(minHeight: 28)
-        .background(theme.rowBackground(shaded))
+        .background(isSelected ? theme.accent.opacity(0.16) : isCursor ? theme.accent.opacity(0.08) : theme.rowBackground(shaded))
         .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(.separator.opacity(0.6)) }
         .contentShape(Rectangle())
+        .onTapGesture { onSelect?() }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityAction(named: "Show details") { onSelect?() }
         .importDropTarget(Self.shortcut(item))
         .contextMenu { menuItems }
         .accessibilityElement(children: .contain)
@@ -598,8 +814,44 @@ struct MissingEvidenceRow: View {
         }
     }
 
-    /// What it is, then (secondary) its slot, rule, category and account.
+    /// The status as an icon (narrow): the pill's symbol in its colour, its name on hover and for VoiceOver.
+    private var statusIcon: some View {
+        let (symbol, color, title): (String, Color, String) = switch item.status {
+        case .missing: ("circle.dashed", theme.pending, "Missing")
+        case .satisfied: ("checkmark.circle.fill", theme.income, "Done")
+        case .waived: ("minus.circle", Color.secondary, item.waiver?.reason == .other ? "Waived" : "Not available")
+        }
+        return Image(systemName: symbol)
+            .foregroundStyle(color)
+            .help(title)
+            .accessibilityLabel(title)
+    }
+
+    /// What it is, then (secondary) its slot, rule, category and account. Narrow: the name on
+    /// its own line (truncated in the middle), the day before the rest under it, so rows that
+    /// differ only by date tell apart.
+    @ViewBuilder
     private var description: some View {
+        if narrow {
+            let detail = caption
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    DateText(date: item.expectedDate ?? item.expectedPeriod?.start, font: .caption).fixedSize()
+                    if !detail.isEmpty {
+                        Text("· " + detail).font(.caption).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+            .help(detail.isEmpty ? item.title : "\(item.title)\n\(detail)")
+            .accessibilityElement(children: .combine)
+        } else {
+            wideDescription
+        }
+    }
+
+    private var wideDescription: some View {
         let detail = caption
         let secondary = Text(verbatim: detail.isEmpty ? "" : "  ·  " + detail).font(.callout).foregroundStyle(.secondary)
         return Text("\(Text(verbatim: item.title))\(secondary)")

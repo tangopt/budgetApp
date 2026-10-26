@@ -89,6 +89,9 @@ public enum MissingEvidence {
         /// Linked documents of an expected kind (and, for periodic items, inside the slot).
         public var satisfyingDocuments: [EvidenceDocumentSummary]
         public var waiver: EvidenceWaiver?
+        /// Documents linked to its record that don't count for it (another kind; for a periodic
+        /// item, of its kind but with no date or period), the side panel's "why" (`attached`).
+        public var otherDocuments: [EvidenceDocumentSummary] = []
 
         /// The group the checklist shows it in.
         public var sourceName: String { usualSource ?? MissingEvidence.otherSourceName }
@@ -158,39 +161,45 @@ public enum MissingEvidence {
                 for transaction in transactions {
                     guard let transactionId = transaction.id else { continue }
                     let target = Target.transaction(transactionId)
-                    let documents = try linked.documents(for: target.entity).filter { requirement.accepts($0.kindRef) }
+                    let all = try linked.documents(for: target.entity)
+                    let documents = all.filter { requirement.accepts($0.kindRef) }
                     let account = accounts[transaction.accountId]
-                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: all, waiver: waiver(target),
                                        date: transaction.date, amount: abs(transaction.amountMinorUnits), currency: account?.currency,
                                        period: nil, title: transaction.rawDescription,
                                        categoryName: transaction.categoryId.flatMap { categoryNames[$0] }, accountName: account?.displayName))
                 }
             case let .periodic(entity, every):
-                let all = try linked.documents(for: entity).filter { requirement.accepts($0.kindRef) }
+                let linkedToEntity = try linked.documents(for: entity)
+                let all = linkedToEntity.filter { requirement.accepts($0.kindRef) }
                 for slot in slots(of: period, every: every) where slot.start < window.end && slot.end > window.start {
                     let target = Target(entity: entity, slot: slot)
                     let documents = all.filter { covers($0, slot: slot) }
-                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
+                    // Another slot's documents aren't this slot's to explain.
+                    let here = linkedToEntity.filter { !isAttachedElsewhereNotHere($0, slot: slot) }
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: here, waiver: waiver(target),
                                        date: nil, amount: nil, currency: nil, period: slot, title: requirement.name,
                                        categoryName: nil, accountName: nil))
                 }
             case let .single(entity):
                 let target = Target(entity: entity)
-                let documents = try linked.documents(for: entity).filter { requirement.accepts($0.kindRef) }
-                result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
+                let all = try linked.documents(for: entity)
+                let documents = all.filter { requirement.accepts($0.kindRef) }
+                result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: all, waiver: waiver(target),
                                    date: nil, amount: nil, currency: nil, period: nil, title: requirement.name,
                                    categoryName: nil, accountName: nil))
             case let .personalIncomeRecords(record):
                 let records = try PersonalIncomeEvidence.records(db: db, kind: record, overlapping: DateInterval(start: window.start, end: window.end))
                 for record in records {
                     let target = Target(entity: record.entity)
-                    var documents: [EvidenceDocumentSummary] = []
+                    var all: [EvidenceDocumentSummary] = []
                     for entity in record.documentEntities {
-                        for document in try linked.documents(for: entity) where requirement.accepts(document.kindRef) && !documents.contains(where: { $0.id == document.id }) {
-                            documents.append(document)
+                        for document in try linked.documents(for: entity) where !all.contains(where: { $0.id == document.id }) {
+                            all.append(document)
                         }
                     }
-                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
+                    let documents = all.filter { requirement.accepts($0.kindRef) }
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: all, waiver: waiver(target),
                                        date: record.date, amount: record.amountMinorUnits, currency: record.amountMinorUnits == nil ? nil : .gbp,
                                        period: record.period, title: record.title, categoryName: nil, accountName: nil))
                 }
@@ -199,8 +208,9 @@ public enum MissingEvidence {
                                                            overlapping: DateInterval(start: window.start, end: window.end))
                 for record in records {
                     let target = Target(entity: record.entity)
-                    let documents = try linked.documents(for: record.entity).filter { requirement.accepts($0.kindRef) }
-                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
+                    let all = try linked.documents(for: record.entity)
+                    let documents = all.filter { requirement.accepts($0.kindRef) }
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: all, waiver: waiver(target),
                                        date: record.date, amount: record.amountMinorUnits, currency: record.currency, period: record.period,
                                        title: record.title, categoryName: nil, accountName: nil))
                 }
@@ -312,7 +322,10 @@ public enum MissingEvidence {
 
     // MARK: Helpers
 
-    private static func item(requirement: EvidenceRequirement, catalog: DocumentKindCatalog, target: Target, documents: [EvidenceDocumentSummary], waiver: EvidenceWaiver?,
+    /// `linked`: every document attached to the record that may concern the item (those not in
+    /// `documents` become its `otherDocuments`).
+    private static func item(requirement: EvidenceRequirement, catalog: DocumentKindCatalog, target: Target, documents: [EvidenceDocumentSummary],
+                             linked: [EvidenceDocumentSummary], waiver: EvidenceWaiver?,
                              date: Date?, amount: Int?, currency: Currency?, period: DateInterval?, title: String,
                              categoryName: String?, accountName: String?) -> Item {
         let status: Status = !documents.isEmpty ? .satisfied : (waiver != nil ? .waived : .missing)
@@ -320,7 +333,8 @@ public enum MissingEvidence {
                     expectedKinds: requirement.kinds, expectedKindRefs: requirement.kindRefs,
                     expectedKindNames: requirement.kindRefs.map(catalog.displayName), expectedDate: date, expectedAmountMinorUnits: amount, currency: currency,
                     expectedPeriod: period, title: title, categoryName: categoryName, accountName: accountName,
-                    usualSource: requirement.usualSource, status: status, satisfyingDocuments: documents, waiver: waiver)
+                    usualSource: requirement.usualSource, status: status, satisfyingDocuments: documents, waiver: waiver,
+                    otherDocuments: linked.filter { document in !documents.contains { $0.id == document.id } })
     }
 
     static func itemId(requirementId: Int64, target: Target) -> String {
