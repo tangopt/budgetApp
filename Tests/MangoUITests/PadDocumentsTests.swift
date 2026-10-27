@@ -21,11 +21,39 @@ final class PadDocumentsTests: XCTestCase {
         let model = PadDocumentsModel(dbQueue: db)
         await model.reload()
         model.filter = .unlinked
-        let expected = Set(try await db.read { try EvidenceLinks.unlinkedDocuments(db: $0) }.compactMap(\.id))
+        // Unlinked leaves out the documents waiting for their payment (they have their own chip).
+        let now = Date()
+        let (unlinked, waiting) = try await db.read { db in
+            (Set(try EvidenceLinks.unlinkedDocuments(db: db).compactMap(\.id)),
+             Set(try WaitingDocuments.states(db: db, now: now).filter { $0.value == .waiting }.keys))
+        }
+        let expected = unlinked.subtracting(waiting)
         XCTAssertEqual(Set(model.groups.flatMap(\.documents).map(\.id)), expected)
         model.filter = .all
         XCTAssertEqual(model.groups.flatMap(\.documents).count, model.all.count)
         XCTAssertFalse(model.all.isEmpty)
+    }
+
+    func testWaitingChipListsOnlyWaiting() async throws {
+        let db = try demo()
+        let day = Calendar.current.date(byAdding: .day, value: -3, to: Date())!
+        let waiting = try await db.write { db -> Int64 in
+            var bill = EvidenceDocument(sha256: UUID().uuidString, storedRelativePath: "x/w.pdf", originalFileName: "Example Power.pdf",
+                                        byteCount: 1, kind: .utilityInvoice, docDate: day, amountMinorUnits: 6_000, currency: .eur, addedAt: day)
+            try bill.insert(db)
+            return bill.id!
+        }
+        let model = PadDocumentsModel(dbQueue: db)
+        await model.reload()
+        model.filter = .waiting
+        let listed = model.groups.flatMap(\.documents).map(\.id)
+        XCTAssertTrue(listed.contains(waiting))
+        let now = Date()
+        let states = try await db.read { try WaitingDocuments.states(db: $0, now: now) }
+        XCTAssertTrue(listed.allSatisfy { states[$0] == .waiting }, "only waiting documents")
+        model.filter = .unlinked
+        XCTAssertFalse(model.groups.flatMap(\.documents).map(\.id).contains(waiting), "Unlinked leaves the waiting ones out")
+        XCTAssertEqual(PadDocumentsModel.Filter.waiting.rawValue, "Waiting")
     }
 
     func testGroupsByCatalogKindTitle() async throws {

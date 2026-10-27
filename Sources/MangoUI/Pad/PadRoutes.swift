@@ -168,6 +168,18 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
+        // Step 9, Task 4: a document waiting for its payment selected, the Waiting filter on, the panel's quiet line, the edits offered.
+        DemoRoute(name: "pad-document-waiting", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            let tabs = editingTabs(context)
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            tabs.padDocuments.preload(snapshot)
+            tabs.padDocuments.filter = .waiting
+            if let id = tabs.padDocuments.groups.first?.documents.first?.id {
+                tabs.padDocuments.selectedId = id
+                tabs.padDocuments.preload(links: PadDocumentsModel.linksNow(context.dbQueue, documentId: id))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
         DemoRoute(name: "pad-document-fullview", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
             let tabs = editingTabs(context)
             let snapshot = PadDocumentsModel.readNow(context.dbQueue)

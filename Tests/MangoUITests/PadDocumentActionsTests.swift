@@ -157,6 +157,61 @@ final class PadDocumentActionsTests: XCTestCase {
         XCTAssertEqual(after.value, 3)
     }
 
+    /// A bill filed three days ago (waiting) and a debit that pays it.
+    private func waitingBill(paidIn filedYear: Bool = false) throws -> (bill: Int64, paid: Int64) {
+        try db.write { db in
+            let account = try XCTUnwrap(try Account.filter(Column("name") == "Euro Current").fetchOne(db))
+            let batch = try XCTUnwrap(try Int64.fetchOne(db, sql: "SELECT importBatchId FROM transaction_ WHERE accountId = ? LIMIT 1",
+                                                         arguments: [account.id]))
+            let repairs = try XCTUnwrap(try Category.filter(Column("name") == "Repairs").fetchOne(db))
+            let day = Calendar.current.date(byAdding: .day, value: -2, to: Date())!
+            var paid = Transaction(importBatchId: batch, accountId: account.id!, date: filedYear ? Self.day(2025, 4, 20) : day,
+                                   rawDescription: "EXAMPLE POWER DD 0001", amountMinorUnits: -6_000, categoryId: repairs.id,
+                                   status: .confirmed, categorizedBy: .manual, fingerprint: UUID().uuidString)
+            try paid.insert(db)
+            let billDay = filedYear ? Self.day(2025, 3, 30) : Calendar.current.date(byAdding: .day, value: -3, to: Date())!
+            var bill = EvidenceDocument(sha256: UUID().uuidString, storedRelativePath: "x/p.pdf", originalFileName: "Example Power.pdf",
+                                        byteCount: 1, kind: .utilityInvoice, docDate: billDay, amountMinorUnits: 6_000, currency: .eur,
+                                        addedAt: billDay)
+            try bill.insert(db)
+            return (bill.id!, paid.id!)
+        }
+    }
+
+    func testAcceptSuggestionLinks() async throws {
+        let (bill, paid) = try waitingBill()
+        let tabs = await tabs()
+        let before = try linkRows().count
+        let choices = await tabs.padDocumentActions.linkChoices(for: bill)
+        XCTAssertTrue(choices.map(\.id).contains(paid), "the matcher proposes the debit")
+        let saved = await tabs.padDocumentActions.link(documentId: bill, transactionId: paid)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try linkRows().count, before + 1)
+        XCTAssertEqual(after.value, 1)
+        let details = try await db.read { try DocumentPanelDetails.load(db: $0, documentId: bill) }
+        XCTAssertFalse(details.waiting, "linked: no longer waiting")
+    }
+
+    func testAcceptIntoFiledYearIsRefusedInline() async throws {
+        let (bill, paid) = try waitingBill(paidIn: true)
+        let tabs = await tabs()
+        let before = try linkRows().count
+        let saved = await tabs.padDocumentActions.link(documentId: bill, transactionId: paid)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(try linkRows().count, before)
+        XCTAssertEqual(tabs.padDocumentWrite.message(for: PadDocumentActions.documentRow(bill)),
+                       "Links not changed: this would change the filed 2024/25 return.")
+    }
+
+    func testViewerWithoutDocumentsEditSeesNoLinkButton() async throws {
+        let (bill, _) = try waitingBill()
+        let member = try addMember(documentsLevel: .view)
+        let tabs = await tabs(.iCloudUser(recordName: member))
+        XCTAssertFalse(tabs.padDocumentActions.canEdit)
+        let choices = await tabs.padDocumentActions.linkChoices(for: bill)
+        XCTAssertEqual(choices, [])
+    }
+
     func testUnlinkFromFiledYearTransactionRefusedInline() async throws {
         let (bill, paid) = try filedYearBill()
         let tabs = await tabs()

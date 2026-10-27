@@ -42,9 +42,16 @@ public final class PadDocumentActions: ObservableObject {
     /// The transactions the Mac would suggest for `documentId` (`EvidenceMatcher.suggestions`), those already linked
     /// left out, best first.
     func linkChoices(for documentId: Int64) async -> [PadChoice] {
+        guard canEdit else { return [] }
         let reader = dbQueue
         return (try? await reader.read { db -> [PadChoice] in
             guard let document = try EvidenceDocument.fetchOne(db, key: documentId) else { return [] }
+            // A waiting document's candidates leave out the pairs the user undid (as on the Mac).
+            if try WaitingDocuments.state(db: db, documentId: documentId, now: Date()) == .waiting {
+                let ids = try WaitingDocuments.suggestions(db: db, documentId: documentId).map(\.transactionId)
+                let byId = Dictionary(try Transaction.filter(keys: ids).fetchAll(db).map { ($0.id!, $0) }, uniquingKeysWith: { a, _ in a })
+                return ids.compactMap { byId[$0].map(PadChoice.transaction) }
+            }
             let index = EvidenceMatcher.Index(transactions: try Transaction.fetchAll(db), accounts: try Account.fetchAll(db),
                                               categories: try Category.fetchAll(db))
             let linked = try EvidenceLinks.links(db: db, for: documentId).filter { $0.entityType == .transaction }.map(\.entityId)
