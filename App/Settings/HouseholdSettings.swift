@@ -147,6 +147,7 @@ struct HouseholdPane: View {
             }
         }
         .formStyle(.grouped)
+        .reportsScrollContentHeight()
         // The saved grid changed (loaded, saved, another member): the draft starts again from it.
         .onChange(of: state.grid) { _, grid in draft = grid }
         .confirmationDialog(HouseholdCopy.removeTitle(state.member ?? ""), isPresented: $confirmsRemove, titleVisibility: .visible) {

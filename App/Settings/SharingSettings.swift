@@ -107,7 +107,7 @@ struct SharingSettingsContent: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 320)
+        .reportsScrollContentHeight()
         .task { await model.load() }
         // Someone else signed in, or the lock ended: the pane is theirs.
         .onReceive(AppEnvironment.Current.shared.environment?.session.$state.map(\.signedInId).removeDuplicates().dropFirst().eraseToAnyPublisher()

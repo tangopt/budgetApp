@@ -194,6 +194,7 @@ struct SyncSettingsPane: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 8)
+        .reportsIdealHeight()
     }
 
     private func counts(_ report: SyncReport) -> String {
