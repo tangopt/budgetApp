@@ -25,6 +25,8 @@ public final class PadDocumentsModel: ObservableObject {
 
     public struct LinkLine: Equatable, Identifiable, Sendable {
         public var id: Int64
+        /// The record linked to (Unlink removes this link).
+        public var entity: EvidenceEntity
         public var title: String
         public var subtitle: String?
     }
@@ -117,7 +119,17 @@ public final class PadDocumentsModel: ObservableObject {
         selectedId = groups.first?.documents.first?.id
     }
 
-    /// The selected document's links, titled as on the Mac.
+    /// Shows already read links for the selected document (the snapshot routes' first frame).
+    public func preload(links: [LinkLine]) {
+        self.links = links
+    }
+
+    /// The links of `documentId`, read now.
+    public nonisolated static func linksNow(_ dbQueue: any DatabaseReader, documentId: Int64) -> [LinkLine] {
+        (try? dbQueue.read { db in try linkLines(db, documentId: documentId) }) ?? []
+    }
+
+    /// The selected document's links.
     public func loadLinks() async {
         guard let id = selectedId else { links = []; return }
         let reader = dbQueue
@@ -126,21 +138,11 @@ public final class PadDocumentsModel: ObservableObject {
         links = lines ?? []
     }
 
+    /// Each link titled by `EvidenceLinkTitles` (a transaction by its date, description and amount).
     nonisolated static func linkLines(_ db: Database, documentId: Int64) throws -> [LinkLine] {
         try EvidenceLinks.links(db: db, for: documentId).map { link in
-            let kind = link.entityType.displayName
-            switch link.entityType {
-            case .property, .person, .tenancy, .rentReceipt:
-                return LinkLine(id: link.id ?? 0, title: try PropertyEvidence.title(db: db, entity: link.entity) ?? "\(kind) no longer exists", subtitle: kind)
-            case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .taxPolicyReceipt:
-                return LinkLine(id: link.id ?? 0, title: try TaxEvidence.title(db: db, entity: link.entity) ?? "\(kind) no longer exists", subtitle: kind)
-            case .account:
-                return LinkLine(id: link.id ?? 0, title: try Account.fetchOne(db, key: link.entityId)?.displayName ?? "Account no longer exists", subtitle: "Account")
-            case .category:
-                return LinkLine(id: link.id ?? 0, title: try Category.fetchOne(db, key: link.entityId)?.name ?? "Category no longer exists", subtitle: "Category")
-            default:
-                return LinkLine(id: link.id ?? 0, title: "\(kind) #\(link.entityId)", subtitle: nil)
-            }
+            let line = try EvidenceLinkTitles.line(db: db, entity: link.entity)
+            return LinkLine(id: link.id ?? 0, entity: link.entity, title: line.title, subtitle: line.subtitle)
         }
     }
 

@@ -20,8 +20,8 @@ public struct PadRefusalBanner: View {
     }
 }
 
-/// The iPad Property screens' writes (step 8, Task 8): every action goes through `DeviceWriter.writeCheckingFiledYears`
-/// in `.property`. Whether the user may edit is read from the writer; a refusal is kept against the row it was made on
+/// The iPad screens' writes (step 8, Tasks 8 and 10): every action goes through `DeviceWriter.writeCheckingFiledYears`
+/// in the model's `area` (Property's screens, or Documents and Missing evidence). Whether the user may edit is read from the writer; a refusal is kept against the row it was made on
 /// until another write on that row saves. With no writer (demo data) nothing is offered and nothing is said.
 @MainActor
 public final class PadWriteModel: ObservableObject {
@@ -37,13 +37,16 @@ public final class PadWriteModel: ObservableObject {
     }
 
     public let writer: DeviceWriter?
+    /// The area these screens edit.
+    public let area: AccessArea
     @Published public private(set) var canEdit: Bool
     /// Changes made here that can't go up any more (the user lost Edit before they were sent).
     @Published public private(set) var unsent = 0
     @Published public private(set) var refusal: Refusal?
 
-    public init(writer: DeviceWriter?) {
+    public init(writer: DeviceWriter?, area: AccessArea = .property) {
         self.writer = writer
+        self.area = area
         canEdit = false
     }
 
@@ -53,20 +56,20 @@ public final class PadWriteModel: ObservableObject {
         self.refusal = refusal
     }
 
-    /// Reads again whether the user has Edit on Property, and what is left unsent.
+    /// Reads again whether the user has Edit on the area, and what is left unsent.
     public func refresh() async {
         guard let writer else {
             canEdit = false
             unsent = 0
             return
         }
-        canEdit = await writer.canEdit(.property)
+        canEdit = await writer.canEdit(area)
         unsent = canEdit ? 0 : await writer.unsentChanges()
     }
 
-    /// Shown in place of the actions: the user views Property only.
+    /// Shown in place of the actions: the user views the area only.
     public var viewOnlyMessage: String? {
-        writer != nil && !canEdit ? DeviceWriteCopy.viewOnly(.property) : nil
+        writer != nil && !canEdit ? DeviceWriteCopy.viewOnly(area) : nil
     }
 
     /// "N changes not sent — you can no longer change this", while some are.
@@ -79,20 +82,26 @@ public final class PadWriteModel: ObservableObject {
         refusal?.rowId == rowId ? refusal?.message : nil
     }
 
-    /// Runs `body` through the writer, checking filed years: true when it saved. A refusal is kept under `rowId`
+    /// Runs `body` through the writer in the area, checking filed years: true when it saved. A refusal is kept under `rowId`
     /// (with its own copy, else `DeviceWriteCopy.notSaved`); the user's Edit is read again after one.
     @discardableResult
     public func perform(rowId: String, origin: WriteOrigin, edit: String, scope: FiledYearEditCheck.Scope,
                         _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
-        guard let writer, canEdit else { return false }
+        await saving(rowId: rowId, origin: origin, edit: edit, scope: scope, body) != nil
+    }
+
+    /// `perform`, giving what `body` returned (nil: nothing saved, the refusal kept under `rowId`).
+    public func saving<T: Sendable>(rowId: String, origin: WriteOrigin, edit: String, scope: FiledYearEditCheck.Scope,
+                                    _ body: @escaping @Sendable (Database) throws -> T) async -> T? {
+        guard let writer, canEdit else { return nil }
         do {
-            try await writer.writeCheckingFiledYears(.property, origin: origin, edit: edit, scope: scope, body)
+            let result = try await writer.writeCheckingFiledYears(area, origin: origin, edit: edit, scope: scope, body)
             if refusal?.rowId == rowId { refusal = nil }
-            return true
+            return result
         } catch {
             refusal = Refusal(rowId: rowId, message: Self.text(for: error))
             if error is AccessDenied { await refresh() }
-            return false
+            return nil
         }
     }
 

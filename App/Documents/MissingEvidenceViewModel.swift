@@ -97,7 +97,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var categories: [Category] = []
     @Published private(set) var categoryGroups: [CategoryGroup] = []
-    /// Property records' titles (`PropertyEvidence.entityTitles`).
+    /// Property records' and rules' transactions' titles (`entityTitles(db:)`).
     @Published private(set) var entityTitles: [EvidenceEntity: String] = [:]
 
     private var observationTask: Task<Void, Never>?
@@ -141,12 +141,27 @@ final class MissingEvidenceViewModel: ObservableObject {
         observationTask = nil
     }
 
+    /// Property records' titles, and the transactions rules name ("5 Mar 2023 · DEMO PWR DD 123 · −€100.00",
+    /// `EvidenceLinkTitles`).
+    nonisolated private static func entityTitles(db: Database) throws -> [EvidenceEntity: String] {
+        var titles = try PropertyEvidence.entityTitles(db: db)
+        for requirement in try EvidenceRequirements.all(db: db) {
+            let entity: EvidenceEntity
+            switch requirement.scope {
+            case .single(let named), .periodic(let named, _): entity = named
+            default: continue
+            }
+            if entity.type == .transaction, let title = try EvidenceLinkTitles.title(db: db, entity: entity) { titles[entity] = title }
+        }
+        return titles
+    }
+
     func loadReferenceData() {
         do {
             let (accounts, categories, groups, earliest, titles, kinds) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try Category.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
                  try CategoryGroup.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
-                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db),
+                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try Self.entityTitles(db: db),
                  try DocumentKindCatalog.load(db: db))
             }
             entityTitles = titles
@@ -222,16 +237,11 @@ final class MissingEvidenceViewModel: ObservableObject {
         }
     }
 
-    /// The period's items, only `propertyId`'s rules' when given: what the checklist shows.
+    /// The period's items, only `propertyId`'s rules' when given: what the checklist shows (`MissingEvidence.checklist`,
+    /// shared with the iPad).
     nonisolated private static func checklist(db: Database, period: DateInterval, propertyId: Int64?, taxFiguresOnly: Bool = false,
                                               requirements: [EvidenceRequirement]? = nil) throws -> [MissingEvidence.Item] {
-        let requirements = try requirements ?? EvidenceRequirements.all(db: db)
-        var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
-        if let propertyId {
-            let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
-            items = items.filter { $0.requirement.id.map(related.contains) ?? false }
-        }
-        return taxFiguresOnly ? MissingEvidence.affectingTaxFigures(items) : items
+        try MissingEvidence.checklist(db: db, period: period, propertyId: propertyId, taxFiguresOnly: taxFiguresOnly, requirements: requirements)
     }
 
     private func refreshShown() {
@@ -434,8 +444,7 @@ final class MissingEvidenceViewModel: ObservableObject {
         switch entity.type {
         case .account: return accountName(entity.id)
         case .category: return categoryName(entity.id)
-        case .transaction: return "Transaction #\(entity.id)"
-        case .property, .person, .tenancy, .rentReceipt:
+        case .transaction, .property, .person, .tenancy, .rentReceipt:
             return entityTitles[entity] ?? "\(entity.type.displayName) #\(entity.id)"
         case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .taxPolicyReceipt, .other:
             return "\(entity.type.displayName) #\(entity.id)"

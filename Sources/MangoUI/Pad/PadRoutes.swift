@@ -57,6 +57,42 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .bills, columns: .doubleColumn))
         },
+        // Task 10: Missing evidence for 2025/26, its first missing item with suggestions in the side panel (Link offered).
+        DemoRoute(name: "pad-missing-evidence", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
+            let tabs = editingTabs(context)
+            let model = tabs.padMissingEvidence
+            let year = UKTaxYear(startYear: 2025)
+            if let snapshot = PadMissingEvidenceModel.readNow(context.dbQueue, year: year, today: context.today) {
+                let catalog = snapshot.catalog
+                let panels = (try? context.dbQueue.read { db in
+                    try snapshot.items.filter { $0.status == .missing }.lazy
+                        .map { try PadMissingEvidenceModel.panel(db, item: $0, catalog: catalog) }
+                        .first { !$0.suggestions.isEmpty }
+                }) ?? nil
+                model.year = year
+                model.preload(snapshot, selecting: panels?.itemId ?? snapshot.items.first?.id, panel: panels)
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .missingEvidence, columns: .doubleColumn))
+        },
+        // A filed-year refusal under a document's transaction link (Unlink refused), the edits offered.
+        DemoRoute(name: "pad-document-refusal", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            let tabs = editingTabs(context)
+            let documents = tabs.padDocuments
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            documents.preload(snapshot)
+            if let document = snapshot.all.first(where: { document in
+                PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id).contains { $0.entity.type == .transaction }
+            }) {
+                documents.selectedId = document.id
+                let links = PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id)
+                documents.preload(links: links)
+                if let line = links.first(where: { $0.entity.type == .transaction }) {
+                    tabs.padDocumentWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(
+                        rowId: PadDocumentActions.linkRow(line.id), message: EvidenceLinkGuard.Failure.changesFiledYear(years: ["2024/25"]).errorDescription!))
+                }
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
     ]
 
     /// `tabs`, writing as the demo's admin (nothing is written by a render).
@@ -64,6 +100,7 @@ public enum PadRoutes {
     static func editingTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
         let tabs = tabs(context, writer: DeviceWriter(db: context.dbQueue, viewer: { .demoAdmin }, afterWrite: {}))
         tabs.padWrite.preload(canEdit: true)
+        tabs.padDocumentWrite.preload(canEdit: true)
         return tabs
     }
 

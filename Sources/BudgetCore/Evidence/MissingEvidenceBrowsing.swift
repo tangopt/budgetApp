@@ -19,6 +19,20 @@ extension UKTaxYear {
 }
 
 extension MissingEvidence {
+    /// What the Missing evidence screen lists (the Mac's and the iPad's): the period's items, only those of
+    /// `propertyId`'s rules when given (`PropertyEvidence.relatedRequirementIds`), only those affecting the tax
+    /// figures when `taxFiguresOnly`. `requirements`: the rules already read (nil: read them).
+    public static func checklist(db: Database, period: DateInterval, propertyId: Int64? = nil, taxFiguresOnly: Bool = false,
+                                 requirements: [EvidenceRequirement]? = nil) throws -> [Item] {
+        let requirements = try requirements ?? EvidenceRequirements.all(db: db)
+        var items = try items(db: db, period: period, requirements: requirements)
+        if let propertyId {
+            let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
+            items = items.filter { $0.requirement.id.map(related.contains) ?? false }
+        }
+        return taxFiguresOnly ? affectingTaxFigures(items) : items
+    }
+
     /// `[firstDay, lastDay + 1 day)`: a custom range picked as whole UTC days, or `nil` when
     /// it ends before it starts.
     public static func period(from firstDay: Date, through lastDay: Date) -> DateInterval? {

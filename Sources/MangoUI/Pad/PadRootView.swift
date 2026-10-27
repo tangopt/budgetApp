@@ -3,10 +3,11 @@ import BudgetCore
 
 /// The iPad's unlocked app (step 8, Task 6): a sidebar (Home · Month · Accounts · Search; Property; Documents) and
 /// the selected screen as its detail. Home, Month, Accounts, Search and Property's Overview reuse the iPhone's
-/// views over the same `PhoneTabsModel`; the other destinations are placeholders until their iPad screens land
-/// (`PadPlaceholder`, replaced by Tasks 7-10). The lock cover, banners and Settings sheet are the app's, as on iPhone.
+/// views over the same `PhoneTabsModel`; the others are the iPad's own screens (Tasks 7-10). The lock cover, banners
+/// and Settings sheet are the app's, as on iPhone.
 ///
-/// Property's edits (Bills, Recharges, Rent receipts) go through the tabs' `padWrite` (the device writer, Task 8).
+/// Property's edits (Bills, Recharges, Rent receipts) go through the tabs' `padWrite` (the device writer, Task 8);
+/// Documents' and Missing evidence's through `padDocumentWrite` (Task 10).
 public struct PadRootView: View {
     @ObservedObject var tabs: PhoneTabsModel
     let syncStatus: SyncStatus
@@ -92,27 +93,15 @@ public struct PadRootView: View {
             PadRentReceiptsView(model: tabs.padRentReceipts, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .documents:
-            PadDocumentsView(model: tabs.padDocuments, syncStatus: syncStatus)
+            PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .missingEvidence:
-            PadPlaceholder(section: section)
+            PadMissingEvidenceView(model: tabs.padMissingEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
         }
     }
 }
 
 extension PadSection {
     static let propertySections: Set<PadSection> = [.propertyOverview, .bills, .recharges, .rentReceipts, .tenancies]
-}
-
-/// A destination whose iPad screen isn't built yet (Tasks 7-10 replace each).
-struct PadPlaceholder: View {
-    let section: PadSection
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(section.title, systemImage: section.systemImage,
-                                   description: Text("This screen is coming to the iPad."))
-                .navigationTitle(section.title)
-        }
-    }
 }

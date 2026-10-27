@@ -32,6 +32,10 @@ public final class PhoneTabsModel: ObservableObject {
     public let padBillActions: PadBillActions
     public let padRecharges: PadRechargesModel
     public let padRentReceipts: PadRentReceiptsModel
+    /// The iPad's Documents and Missing evidence edits (step 8, Task 10), through the device writer in Documents.
+    public let padDocumentWrite: PadWriteModel
+    public let padDocumentActions: PadDocumentActions
+    public let padMissingEvidence: PadMissingEvidenceModel
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -60,6 +64,9 @@ public final class PhoneTabsModel: ObservableObject {
         padBillActions = PadBillActions(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padRecharges = PadRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padRentReceipts = PadRentReceiptsModel(property: padProperty, write: padWrite, dbQueue: dbQueue)
+        padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
+        padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
+        padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
     }
 
     /// Whether the database has a property row, read off the main actor; nil when the read fails (the tab then stays
