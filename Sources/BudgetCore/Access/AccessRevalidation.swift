@@ -58,6 +58,9 @@ public enum AccessRevalidation {
         case ownerOnly
         /// Nobody may (a joint account's level, an owner after set-up, a table no rule knows).
         case nobody
+        /// A recharge statement's line, changed on another device after someone else sent the statement (step 8):
+        /// a sent statement's lines are fixed.
+        case statementSent
     }
 
     /// One writer's fields reverted for one area and reason.
@@ -71,6 +74,7 @@ public enum AccessRevalidation {
     /// What `syncAccessRevert.area` holds for the reasons that aren't an area.
     static let ownerOnlyKey = "ownerOnly"
     static let nobodyKey = "denied"
+    static let statementSentKey = "statementSent"
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -180,6 +184,7 @@ public enum AccessRevalidation {
         let table = payload.recordType
         let attribution = try attributedWriter(payload, selfUser: selfUser, db: db)
         if attribution == .selfUser { return [] }
+        if let revert = try sentStatementRevert(payload, local: local, attribution: attribution, db: db) { return [revert] }
         let origin = try judgedOrigin(payload, attribution: attribution, db: db)
         guard let local else {
             // A record new here: judged as made by whoever inserted it (the server's writer, when it names one).
@@ -206,6 +211,46 @@ public enum AccessRevalidation {
             add(field, writer: writer, area: area, reason: reason, to: &reverts)
         }
         return reverts
+    }
+
+    // MARK: Sent statements (step 8)
+
+    /// A `rechargeLine` change (a new line, or fields the merge would take) for a statement this Mac holds as sent or
+    /// paid, whose status someone other than the line's writer set: reverted, whoever wrote it (a sent statement's
+    /// lines are fixed; the iPad offers line edits on drafts only, but an offline edit can cross the Mac's "sent").
+    /// The writer's own "sent" (a line added, then the statement sent, on one device) stands. Nil: not such a change.
+    static func sentStatementRevert(_ payload: SyncPayload, local: [String: SyncValue]?, attribution: Attribution?,
+                                    db: Database) throws -> Revert? {
+        guard payload.recordType == "rechargeLine", !payload.isDeletionMarker else { return nil }
+        let localId = try SyncRecordStore.localId(table: "rechargeLine", uuid: payload.recordName, db: db)
+        var statementId = try localId.flatMap { try Int64.fetchOne(db, sql: "SELECT statementId FROM rechargeLine WHERE id = ?", arguments: [$0]) }
+        if statementId == nil, case .string(let uuid)? = payload.fields["statementId"] {
+            statementId = try SyncRecordStore.localId(table: "rechargeStatement", uuid: uuid, db: db)
+        }
+        let writer: String?
+        switch attribution {
+        case .appUser(let user)?: writer = user
+        case .unknown?: writer = nil
+        case .selfUser?: return nil
+        case nil: writer = payload.clocks[SyncMerge.insertClock]?.by ?? payload.modifiedBy
+        }
+        guard let statementId, try sentBySomeoneElse(statementId: statementId, writer: writer, db: db) else { return nil }
+        let fields: [String]
+        if let local, let localId {
+            fields = try SyncMerge.remoteTakes(payload, local: local, table: "rechargeLine", localId: localId, db: db).sorted()
+            guard !fields.isEmpty else { return nil }
+        } else {
+            fields = payload.fields.keys.sorted()
+        }
+        return Revert(fields: fields, area: .property, writer: writer, reason: .statementSent)
+    }
+
+    /// Whether statement `statementId` is sent or paid here, its status set by someone other than `writer`.
+    static func sentBySomeoneElse(statementId: Int64, writer: String?, db: Database) throws -> Bool {
+        guard let status = try String.fetchOne(db, sql: "SELECT status FROM rechargeStatement WHERE id = ?", arguments: [statementId]),
+              status != RechargeStatementStatus.draft.rawValue else { return false }
+        let setBy = try SyncMerge.clocks(table: "rechargeStatement", localId: statementId, db: db)["status"]?.by
+        return writer == nil || setBy != writer
     }
 
     private static func add(_ field: String, writer: String?, area: AccessArea, reason: Reason, to reverts: inout [Revert]) {
@@ -375,6 +420,7 @@ public enum AccessRevalidation {
         case .area: return revert.area.storageKey
         case .ownerOnly: return ownerOnlyKey
         case .nobody: return nobodyKey
+        case .statementSent: return statementSentKey
         }
     }
 
@@ -383,6 +429,7 @@ public enum AccessRevalidation {
         switch stored {
         case ownerOnlyKey: return "no permission: only the owner can change this"
         case nobodyKey: return "no permission: nobody can change this"
+        case statementSentKey: return "Statement already sent"
         default: return "no permission for \(AccessArea(storageKey: stored)?.title ?? "this area")"
         }
     }
@@ -416,6 +463,12 @@ public enum AccessRevalidation {
         guard let localId = try SyncRecordStore.localId(table: table, uuid: uuid, db: db),
               let row = try SyncTranslator.outgoing(PendingChange(table: table, localId: localId, uuid: uuid, kind: .update), db: db)?.fields
         else { return nil }
+        // A line taken off a statement someone else sent (step 8): its lines are fixed.
+        if table == "rechargeLine",
+           let statementId = try Int64.fetchOne(db, sql: "SELECT statementId FROM rechargeLine WHERE id = ?", arguments: [localId]),
+           try sentBySomeoneElse(statementId: statementId, writer: writer, db: db) {
+            return Revert(fields: [deleteFields], area: .property, writer: writer, reason: .statementSent)
+        }
         let decision = try decide(table: table, origin: origin, change: .delete, fields: [], row: row, db: db)
         if try allows(actor, decision, db: db) { return nil }
         let (area, reason) = try failure(actor, decision, table: table, db: db)

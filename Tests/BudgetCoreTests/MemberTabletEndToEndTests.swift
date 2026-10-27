@@ -145,6 +145,10 @@ final class MemberTabletEndToEndTests: XCTestCase {
         try value(device, "SELECT status FROM rechargeStatement WHERE id = ?", [try local(h, "rechargeStatement", t.statement, on: device)])
     }
 
+    private func total(_ h: TwoPersonHousehold, _ t: Tenancy, on device: Device) throws -> Int? {
+        try value(device, "SELECT totalMinorUnits FROM rechargeStatement WHERE id = ?", [try local(h, "rechargeStatement", t.statement, on: device)])
+    }
+
     private func lineCount(_ h: TwoPersonHousehold, _ t: Tenancy, on device: Device) throws -> Int {
         try value(device, "SELECT COUNT(*) FROM rechargeLine WHERE statementId = ?", [try local(h, "rechargeStatement", t.statement, on: device)])!
     }
@@ -378,9 +382,11 @@ final class MemberTabletEndToEndTests: XCTestCase {
 
     // MARK: Both writers
 
-    /// Review Focus 4: the Mac marks the statement sent while her iPad, offline, adds a line to it. Both are kept, by
-    /// field merge, with nothing reverted: both writers have Edit.
-    func testMacAndMemberEditSameStatementBothKept() async throws {
+    /// Review Focus 4, as ruled in step 8 Task 8: the Mac marks the statement sent while her iPad, offline, adds a
+    /// line to it. A sent statement's lines are fixed: her line is reverted ("Statement already sent"), and the
+    /// statement's total, which her line had raised by field merge, is re-derived from its lines on the Mac. Every
+    /// device converges on the Mac's sent statement.
+    func testMemberLineOnStatementTheMacSentIsReverted() async throws {
         let (h, t) = try await household()
         try await memberRecordsInvoice(h, t)
         try await memberAddsLine(h, t)
@@ -394,12 +400,60 @@ final class MemberTabletEndToEndTests: XCTestCase {
             return try SyncRecordStore.uuid(for: "rechargeLine", localId: line.id!, db: db)
         }
         try await round(h)
+        try await h.memberDevice.engine.pull()  // the Mac's re-derived total, pushed in its round
 
         for device in [h.adminMac, h.memberDevice, h.adminPhone] {
             XCTAssertEqual(try statementStatus(h, t, on: device), RechargeStatementStatus.sent.rawValue, "the Mac's sent")
-            XCTAssertEqual(try lineCount(h, t, on: device), 2, "her line too")
-            XCTAssertNotNil(try h.localId("rechargeLine", uuid: lineUuid, on: device))
+            XCTAssertEqual(try lineCount(h, t, on: device), 1, "her line reverted")
+            XCTAssertNil(try h.localId("rechargeLine", uuid: lineUuid, on: device))
+            XCTAssertEqual(try total(h, t, on: device), Self.invoiceAmount, "the total from the lines again")
             XCTAssertEqual(try stage(h, t, on: device), .sentToTenant)
+        }
+        XCTAssertEqual(try reverts(h), ["Reverted a change by B: Statement already sent"])
+        XCTAssertEqual(try pendingCount(h.memberDevice), 0)
+    }
+
+    /// Her own line, then her own "sent", on one device: the Mac keeps both (the statement was hers to send).
+    func testMemberLineThenHerOwnSentKept() async throws {
+        let (h, t) = try await household()
+        try await memberRecordsInvoice(h, t)
+        try await memberAddsLine(h, t)
+        try await memberMarksSent(h, t)
+        try await round(h)
+        for device in [h.adminMac, h.memberDevice, h.adminPhone] {
+            XCTAssertEqual(try statementStatus(h, t, on: device), RechargeStatementStatus.sent.rawValue)
+            XCTAssertEqual(try lineCount(h, t, on: device), 1)
+            XCTAssertEqual(try total(h, t, on: device), Self.invoiceAmount)
+        }
+        XCTAssertEqual(try reverts(h), [])
+    }
+
+    /// The Mac reopens the sent statement and adds a line while her iPad, offline, records the tenant's payment of the
+    /// old total: field merge keeps her "paid", the Mac's line and the payment. The Mac re-derives the status from what
+    /// is owed (still the line's amount): sent, on every device.
+    func testStatementStatusRederivedAfterMerge() async throws {
+        let (h, t) = try await household()
+        try await memberRecordsInvoice(h, t)
+        try await memberAddsLine(h, t)
+        try await memberMarksSent(h, t)
+        try await round(h)
+
+        try write(h.adminMac) { db in
+            _ = try Recharges.reopen(db: db, statementId: t.statement)
+            _ = try Recharges.saveManualLine(db: db, statementId: t.statement, description: "Synthetic water", amountMinorUnits: 1_000)
+        }
+        try await h.adminMac.engine.pushPending()
+        let statement = try local(h, "rechargeStatement", t.statement, on: h.memberDevice)
+        let credit = try local(h, "transaction_", t.rechargeCredit, on: h.memberDevice)
+        try await writer(h).write(.property, origin: .propertyMatching) { db in  // offline: sent, 4200 owed, on her iPad
+            _ = try Recharges.linkPayment(db: db, statementId: statement, transactionId: credit)
+        }
+        try await round(h)
+        try await h.memberDevice.engine.pull()
+
+        for device in [h.adminMac, h.memberDevice, h.adminPhone] {
+            XCTAssertEqual(try total(h, t, on: device), Self.invoiceAmount + 1_000)
+            XCTAssertEqual(try statementStatus(h, t, on: device), RechargeStatementStatus.sent.rawValue, "1,000 still owed")
         }
         XCTAssertEqual(try reverts(h), [])
     }

@@ -541,6 +541,11 @@ public actor SyncEngineCore {
                 }
             }
             incoming.removeAll { refused[$0.recordName] != nil }
+            // Step 8: the Mac settles the recharge statements the apply touched (field merge can leave a stored
+            // total or status behind its lines and payments).
+            if self.mode == .full {
+                try Self.rederiveStatements(touchedBy: incoming.compactMap { if case .save(let payload) = $0 { payload } else { nil } }, db: db)
+            }
             // Where the server has each record now: its copy (or a marker) in this zone, or nothing after a deletion.
             for change in incoming {
                 switch change {
@@ -1285,6 +1290,7 @@ public actor SyncEngineCore {
                     try FiledYearSyncCheck.apply(merges.map { .save($0) }, baseline: baseline, db: db, deviceUser: user, now: now, flush: false)
                 }
                 let held = Set(outcome.alert?.records.map(\.recordName) ?? [])
+                if self.mode == .full { try Self.rederiveStatements(touchedBy: merges, db: db) }
                 for payload in merges {
                     let name = payload.recordName
                     if held.contains(name) {
@@ -1879,6 +1885,32 @@ public actor SyncEngineCore {
 
     static func clearStamp(uuid: String, db: Database) throws {
         try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
+    }
+
+    /// The recharge statements `payloads` touched (a statement, or a line or payment of one), each re-derived
+    /// (`Recharges.rederive`): what changes is tracked as this Mac's own write, so every device takes it.
+    static func rederiveStatements(touchedBy payloads: [SyncPayload], db: Database) throws {
+        var ids = Set<Int64>()
+        for payload in payloads {
+            switch payload.recordType {
+            case "rechargeStatement":
+                if let id = try SyncRecordStore.localId(table: "rechargeStatement", uuid: payload.recordName, db: db) { ids.insert(id) }
+            case "rechargeLine", "rechargePayment":
+                if let id = try SyncRecordStore.localId(table: payload.recordType, uuid: payload.recordName, db: db),
+                   let statement = try Int64.fetchOne(db, sql: "SELECT statementId FROM \(payload.recordType) WHERE id = ?", arguments: [id]) {
+                    ids.insert(statement)
+                } else if case .string(let uuid)? = payload.fields["statementId"],
+                          let statement = try SyncRecordStore.localId(table: "rechargeStatement", uuid: uuid, db: db) {
+                    ids.insert(statement)
+                }
+            default:
+                continue
+            }
+        }
+        guard !ids.isEmpty else { return }
+        try SyncChangeTracker.trackingWrites(db: db) {
+            for id in ids.sorted() { try Recharges.rederive(db: db, statementId: id) }
+        }
     }
 
     /// `body` with incoming changes re-validated when this engine `revalidatesAccess` (the Mac; `AccessRevalidation`).

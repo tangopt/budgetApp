@@ -40,7 +40,7 @@
 1. **The member changes a document's kind on an iPad that never downloaded its file** (lazy policy). Expect the pushed `evidenceDocument` to keep its file reference, and the Mac to keep the file. Task 1: `testDeviceWithoutFileKeepsDocumentFileReferenceOnPush`.
 2. **The member loses Edit on Property while an edit is still queued** (offline). Expect the iPad to stop offering edits once the permission arrives. If the queued edit is pushed anyway, the Mac reverts it and her iPad converges. Task 4: `testQueuedEditAfterEditRemovedIsReverted`.
 3. **A member write that routes outside `household`.** Example: a document linked only to a record placed privately. Expect it held back: not pushed to her private database, counted in `SyncPushReport.heldBack`, and nothing leaks. Task 1: `testDeviceModeHoldsBackRecordsOutsideItsZones`.
-4. **The Mac and the iPad edit the same recharge statement.** Example: the Mac marks it sent while the iPad, offline, adds a line. Expect both kept by field merge, with no revert, since both writers have Edit. Task 4: `testMacAndMemberEditSameStatementBothKept`.
+4. **The Mac and the iPad edit the same recharge statement.** Example: the Mac marks it sent while the iPad, offline, adds a line. Ruled in Task 8: a sent statement's lines are fixed. Her line is reverted ("Statement already sent") and the Mac re-derives the statement's total and status after the merge. Task 8: `testMemberLineOnStatementTheMacSentIsReverted`, `testStatementStatusRederivedAfterMerge`.
 5. **The share upgrade runs twice, or while something blocks.** Expect one share, still `canWrite == false` while blocked, and upgraded once clear. Task 2: `testAllowMemberEditsTwiceKeepsOneShare`, `testAllowMemberEditsBlockedKeepsShareReadOnly`.
 
 ---
@@ -167,7 +167,7 @@
   - `testMemberLinksRentReceiptPaymentKept`.
   - `testMemberBudgetCategoryChangeRevertedByMac`: bypass `DeviceWriter` (raw write stamped as her) to change a household transaction's `categoryId` → the Mac reverts → her device converges on the original.
   - `testQueuedEditAfterEditRemovedIsReverted`: the Mac sets her Property to View after she queued `markSent` offline. The push is reverted by the Mac.
-  - `testMacAndMemberEditSameStatementBothKept`.
+  - `testMacAndMemberEditSameStatementBothKept` (renamed in Task 8: `testMemberLineOnStatementTheMacSentIsReverted`).
   - `testFiledYearMemberEditNeverReachesCloud`: `DeviceWriteRefusal.filedYear`, and her pending count is 0.
   - `testAdminTabletEditKeptAndPhoneStillPulls`: `adminTablet` marks sent → the Mac keeps it → `adminPhone` (read-only) pulls it. Every audit is clean.
   - `testNothingBelowEverythingReachesHousehold`: after all of the above, `audit`/`memberAudit` have no violations.
