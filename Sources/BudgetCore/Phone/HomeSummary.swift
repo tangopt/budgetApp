@@ -25,6 +25,8 @@ public struct HomeSummary: Equatable, Sendable {
         public let source: Source
         /// Projected from history or a rule rather than known (obligations only).
         public let isEstimate: Bool
+        /// The obligation's kind; nil for a bill (the notification planner tells a tax payment from a bill by it).
+        public var obligationKind: PropertyObligationKind? = nil
     }
 
     public let freshness: DataFreshness
@@ -100,7 +102,7 @@ public struct HomeSummary: Equatable, Sendable {
             for obligation in try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: today, to: end, today: today) {
                 obligations.append(UpcomingItem(id: "property/\(propertyId)/\(obligation.id)", date: obligation.date, title: obligation.title,
                                                 amountMinorUnits: obligation.expectedMinorUnits, currency: obligation.currency ?? property.currency,
-                                                source: .propertyObligation, isEstimate: obligation.isEstimate))
+                                                source: .propertyObligation, isEstimate: obligation.isEstimate, obligationKind: obligation.kind))
             }
         }
         func rank(_ source: UpcomingItem.Source) -> Int { source == .bill ? 0 : 1 }
