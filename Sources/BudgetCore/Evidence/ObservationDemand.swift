@@ -11,6 +11,12 @@ public struct ObservationDemand: Equatable, Sendable {
 
     public var isWanted: Bool { !holders.isEmpty }
 
+    /// A claim name of its own for one appearance of a screen. Two screens can share one model (Missing evidence
+    /// standalone and in Tax years): switching between them fires the incoming screen's appear before the outgoing
+    /// one's disappear, so a shared name would let the outgoing screen's release stop the incoming screen's
+    /// observation, leaving it showing the other screen's list.
+    public static func screenClaim() -> String { "screen-\(UUID().uuidString)" }
+
     /// Claims or releases `holder`'s need; returns whether anything is still wanted.
     @discardableResult
     public mutating func set(_ holder: String, wanted: Bool) -> Bool {

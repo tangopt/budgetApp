@@ -5,7 +5,7 @@ import struct BudgetCore.Transaction
 
 /// Tax years (plan phase 3 Task 4, phase 4 Task 4): the people's UK tax years on the left
 /// (status, deadlines, whether the HMRC rate is in), and the chosen year's page on the right —
-/// Income, Rental accounts, Return, Calculation, Filing, Settings, Manual items, Missing
+/// Income, Rental accounts, Return, Calculation, Settings, Manual items, Missing
 /// evidence and Export tabs over `TaxYearsViewModel`.
 struct TaxYearsView: View {
     @ObservedObject var viewModel: TaxYearsViewModel
@@ -255,7 +255,6 @@ struct TaxYearPage: View {
         case .accounts: TaxAccountsTab(viewModel: viewModel, page: page, openTransaction: openTransaction)
         case .taxReturn: TaxReturnTab(viewModel: viewModel, page: page)
         case .calculation: TaxCalculationTab(viewModel: viewModel, page: page)
-        case .filing: TaxFilingTab(viewModel: viewModel, page: page)
         case .settings: TaxSettingsTab(viewModel: viewModel, page: page)
         case .manualItems: TaxManualItemsTab(viewModel: viewModel, page: page)
         case .missingEvidence: EmptyView()
