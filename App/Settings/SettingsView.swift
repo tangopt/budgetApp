@@ -15,12 +15,14 @@ struct SettingsView: View {
     private let sharingModel: SharingSettingsModel?
     /// Snapshot routes: the Household pane from values (always shown).
     private let householdState: HouseholdPaneState?
+    private let householdDraft: PermissionGrid?
     @StateObject private var admin = SettingsAdminWatch()
 
     /// `signInModel`, `sharingModel`: snapshot routes only.
     init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil, sharingModel: SharingSettingsModel? = nil,
-         householdState: HouseholdPaneState? = nil) {
+         householdState: HouseholdPaneState? = nil, householdDraft: PermissionGrid? = nil) {
         self.householdState = householdState
+        self.householdDraft = householdDraft
         _pane = State(initialValue: pane)
         self.signInModel = signInModel
         self.sharingModel = sharingModel
@@ -50,7 +52,7 @@ struct SettingsView: View {
             if admin.isAdmin || householdState != nil {
                 Tab(HouseholdCopy.paneTitle, systemImage: "person.2.circle", value: Pane.household) {
                     if let householdState {
-                        HouseholdPane(state: householdState)
+                        HouseholdPane(state: householdState, draft: householdDraft)
                     } else {
                         HouseholdSettings()
                     }
