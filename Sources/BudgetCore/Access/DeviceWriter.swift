@@ -25,6 +25,15 @@ public enum DeviceReadScope: Equatable, Sendable {
     /// Nothing: the device's user isn't known yet, or couldn't be read.
     case nothing
 
+    /// Whether the scope shows `area` (View on it): always with everything, never with nothing.
+    public func sees(_ area: AccessArea, db: Database) throws -> Bool {
+        switch self {
+        case .everything: return true
+        case .nothing: return false
+        case .actor(let actor): return try AccessPolicy.can(actor, .view, area, db: db)
+        }
+    }
+
     /// The viewer the reads take when they show something (nil: everything).
     public var viewer: AccessActor? {
         if case .actor(let actor) = self { return actor }

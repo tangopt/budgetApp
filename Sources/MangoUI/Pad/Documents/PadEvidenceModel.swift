@@ -94,7 +94,7 @@ public final class PadEvidenceModel: ObservableObject {
 
     /// Whether linking is offered: Edit on Documents (the viewer's areas already say whether she may link each item).
     public var canLink: Bool { write.canEdit }
-    /// Whether "Mark not available" is offered: Edit on Documents and on Property (where waivers are kept).
+    /// Whether "Mark not available" is offered, and done: Edit on Documents and on Property (where waivers are kept).
     public var canMarkNotAvailable: Bool { write.canEdit && propertyWrite.canEdit }
 
     // MARK: Reading
@@ -223,7 +223,7 @@ public final class PadEvidenceModel: ObservableObject {
     /// Marks `item` not available (its waiver): it counts as done. True when it saved.
     @discardableResult
     public func markNotAvailable(_ item: EvidenceItem) async -> Bool {
-        guard write.canEdit, let requirementId = item.requirement.id else { return false }
+        guard canMarkNotAvailable, let requirementId = item.requirement.id else { return false }
         let target = item.item.target
         let saved = await propertyWrite.perform(rowId: Self.itemRow(item.id), origin: .edit, edit: "Mark not available", scope: .init()) { db in
             _ = try EvidenceRequirements.waive(db: db, requirementId: requirementId, target: target, reason: .notAvailable)

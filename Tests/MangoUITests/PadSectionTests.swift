@@ -1,6 +1,8 @@
 import XCTest
-import BudgetCore
+import GRDB
+@testable import BudgetCore
 @testable import MangoUI
+import TestSupport
 
 /// The iPad sidebar's section map, footer and collapsed state (step 10, Task 3).
 final class PadSectionTests: XCTestCase {
@@ -25,6 +27,45 @@ final class PadSectionTests: XCTestCase {
         XCTAssertEqual(groups.map(\.title), [nil, "Everything else"])
         XCTAssertTrue(groups.flatMap(\.sections).allSatisfy { !$0.requiresProperty })
         XCTAssertEqual(PadSection.allCases.filter(\.requiresProperty).count, 7)
+    }
+
+    /// A member with Property None sees no Property section (None hides the area), as before she is known; View shows them.
+    @MainActor
+    func testMemberWithoutPropertyViewHasNoPropertySections() async throws {
+        let db = try TestDatabase.migrated()
+        let user = try await db.write { db -> Int64 in
+            var property = Property(name: "Synthetic flat", country: "PT", currency: .eur)
+            try Properties.save(db: db, &property)
+            var person = Person(name: "Person B", shortName: "B")
+            try People.save(db: db, &person)
+            var user = AppUser(personId: person.id!, displayName: "B", cloudKitUserRecordName: "_member", isAdmin: false, createdAt: Date())
+            try user.insert(db)
+            _ = try SyncRecordStore.uuid(for: "appUser", localId: user.id!, db: db)
+            try MemberPermissions.ensureDefaults(appUserId: user.id!, db: db)
+            return user.id!
+        }
+        func level(_ level: PermissionLevel) async throws {
+            try await db.write { db in
+                try db.execute(sql: "UPDATE memberPermission SET level = ? WHERE appUserId = ? AND area = ?",
+                               arguments: [level.rawValue, user, AccessArea.property.storageKey])
+            }
+        }
+        func tabs(_ viewer: PhoneViewer) async -> PhoneTabsModel {
+            let writer = DeviceWriter(db: db, viewer: { viewer }, afterWrite: {})
+            let tabs = PhoneTabsModel(dbQueue: db, today: { Date() }, hasProperty: true, viewer: viewer, writer: writer)
+            await tabs.refreshPropertyAccess()
+            return tabs
+        }
+        try await level(.none)
+        let member = await tabs(.iCloudUser(recordName: "_member"))
+        XCTAssertFalse(member.showsPropertySections)
+        XCTAssertEqual(PadSection.groups(hasProperty: member.showsPropertySections).map(\.title), [nil, "Everything else"])
+        let unknown = await tabs(.iCloudUser(recordName: nil))
+        XCTAssertFalse(unknown.showsPropertySections)
+        try await level(.view)
+        let viewing = await tabs(.iCloudUser(recordName: "_member"))
+        XCTAssertTrue(viewing.showsPropertySections)
+        XCTAssertEqual(PadSection.groups(hasProperty: viewing.showsPropertySections).map(\.title), [nil, "Property", "Everything else"])
     }
 
     func testEverySectionHasTitleAndSymbol() {

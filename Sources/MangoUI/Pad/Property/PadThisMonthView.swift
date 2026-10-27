@@ -393,9 +393,13 @@ struct PadThisMonthView: View {
             guard let browser else { return }
             browser.present(PadThisMonthModel.site(in: browser.sites, kind: kind, name: name))
         case .check(let id):
-            guard let browser, let item = browser.downloadedItems.first(where: { $0.id == id }) ?? browser.tray.items().first(where: { $0.id == id })
-            else { return }
-            if browser.checkSource != nil { checking = item } else { browser.present() }
+            guard let browser else { return }
+            Task {
+                // The tray read again off the main actor, not from the view.
+                if !browser.downloadedItems.contains(where: { $0.id == id }) { await browser.refreshTray() }
+                guard let item = browser.downloadedItems.first(where: { $0.id == id }) else { return }
+                if browser.checkSource != nil { checking = item } else { browser.present() }
+            }
         case .billsAndRecharges, .recharges, .prepareEmail, .evidence:
             go(destination)
         }

@@ -178,6 +178,27 @@ final class RechargeEmailPackageTests: XCTestCase {
         XCTAssertFalse(statement.contains(Self.tenant), "the statement PDF names no one")
     }
 
+    /// An attachment's copy never lands hidden or outside the folder, whatever the document is named; ordinary names
+    /// are as the Mac writes them.
+    func testAttachmentTargetStaysInsideFolder() throws {
+        func target(_ name: String) -> URL {
+            let document = EvidenceDocument(sha256: "x", storedRelativePath: "a/b.pdf", originalFileName: name, byteCount: 1, kind: .other,
+                                            docDate: nil, amountMinorUnits: nil, currency: nil, addedAt: Date())
+            return RechargeEmail.attachmentTarget(for: document, in: folder)
+        }
+        XCTAssertEqual(target("Water bill.pdf").lastPathComponent, "Water bill.pdf")
+        XCTAssertEqual(target("2026/10 water.pdf").lastPathComponent, "2026-10 water.pdf")
+        XCTAssertEqual(target("notes").lastPathComponent, "notes.pdf")
+        XCTAssertEqual(target(".hidden.pdf").lastPathComponent, "hidden.pdf")
+        XCTAssertEqual(target("..").lastPathComponent, "Invoice.pdf")
+        XCTAssertEqual(target("../../escape.pdf").lastPathComponent, "-..-escape.pdf")
+        for name in ["..", "../x.pdf", ".", "./.pdf", "...pdf"] {
+            let url = target(name)
+            XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL.path, folder.standardizedFileURL.path, name)
+            XCTAssertFalse(url.lastPathComponent.hasPrefix("."), name)
+        }
+    }
+
     func testBuildWritesNothing() throws {
         func counts() throws -> [String: Int] {
             try queue.read { db in

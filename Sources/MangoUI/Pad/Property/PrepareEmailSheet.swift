@@ -84,7 +84,7 @@ public final class PrepareEmailModel: ObservableObject {
             }
         }
         let found = files
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Recharges-\(UUID().uuidString)", isDirectory: true)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(RechargeEmail.temporaryFolderPrefix + UUID().uuidString, isDirectory: true)
         if let previous = Self.lastFolder { try? FileManager.default.removeItem(at: previous) }
         Self.lastFolder = folder
         let library = RechargeEmailPackage.Library(folder: folder) { document in document.id.flatMap { found[$0] } }

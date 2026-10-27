@@ -58,7 +58,7 @@ public struct PadRootView: View {
                 width: proxy.size.width, height: proxy.size.height,
                 panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .tenancies && tabs.padTenancies.selectedReceiptId != nil) || (selection == .evidence && evidence.selectedItemId != nil) || (selection == .money && tabs.padMoney.panel != nil))
             HStack(spacing: 0) {
-                PadSidebar(state: state, selection: $selection, hasProperty: tabs.hasProperty, userName: userName, avatar: nil,
+                PadSidebar(state: state, selection: $selection, hasProperty: tabs.showsPropertySections, userName: userName, avatar: nil,
                            sync: SyncSidebarStatus.make(isRunning: syncStatus != .off, status: syncStatus, progress: nil, refusal: nil),
                            waitingChanges: waitingChanges, onToggle: { sidebarCollapsed.toggle() }, onSettings: onSettings)
                 Divider()
@@ -82,14 +82,24 @@ public struct PadRootView: View {
             selection = PadSection(link: link)
             tabs.consumePendingLink()
         }
-        .onChange(of: tabs.hasProperty) { _, has in
-            if !has, selection.requiresProperty { selection = .home }
+        .onChange(of: tabs.showsPropertySections) { _, shows in
+            if !shows, selection.requiresProperty { selection = .home }
         }
         .modifier(BrowserPresentation(browser: browser))
     }
 
     @ViewBuilder
     private func detail(_ section: PadSection) -> some View {
+        if section.requiresProperty, !tabs.showsPropertySections {
+            // No property, or no View on Property: nothing of it shows.
+            Color.clear
+        } else {
+            sectionDetail(section)
+        }
+    }
+
+    @ViewBuilder
+    private func sectionDetail(_ section: PadSection) -> some View {
         switch section {
         case .home:
             HomeView(model: tabs.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)

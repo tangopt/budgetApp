@@ -139,10 +139,15 @@ public enum RechargeEmail {
                      body: render(template.body, values), attachmentDocumentIds: ids)
     }
 
-    /// Where an attached document's copy goes in `folder`: under its own name ("/" made "-"; the stored file's extension
-    /// when the name has none; "Invoice" when it has no name), "name (2).pdf" when two documents share one.
+    /// The prefix of the temporary folders "Prepare email" copies the attachments into (emptied by the browser's purge).
+    public static let temporaryFolderPrefix = "Recharges-"
+
+    /// Where an attached document's copy goes in `folder`: under its own name ("/" made "-", leading dots dropped so it
+    /// is never hidden nor outside `folder`; the stored file's extension when the name has none; "Invoice" when it has
+    /// no name), "name (2).pdf" when two documents share one.
     public static func attachmentTarget(for document: EvidenceDocument, in folder: URL) -> URL {
-        let name = (document.canonicalName ?? document.originalFileName).replacingOccurrences(of: "/", with: "-")
+        var name = (document.canonicalName ?? document.originalFileName).replacingOccurrences(of: "/", with: "-")
+        while name.hasPrefix(".") { name.removeFirst() }
         var base = (name as NSString).deletingPathExtension
         var ext = (name as NSString).pathExtension
         if ext.isEmpty { ext = (document.storedRelativePath as NSString).pathExtension }

@@ -40,6 +40,8 @@ struct BrowserWebView: UIViewRepresentable {
         private var downloads: [ObjectIdentifier: (folder: URL, file: URL?, host: String?, generation: Int)] = [:]
         /// Downloads cancelled here, whose failure keeps the notice already given.
         private var refused: Set<ObjectIdentifier> = []
+        /// Each download's progress, watched for the tray's cap while its length wasn't known.
+        private var sizeWatches: [ObjectIdentifier: NSKeyValueObservation] = [:]
 
         init(model: BrowserModel) { self.model = model }
 
@@ -184,6 +186,14 @@ struct BrowserWebView: UIViewRepresentable {
             }
             let file = folder.appendingPathComponent(DownloadsTray.displayName(suggestedFilename))
             downloads[ObjectIdentifier(download)] = (folder, file, download.originalRequest?.url?.host ?? model.currentHost, model.generation)
+            // Length unknown (or understated): stopped as soon as it goes past the cap, not after it has all arrived.
+            sizeWatches[ObjectIdentifier(download)] = download.progress.observe(\.completedUnitCount) { [weak self, weak download] progress, _ in
+                let received = progress.completedUnitCount
+                Task { @MainActor in
+                    guard let self, let download, BrowserModel.exceedsCap(receivedBytes: received) else { return }
+                    self.stop(download)
+                }
+            }
             return file
         }
 
@@ -200,7 +210,17 @@ struct BrowserWebView: UIViewRepresentable {
             }
         }
 
+        /// Cancels a download that went past the cap; its failure keeps the size notice.
+        private func stop(_ download: WKDownload) {
+            let id = ObjectIdentifier(download)
+            guard sizeWatches.removeValue(forKey: id) != nil else { return }
+            refused.insert(id)
+            model.notice = TrayError.tooLarge.errorDescription
+            download.cancel { _ in }
+        }
+
         func downloadDidFinish(_ download: WKDownload) {
+            sizeWatches[ObjectIdentifier(download)] = nil
             guard let entry = downloads.removeValue(forKey: ObjectIdentifier(download)), let file = entry.file else { return }
             Task {
                 await model.handleCapturedDownload(at: file, suggestedName: file.lastPathComponent, host: entry.host,
@@ -210,6 +230,7 @@ struct BrowserWebView: UIViewRepresentable {
         }
 
         func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            sizeWatches[ObjectIdentifier(download)] = nil
             if let entry = downloads.removeValue(forKey: ObjectIdentifier(download)) {
                 try? FileManager.default.removeItem(at: entry.folder)
             }

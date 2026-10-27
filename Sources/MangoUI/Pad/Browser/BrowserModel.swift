@@ -82,13 +82,17 @@ public final class BrowserModel {
     @ObservationIgnored private let websiteData: any WebsiteDataClearing
     /// Demo data's sites: their own suite, never adopted by the household, emptied by `purgeAll`.
     @ObservationIgnored private let demoSites: LocalSavedSiteStore
+    /// Where Check and link stages a file and "Prepare email" copies its attachments (the app's temporary folder).
+    @ObservationIgnored private let temporaryRoot: URL
 
     public init(tray: DownloadsTray, store: any SavedSiteStore, websiteData: any WebsiteDataClearing = WebKitWebsiteData(),
-                demoSites: LocalSavedSiteStore = LocalSavedSiteStore(suiteName: LocalSavedSiteStore.demoSuite)) {
+                demoSites: LocalSavedSiteStore = LocalSavedSiteStore(suiteName: LocalSavedSiteStore.demoSuite),
+                temporaryRoot: URL = FileManager.default.temporaryDirectory) {
         self.tray = tray
         self.store = store
         self.websiteData = websiteData
         self.demoSites = demoSites
+        self.temporaryRoot = temporaryRoot
     }
 
     /// For the snapshot routes: the strip, an open site's host and the tray, as given.
@@ -253,17 +257,30 @@ public final class BrowserModel {
 
     // MARK: Sign-out
 
-    /// Sign-out, leaving the household, demo data: the tray emptied and the browser's website data cleared (awaited),
-    /// the site closed. The saved sites stay (addresses only), except demo data's, which go.
+    /// Sign-out, leaving the household, demo data: the tray emptied, Check and link's staged copies and "Prepare
+    /// email"'s attachment copies removed, and the browser's website data cleared (awaited), the site closed. The saved
+    /// sites stay (addresses only), except demo data's, which go.
     public func purgeAll() async {
         generation += 1
         closeSite()
         demoSites.removeAll()
-        let tray = tray
-        await Task.detached { tray.purgeAll() }.value
+        let tray = tray, temporaryRoot = temporaryRoot
+        await Task.detached {
+            tray.purgeAll()
+            Self.removeTemporaryCopies(in: temporaryRoot)
+        }.value
         downloadedItems = []
         notice = nil
         await websiteData.clearAll()
+    }
+
+    /// Removes `root`'s `MangoCheckAndLink` folder and its `Recharges-…` folders.
+    nonisolated static func removeTemporaryCopies(in root: URL) {
+        let manager = FileManager.default
+        try? manager.removeItem(at: root.appendingPathComponent(CheckAndLink.stagingFolderName, isDirectory: true))
+        for name in (try? manager.contentsOfDirectory(atPath: root.path)) ?? [] where name.hasPrefix(RechargeEmail.temporaryFolderPrefix) {
+            try? manager.removeItem(at: root.appendingPathComponent(name, isDirectory: true))
+        }
     }
 
     // MARK: Policy (the web view's delegate asks)
@@ -288,6 +305,12 @@ public final class BrowserModel {
     /// Downloads come only from `https`, `blob:` or `data:` addresses.
     public nonisolated static func downloadAllowed(_ url: URL?) -> Bool {
         ["https", "blob", "data"].contains(url?.scheme?.lowercased() ?? "")
+    }
+
+    /// Whether a download that has received `receivedBytes` went past the tray's cap (its length unknown at the start):
+    /// it is cancelled.
+    public nonisolated static func exceedsCap(receivedBytes: Int64) -> Bool {
+        receivedBytes > Int64(DownloadsTray.defaultMaxBytes)
     }
 
     /// A download's redirect: followed only to an address a download may come from (`downloadAllowed`), else cancelled.

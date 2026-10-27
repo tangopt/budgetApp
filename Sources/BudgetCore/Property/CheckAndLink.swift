@@ -367,9 +367,12 @@ public struct CheckAndLink: @unchecked Sendable {
     var afterDocumentFiled: (@Sendable () throws -> Void)?
     #endif
 
+    /// The temporary folder a tray file is staged in while it is checked (emptied by the browser's purge).
+    public static let stagingFolderName = "MangoCheckAndLink"
+
     /// `waitingRoot`: nil, `Waiting` beside the library's folder (as `SyncDocumentFiles` syncs it).
     public init(dbQueue: DatabaseQueue, library: EvidenceLibrary, waitingRoot: URL? = nil,
-                stagingRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoCheckAndLink", isDirectory: true)) {
+                stagingRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent(CheckAndLink.stagingFolderName, isDirectory: true)) {
         self.dbQueue = dbQueue
         self.library = library
         self.stagingRoot = stagingRoot

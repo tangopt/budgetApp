@@ -187,6 +187,19 @@ final class PadEvidenceModelTests: XCTestCase {
         XCTAssertEqual(shown.areas.first { $0.area == .lisbonFlat }?.items, admin.areas.first { $0.area == .lisbonFlat }?.items)
     }
 
+    /// "Mark not available" writes in Property: without Edit there, it is neither offered nor done.
+    func testMarkNotAvailableNeedsPropertyEdit() async throws {
+        let model = await model()
+        model.propertyWrite.preload(canEdit: false)
+        XCTAssertTrue(model.canLink)
+        XCTAssertFalse(model.canMarkNotAvailable)
+        let item = try XCTUnwrap(model.items.first { $0.state == .missing })
+        let saved = await model.markNotAvailable(item)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(after.value, 0)
+        XCTAssertNil(model.note(for: item.id))
+    }
+
     /// Before this device's iCloud user is bound to an app user (or a stranger's), and when who she is can't be read,
     /// nothing is shown: never everything.
     func testUnknownViewerSeesNothing() async throws {

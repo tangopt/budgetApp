@@ -129,6 +129,29 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertFalse(BrowserModel.acceptsDownload(expectedLength: Int64(DownloadsTray.defaultMaxBytes) + 1))
     }
 
+    /// A download of unknown length is stopped once it goes past the tray's cap.
+    func testDownloadCapWhileReceiving() {
+        let cap = Int64(DownloadsTray.defaultMaxBytes)
+        XCTAssertFalse(BrowserModel.exceedsCap(receivedBytes: 0))
+        XCTAssertFalse(BrowserModel.exceedsCap(receivedBytes: cap))
+        XCTAssertTrue(BrowserModel.exceedsCap(receivedBytes: cap + 1))
+    }
+
+    /// The purge also removes Check and link's staged copies and "Prepare email"'s attachment copies, nothing else.
+    func testPurgeRemovesStagedAndEmailCopies() async throws {
+        let root = folder.appendingPathComponent("tmp", isDirectory: true)
+        let manager = FileManager.default
+        for name in ["MangoCheckAndLink/item/bill.pdf", "Recharges-A/bill.pdf", "Recharges-B/x.pdf", "Other/keep.pdf"] {
+            let file = root.appendingPathComponent(name)
+            try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("%PDF".utf8).write(to: file)
+        }
+        let browser = BrowserModel(tray: DownloadsTray(directory: folder.appendingPathComponent("Tray", isDirectory: true)),
+                                   store: MemorySites(), websiteData: FakeWebsiteData(), temporaryRoot: root)
+        await browser.purgeAll()
+        XCTAssertEqual(try manager.contentsOfDirectory(atPath: root.path), ["Other"])
+    }
+
     /// A download's redirect is held to the same rule: an https download redirected to http is cancelled.
     func testDownloadRedirectsHeldToHTTPS() {
         func redirect(_ text: String) -> BrowserModel.NavigationDecision {

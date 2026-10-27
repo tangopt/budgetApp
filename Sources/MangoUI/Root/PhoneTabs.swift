@@ -19,6 +19,11 @@ public final class PhoneTabsModel: ObservableObject {
     /// Property is absent while the database has no property row (spec §3.9, permission None's analogue; ruling for
     /// step 4).
     @Published public private(set) var hasProperty: Bool
+    /// Whether this device's user may see Property (step 10: View on it; demo data and tests, yes; an iCloud user not
+    /// read yet, no). Read again with `refreshPropertyAccess`.
+    @Published public private(set) var seesProperty: Bool
+    /// The iPad's Property sections are shown: there is a property and she may see it (None hides the area).
+    public var showsPropertySections: Bool { hasProperty && seesProperty }
 
     public let home: HomeViewModel
     public let month: MonthViewModel
@@ -69,6 +74,7 @@ public final class PhoneTabsModel: ObservableObject {
                 home: HomeViewModel? = nil, writer: DeviceWriter? = nil) {
         self.dbQueue = dbQueue
         self.hasProperty = hasProperty
+        if case .iCloudUser = viewer { seesProperty = false } else { seesProperty = true }
         self.viewer = viewer
         self.home = home ?? HomeViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         month = MonthViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
@@ -102,11 +108,19 @@ public final class PhoneTabsModel: ObservableObject {
 
     /// After a sync: reads again whether there's a property; leaving Property for Home if it went.
     public func reload(for key: Date?) async {
+        await refreshPropertyAccess()
         guard key != loadedKey else { return }
         loadedKey = key
         guard let has = await Self.hasProperty(dbQueue) else { return }
         hasProperty = has
         if !has, selection == .property { selection = .home }
+    }
+
+    /// Reads again whether this device's user may see Property (`DeviceWriter.readScope`; nothing while she isn't known
+    /// or can't be read).
+    public func refreshPropertyAccess() async {
+        let scope = await padWrite.readScope()
+        seesProperty = (try? await dbQueue.read { db in try scope.sees(.property, db: db) }) ?? false
     }
 
     public nonisolated static func reloadKey(_ status: SyncStatus) -> Date? {
@@ -163,6 +177,7 @@ public final class PhoneTabsModel: ObservableObject {
     }
 
     private func reloadViewerScreens() async {
+        await refreshPropertyAccess()
         await home.load()
         await month.load()
         await accounts.load()
