@@ -39,6 +39,11 @@ public final class PhoneTabsModel: ObservableObject {
     public let padMoney: PadMoneyModel
     /// Calendar (step 10, Task 15): the obligations as an agenda and a month grid; reads only.
     public let padCalendar: PadCalendarModel
+    /// Checks (step 10, Task 16): the period's checks and the recurring costs; "Not expected any more" goes through `padWrite`.
+    public let padChecks: PadChecksModel
+    /// Profile (step 10, Task 16): the property's details, map, owners, accounts, groups, documents and mortgage terms;
+    /// every edit through `padWrite`.
+    public let padProfile: PadProfileModel
     /// The iPad's Documents and Evidence edits (step 8, Task 10), through the device writer in Documents.
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
@@ -79,6 +84,8 @@ public final class PhoneTabsModel: ObservableObject {
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMoney = PadMoneyModel(property: padProperty, write: padDocumentWrite, dbQueue: dbQueue, today: today)
         padCalendar = PadCalendarModel(property: padProperty, dbQueue: dbQueue, today: today)
+        padChecks = PadChecksModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padProfile = PadProfileModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padEvidence = PadEvidenceModel(write: padDocumentWrite, propertyWrite: padWrite, dbQueue: dbQueue, today: today)
         padThisMonth = PadThisMonthModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)

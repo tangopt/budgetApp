@@ -13,14 +13,15 @@ enum RowAction: CaseIterable, Sendable {
         case .check: "magnifyingglass"
         case .email: "envelope"
         case .notExpected: "bell.slash"
-        case .download: "arrow.down.tray"
+        case .download: "tray.and.arrow.down"
         case .discard: "trash"
         case .linkPayment: "link"
         case .addToRecharge: "doc.badge.plus"
         case .markSent: "paperplane"
         case .recordPayment: "checkmark.circle"
         case .view: "eye"
-        case .unlink: "link.slash"
+        // The Mac's unlink icon ("link.slash" is no SF Symbol: it drew nothing).
+        case .unlink: "xmark.circle"
         }
     }
 

@@ -94,6 +94,20 @@ public enum PadRoutes {
         DemoRoute(name: "pad-calendar-month", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .month), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
+        // Step 10, Task 16: Checks (the check lines, the deposit's card beside them, the recurring costs by provider, the Undo
+        // toast after "Not expected any more"), Profile (details, address and map, owners, mortgage, accounts, groups,
+        // documents) and its mortgage terms form.
+        DemoRoute(name: "pad-checks", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .checks, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-profile", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .profile, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-mortgage-terms", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = profileTabs(context)
+            let form = tabs.padProfile.mortgageForm() ?? MortgageTermsEditing.Form(terms: PropertyMortgageTerms(propertyId: 0), overrides: [])
+            return AnyView(PadMortgageTermsSheet(model: tabs.padProfile, write: tabs.padWrite, form: form))
+        },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
             let model = tabs.padDocuments
@@ -326,6 +340,27 @@ public enum PadRoutes {
             }
         }
         model.preload(snapshot, expanded: chosen?.0.start, breakdown: chosen?.1, panel: panel)
+        return tabs
+    }
+
+    /// Editing tabs with Checks read for the demo's year, the deposit's card open and the toast after "Not expected any more".
+    @MainActor
+    static func checksTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padChecks
+        let snapshot = PadChecksModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, period: model.period, today: context.today)
+        model.preload(snapshot)
+        let cost = model.recurringCosts.first
+        model.preload(snapshot, selected: .deposit,
+                      toast: cost.map { PadChecksModel.Toast(message: "\($0.pattern.title) is no longer expected.", undo: $0) })
+        return tabs
+    }
+
+    /// Editing tabs with Profile read.
+    @MainActor
+    static func profileTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        tabs.padProfile.preload(PadProfileModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
         return tabs
     }
 

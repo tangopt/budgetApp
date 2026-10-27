@@ -9,7 +9,7 @@ import BudgetCore
 ///
 /// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) and Tenancies another
 /// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the tax year's (`PadEvidenceView`, Task 14); Money and Calendar are Task 15's
-/// (`PadMoneyView`, `PadCalendarView`); Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's links through
+/// (`PadMoneyView`, `PadCalendarView`); Checks and Profile Task 16's (`PadChecksView`, `PadProfileView`, mortgage terms included). Property's edits go through the tabs' `padWrite`, Documents' and Evidence's links through
 /// `padDocumentWrite` (Evidence's "Mark not available" through `padWrite`).
 ///
 /// The built-in browser (step 10, Task 5; `browser`, nil with demo data) is presented over everything when a screen
@@ -129,12 +129,17 @@ public struct PadRootView: View {
         case .calendar:
             PadCalendarView(model: tabs.padCalendar, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .checks, .profile:
-            PlaceholderPadScreen(section: section)
+        case .checks:
+            PadChecksView(model: tabs.padChecks, write: tabs.padWrite, syncStatus: syncStatus, showEvidence: { selection = .evidence })
+                .environment(\.quickEdit, tabs.quickEdit)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .profile:
+            PadProfileView(model: tabs.padProfile, write: tabs.padWrite, syncStatus: syncStatus, showDocument: showDocument)
+                .offlineBanner(syncStatus, lastSync: lastSync)
         }
     }
 
-    /// Tenancies' Show in Documents: the Documents screen with that document selected.
+    /// Tenancies' and Profile's Show in Documents: the Documents screen with that document selected.
     private func showDocument(_ id: Int64) {
         tabs.padDocuments.selectedId = id
         selection = .documents
