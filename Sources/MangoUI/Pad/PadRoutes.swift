@@ -121,7 +121,50 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
+        // Step 10, Task 5: the built-in browser (a site open, its page a still placeholder) with the Downloads tray beside
+        // it, and the tray with no site open (a long name, a shared file). Synthetic sites and PDFs.
+        DemoRoute(name: "pad-browser", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { _ in
+            let browser = sampleBrowser("pad-browser", items: 2)
+            browser.load(sampleSites[0])
+            return AnyView(BrowserView(model: browser, showsWebView: false, onDone: {}))
+        },
+        DemoRoute(name: "pad-tray", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { _ in
+            AnyView(BrowserView(model: sampleBrowser("pad-tray", items: 3), showsWebView: false, onDone: {}))
+        },
     ]
+
+    /// The browser routes' saved sites: synthetic names on `example.test` hosts.
+    static let sampleSites: [SavedSite] = [
+        ("Example Water", "water.example.test", SavedSiteKind.utility), ("Example Energy", "energy.example.test", .utility),
+        ("Example Bank", "bank.example.test", .bank), ("Tax portal", "tax.example.test", .tax),
+        ("Building management", "condo.example.test", .condominium),
+    ].enumerated().map { index, site in
+        SavedSite(name: site.0, url: URL(string: "https://\(site.1)")!, kind: site.2, sortOrder: index)
+    }
+
+    /// A browser over `sampleSites` and a tray (in the temporary folder, emptied first) holding the first `items` of three
+    /// synthetic PDFs.
+    @MainActor
+    static func sampleBrowser(_ name: String, items: Int) -> BrowserModel {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-\(name)-tray", isDirectory: true)
+        let files: [(String, String?, Int)] = [
+            ("Water bill October 2026.pdf", "water.example.test", 95),
+            ("statement-2026-10-current-account-ending-0000-with-a-very-long-name-from-the-bank.pdf", "bank.example.test", 41),
+            ("Electricity invoice.pdf", nil, 12),
+        ]
+        DownloadsTray(directory: folder).purgeAll()
+        for (index, file) in files.prefix(items).enumerated() {
+            let source = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-\(UUID().uuidString).pdf")
+            let body = "%PDF-1.4\n% \(file.0)\n" + String(repeating: "0", count: 1024 * (index + 1) * 40) + "\n%%EOF\n"
+            try? Data(body.utf8).write(to: source)
+            let received = Date().addingTimeInterval(-Double(file.2) * 60)
+            _ = try? DownloadsTray(directory: folder, now: { received }).ingest(fileAt: source, suggestedName: file.0, sourceHost: file.1)
+        }
+        let tray = DownloadsTray(directory: folder)
+        let browser = BrowserModel(tray: tray, store: FixedSavedSites(sites: sampleSites), websiteData: NoWebsiteData())
+        browser.preload(sites: sampleSites, current: nil, items: tray.items())
+        return browser
+    }
 
     /// The newest document with a link and a date, an amount or a period to show.
     @MainActor
@@ -154,6 +197,19 @@ public enum PadRoutes {
         tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
         return tabs
     }
+}
+
+/// The snapshot routes' saved sites: fixed, nothing saved.
+struct FixedSavedSites: SavedSiteStore {
+    let sites: [SavedSite]
+    func all() async throws -> [SavedSite] { sites }
+    func save(_ site: SavedSite) async throws {}
+    func remove(id: UUID) async throws {}
+}
+
+/// The snapshot routes' website data: nothing to clear.
+struct NoWebsiteData: WebsiteDataClearing {
+    @MainActor func clearAll() async {}
 }
 
 #if canImport(UIKit)

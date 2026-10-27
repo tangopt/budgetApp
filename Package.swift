@@ -24,9 +24,10 @@ let package = Package(
         .target(name: "MangoSync", dependencies: ["BudgetCore"]),
         // The iPhone's views, design-system pieces and view models (SwiftUI), shared with the iPad later (step 4, Task 4).
         .target(name: "MangoUI", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        // Tests' shared databases: copies of one migrated and one demo database per process (`TestDatabase`).
+        // Tests' shared databases: copies of one migrated and one demo database per process (`TestDatabase`), and the
+        // local web fixtures (`WebFixtures`).
         .target(name: "TestSupport", dependencies: ["BudgetCore", "BudgetDemo", .product(name: "GRDB", package: "GRDB.swift")],
-                path: "Tests/TestSupport"),
+                path: "Tests/TestSupport", resources: [.copy("Fixtures")]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo", "TestSupport"]),
         .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
         .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore", "BudgetDemo", "TestSupport"]),

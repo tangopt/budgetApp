@@ -84,6 +84,13 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         # Export compliance: only Apple's own encryption (CryptoKit), so TestFlight doesn't ask on every build.
         ITSAppUsesNonExemptEncryption: false
+        # A PDF shared to Mango (step 10, Task 5: More… ▸ Mango from Safari or another app) arrives as a copy in
+        # Documents/Inbox and goes into the iPad's Downloads tray (PhoneBrowser.receiveShared).
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
+        LSSupportsOpeningDocumentsInPlace: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango.ios

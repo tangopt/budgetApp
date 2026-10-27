@@ -127,6 +127,12 @@ struct PhoneRoot: View {
         }
         .onChange(of: outputs.pendingLink) { _, _ in openTappedReminder() }
         .onOpenURL { url in
+            // A PDF shared into Mango (More… ▸ Mango; the iPad's tray), copied by the system into Documents/Inbox.
+            if url.isFileURL {
+                let isDemo = if case .ready(let environment, _) = stage { environment.isDemo } else { PhoneDemoData.isOn }
+                Task { await PhoneBrowser.receiveShared(url, isDemo: isDemo) }
+                return
+            }
             // The widget's link: Home or Month, over whatever was open.
             guard let link = WidgetLink.tab(from: url), case .ready(_, let tabs) = stage else { return }
             showingSettings = false
@@ -238,7 +244,8 @@ struct PhoneRoot: View {
             FirstDownloadView(received: 0, waiting: true, actions: waitingActions)
         } else {
             if UIDevice.current.userInterfaceIdiom == .pad {
-                PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
+                PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, waitingChanges: sync.waitingChanges,
+                            browser: PhoneBrowser.shared, onRefresh: { await sync.syncNow() },
                             onSettings: { showingSettings = true })
             } else {
                 PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },

@@ -11,6 +11,9 @@ import BudgetCore
 /// screens behind a picker (`PadLegacyTab`), Evidence the step 8 Missing evidence screen; Money, Calendar, Checks and
 /// Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's through
 /// `padDocumentWrite`.
+///
+/// The built-in browser (step 10, Task 5; `browser`, nil with demo data) is presented over everything when a screen
+/// asks for it (`\.padBrowser`) or a PDF is shared into Mango.
 public struct PadRootView: View {
     @ObservedObject var tabs: PhoneTabsModel
     @ObservedObject private var documents: PadDocumentsModel
@@ -19,6 +22,7 @@ public struct PadRootView: View {
     let lastSync: Date?
     let isDemo: Bool
     let waitingChanges: Int
+    let browser: BrowserModel?
     let onRefresh: () async -> Void
     let onSettings: () -> Void
     @State private var selection: PadSection
@@ -27,10 +31,11 @@ public struct PadRootView: View {
     @SceneStorage("padSidebarCollapsed") private var sidebarCollapsed = false
 
     /// `columns` is kept for the snapshot routes' sake and no longer used: the sidebar is the app's own.
-    /// `waitingChanges`: edits made on this iPad that the Mac hasn't taken yet (nothing counts them yet: 0).
+    /// `waitingChanges`: this iPad's changes the server hasn't taken yet, in the zones it pushes to
+    /// (`SyncWaitingChanges`). `browser`: the built-in browser; ignored with demo data, where it is hidden.
     public init(tabs: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
                 initialSelection: PadSection = .home, legacyTab: PadLegacyTab = .bills, sidebarCollapsed: Bool = false,
-                waitingChanges: Int = 0, columns: NavigationSplitViewVisibility = .automatic,
+                waitingChanges: Int = 0, browser: BrowserModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
         self.tabs = tabs
         documents = tabs.padDocuments
@@ -39,6 +44,7 @@ public struct PadRootView: View {
         self.lastSync = lastSync
         self.isDemo = isDemo
         self.waitingChanges = waitingChanges
+        self.browser = isDemo ? nil : browser
         self.onRefresh = onRefresh
         self.onSettings = onSettings
         _selection = State(initialValue: initialSelection)
@@ -59,6 +65,7 @@ public struct PadRootView: View {
                 detail(selection)
                     .environment(\.showsDemoData, isDemo)
                     .environment(\.documentPanelSource, tabs.padDocuments.panelSource)
+                    .environment(\.padBrowser, browser)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .animation(.snappy(duration: 0.2), value: state)
@@ -78,6 +85,7 @@ public struct PadRootView: View {
         .onChange(of: tabs.hasProperty) { _, has in
             if !has, selection.requiresProperty { selection = .home }
         }
+        .modifier(BrowserPresentation(browser: browser))
     }
 
     @ViewBuilder
@@ -133,6 +141,29 @@ public struct PadRootView: View {
                 }
             }
             .offlineBanner(syncStatus, lastSync: lastSync)
+        }
+    }
+}
+
+/// The built-in browser over the whole iPad window, while `browser.isPresented`.
+private struct BrowserPresentation: ViewModifier {
+    let browser: BrowserModel?
+
+    func body(content: Content) -> some View {
+        if let browser {
+            @Bindable var browser = browser
+            content
+                #if canImport(UIKit)
+                .fullScreenCover(isPresented: $browser.isPresented) {
+                    BrowserView(model: browser, onDone: { browser.isPresented = false })
+                }
+                #else
+                .sheet(isPresented: $browser.isPresented) {
+                    BrowserView(model: browser, onDone: { browser.isPresented = false })
+                }
+                #endif
+        } else {
+            content
         }
     }
 }

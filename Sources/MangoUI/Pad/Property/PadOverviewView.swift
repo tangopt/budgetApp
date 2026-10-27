@@ -8,6 +8,7 @@ struct PadOverviewView: View {
     let syncStatus: SyncStatus
     let onRefresh: () async -> Void
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.padBrowser) private var browser
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,16 @@ struct PadOverviewView: View {
             }
             .offlineBannerSlot()
             .navigationTitle("Overview")
+            .toolbar {
+                // The built-in browser and its Downloads tray (hidden with demo data).
+                if let browser {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { browser.present() } label: {
+                            Label("Sites & downloads", systemImage: RowAction.openSite.systemImage)
+                        }
+                    }
+                }
+            }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PropertyViewModel.reloadKey(syncStatus))

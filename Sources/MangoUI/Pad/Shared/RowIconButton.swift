@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The fixed vocabulary of actions inside list rows: the same icon for the same action everywhere.
 enum RowAction: CaseIterable, Sendable {
-    case openSite, linkDocument, check, email, notExpected, download
+    case openSite, linkDocument, check, email, notExpected, download, discard
 
     var systemImage: String {
         switch self {
@@ -12,6 +12,7 @@ enum RowAction: CaseIterable, Sendable {
         case .email: "envelope"
         case .notExpected: "bell.slash"
         case .download: "arrow.down.tray"
+        case .discard: "trash"
         }
     }
 
@@ -23,6 +24,7 @@ enum RowAction: CaseIterable, Sendable {
         case .email: "Email"
         case .notExpected: "Not expected any more"
         case .download: "Download"
+        case .discard: "Discard"
         }
     }
 
@@ -55,7 +57,7 @@ struct RowIconButton: View {
         Button(action: perform) {
             Image(systemName: action.systemImage)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(theme.accent)
+                .foregroundStyle(action == .discard ? Color.red : theme.accent)
                 .frame(width: Self.targetSize(size), height: Self.targetSize(size))
                 .contentShape(Rectangle())
         }

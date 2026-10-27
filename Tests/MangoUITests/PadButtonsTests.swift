@@ -12,6 +12,7 @@ final class PadButtonsTests: XCTestCase {
             ["envelope", "Email"],
             ["bell.slash", "Not expected any more"],
             ["arrow.down.tray", "Download"],
+            ["trash", "Discard"],
         ])
     }
 
