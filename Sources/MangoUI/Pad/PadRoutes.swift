@@ -16,8 +16,17 @@ public enum PadRoutes {
                                                           preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, columns: .doubleColumn))
         },
+        // Step 10, Task 3: the sidebar over This month, expanded (pad-root shows it over Home) and collapsed to the icon rail.
+        DemoRoute(name: "pad-sidebar-expanded", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
+                                waitingChanges: 2, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-sidebar-collapsed", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
+                                sidebarCollapsed: true, columns: .doubleColumn))
+        },
         DemoRoute(name: "pad-property-overview", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .propertyOverview,
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
                                 columns: .doubleColumn))
         },
         DemoRoute(name: "pad-tenancies", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
@@ -25,7 +34,7 @@ public enum PadRoutes {
                                 columns: .doubleColumn))
         },
         DemoRoute(name: "pad-bills", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .bills,
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .billsAndRecharges,
                                 columns: .doubleColumn))
         },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
@@ -39,12 +48,12 @@ public enum PadRoutes {
             let tabs = editingTabs(context)
             tabs.padRecharges.preload(PadRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
                                                                 tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .recharges, columns: .doubleColumn))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, legacyTab: .recharges, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-rent-receipts", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
             let tabs = editingTabs(context)
             tabs.padRentReceipts.preload(PadRentReceiptsModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .rentReceipts, columns: .doubleColumn))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, legacyTab: .rentReceipts, columns: .doubleColumn))
         },
         // A filed-year refusal under the latest draft's bill, its cell selected.
         DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
@@ -55,7 +64,7 @@ public enum PadRoutes {
                 tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(
                     rowId: bill.id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
             }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .bills, columns: .doubleColumn))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
         // Task 10: Missing evidence for 2025/26, its first missing item with suggestions in the side panel (Link offered).
         DemoRoute(name: "pad-missing-evidence", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
@@ -72,7 +81,7 @@ public enum PadRoutes {
                 model.year = year
                 model.preload(snapshot, selecting: panels?.itemId ?? snapshot.items.first?.id, panel: panels)
             }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .missingEvidence, columns: .doubleColumn))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .evidence, columns: .doubleColumn))
         },
         // Step 10, Task 2: the shared document panel (thumbnail, buttons, details, Documents' edits) over the library, a
         // linked document selected, and the full-view modal with its details open.

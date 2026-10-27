@@ -96,6 +96,15 @@ public final class PhoneTabsModel: ObservableObject {
         HomeViewModel.reloadKey(status)
     }
 
+    /// The signed-in person's name, for the iPad sidebar's footer; nil when the viewer is nobody in particular.
+    public func viewerName() async -> String? {
+        let viewer = viewer
+        return try? await dbQueue.read { db in
+            guard let id = try viewer.resolve(db: db).personId else { return nil }
+            return try Person.fetchOne(db, key: id)?.name
+        }
+    }
+
     /// Follows this iPhone's iCloud user as sync reads it (`PhoneSyncController.$viewerRecordName`, on the main actor):
     /// the name already read first, then each change. This model lives above the lock cover, which keeps the content
     /// out of the view tree while locked, and the app launches locked: a view's `onChange` there never saw a name read

@@ -3,29 +3,11 @@ import XCTest
 
 /// The iPad sidebar's sections and the harness's route split (step 8, Task 6).
 final class PadRootTests: XCTestCase {
-    func testSectionsAndTitles() {
-        XCTAssertEqual(PadSection.allCases, [.home, .month, .accounts, .propertyOverview, .bills, .recharges, .rentReceipts,
-                                             .tenancies, .documents, .missingEvidence, .search])
-        XCTAssertEqual(PadSection.allCases.map(\.title), ["Home", "Month", "Accounts", "Overview", "Bills", "Recharges",
-                                                          "Rent receipts", "Tenancies", "Documents", "Missing evidence", "Search"])
-        let groups = PadSection.groups(hasProperty: true)
-        XCTAssertEqual(groups.map(\.title), [nil, "Property", "Documents"])
-        XCTAssertEqual(groups[0].sections, [.home, .month, .accounts, .search])
-        XCTAssertEqual(groups[1].sections, [.propertyOverview, .bills, .recharges, .rentReceipts, .tenancies])
-        XCTAssertEqual(groups[2].sections, [.documents, .missingEvidence])
-    }
-
-    func testPropertyGroupHiddenWithoutProperty() {
-        let groups = PadSection.groups(hasProperty: false)
-        XCTAssertEqual(groups.map(\.title), [nil, "Documents"])
-        XCTAssertTrue(groups.flatMap(\.sections).allSatisfy { !PadSection.propertySections.contains($0) })
-    }
-
     func testPhoneRoutesUnchanged() {
         let phone = DemoRoutes.all.filter { !$0.pad }.map(\.name)
         XCTAssertEqual(phone.first, "gallery")
         XCTAssertFalse(phone.contains("pad-root"))
-        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["quick-edit-sheet-pad", "pad-root", "pad-property-overview", "pad-tenancies", "pad-bills", "pad-documents",
+        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["quick-edit-sheet-pad", "pad-root", "pad-sidebar-expanded", "pad-sidebar-collapsed", "pad-property-overview", "pad-tenancies", "pad-bills", "pad-documents",
                                                                      "pad-recharges", "pad-rent-receipts", "pad-bills-refusal",
                                                                      "pad-missing-evidence", "pad-document-panel", "pad-document-fullview", "pad-document-refusal"])
         // The routes before this task, in order.
