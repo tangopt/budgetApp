@@ -150,6 +150,37 @@ final class PermissionGridTests: XCTestCase {
         }
     }
 
+    func testSaveRefusesEditOnHouseholdSettings() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            var grid = setting(try PermissionGrid.load(db: db, appUserId: h.member.appUserId), .forecast, .edit)
+            grid = setting(grid, .householdSettings, .edit)
+            // Widening the row's own choices doesn't help: the area decides.
+            grid.rows[grid.rows.firstIndex { $0.area == .householdSettings }!].choices = [.none, .view, .edit]
+            try db.execute(sql: "DELETE FROM syncPending")
+            XCTAssertThrowsError(try PermissionGrid.save(grid, actor: h.admin, db: db)) { error in
+                XCTAssertEqual(error as? PermissionGridError, .levelNotOffered(.householdSettings))
+            }
+            XCTAssertEqual(try permissionCount(db), 0)
+            XCTAssertEqual(try pendingPermissionWrites(db), 0)
+            XCTAssertEqual(PermissionGrid.choices(for: .householdSettings), [.none, .view])
+            XCTAssertEqual(PermissionGrid.choices(for: .property), [.none, .view, .edit])
+        }
+    }
+
+    func testPersonWithoutIdentityGetsNoTaxRow() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            try db.execute(sql: "INSERT INTO person(name) VALUES ('Person C')")
+            let personC = db.lastInsertedRowID
+            try db.execute(sql: "DELETE FROM syncRecord WHERE tableName = 'person' AND localId = ?", arguments: [personC])
+            let grid = try PermissionGrid.load(db: db, appUserId: h.member.appUserId)
+            XCTAssertEqual(grid.rows.map(\.title).suffix(2), ["Tax — Person A", "Tax — Person B"])
+        }
+    }
+
     func testResetToDefaultsIsNotSavedUntilSave() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
