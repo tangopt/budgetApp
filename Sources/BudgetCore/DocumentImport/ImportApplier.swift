@@ -334,33 +334,14 @@ public struct ImportApplier: Sendable {
         var documents: [UUID: Int64] = [:]
         var touched: Set<Int64>? = []
         for item in applied {
-            var filing = Self.metadata(for: item, folders: folders)
-            if case .customEvidence(let key) = item.recognition.kind {
-                filing.kind = .other
-                switch key {
-                case .saved(let id): filing.customKindId = id
-                case .pending(let id): filing.customKindId = newKinds[id]
-                }
-                if let id = filing.customKindId, let kind = kindsNow.custom(id: id) {
-                    filing.canonicalName = Self.canonicalName(of: item, as: kind)
-                }
-            }
+            let filing = Self.filing(for: item, folders: folders, newKinds: newKinds, kindsNow: kindsNow)
             let documentId: Int64
             if let parentId = item.parentId, let parentDocument = documents[parentId] {
                 // Part of a file already filed (a statement's child): the same document.
                 documentId = parentDocument
             } else {
-                let url = Self.fileURL(of: item, folderRoots: folderRoots)
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    throw ImportApplyError.planOutdated("\(item.file.fileName) is no longer where it was read (\(url.path))")
-                }
-                let staged = try library.add(db: db, url, metadata: filing, analysis: nil, now: now)
-                if let file = staged.placedFile { placed.append(file) }
-                guard staged.result.document.sha256 == item.file.sha256 else {
-                    throw ImportApplyError.planOutdated("\(item.file.fileName) changed since it was read")
-                }
-                guard let id = staged.result.document.id else { throw EvidenceLibraryError.documentNotFound }
-                documentId = id
+                documentId = try Self.fileDocument(db: db, item: item, url: Self.fileURL(of: item, folderRoots: folderRoots), filing: filing,
+                                                   library: library, now: now, placed: &placed)
             }
             documents[item.id] = documentId
             if touched != nil, let more = try ImportEffects.touchedPropertyIds(db: db, item: item) {
@@ -459,6 +440,42 @@ public struct ImportApplier: Sendable {
         try run.update(db)
         try SyncBatch.open(runId: runId, since: syncMark, db: db)
         return summary
+    }
+
+    /// The library metadata an applied item is filed with (`metadata`), a custom kind's as it is
+    /// now: a saved one's id, a new one's as saved in the run (`newKinds`), named after its current
+    /// name and area (`kindsNow`). Shared with the iPad's check-and-link (`CheckAndLink.save`).
+    static func filing(for item: ImportItem, folders: [SourceFolder], newKinds: [UUID: Int64], kindsNow: DocumentKindCatalog) -> EvidenceMetadata {
+        var filing = metadata(for: item, folders: folders)
+        if case .customEvidence(let key) = item.recognition.kind {
+            filing.kind = .other
+            switch key {
+            case .saved(let id): filing.customKindId = id
+            case .pending(let id): filing.customKindId = newKinds[id]
+            }
+            if let id = filing.customKindId, let kind = kindsNow.custom(id: id) {
+                filing.canonicalName = canonicalName(of: item, as: kind)
+            }
+        }
+        return filing
+    }
+
+    /// The item's file at `url` filed in the library inside the caller's write (`EvidenceLibrary.add(db:…)`;
+    /// the copy it places is appended to `placed`, for the caller to remove if the write rolls back): its
+    /// document's id. A file gone, or changed since it was read (another hash), refuses (`.planOutdated`).
+    /// Shared with the iPad's check-and-link (`CheckAndLink.save`).
+    static func fileDocument(db: Database, item: ImportItem, url: URL, filing: EvidenceMetadata, library: EvidenceLibrary, now: Date,
+                             placed: inout [URL]) throws -> Int64 {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw ImportApplyError.planOutdated("\(item.file.fileName) is no longer where it was read (\(url.path))")
+        }
+        let staged = try library.add(db: db, url, metadata: filing, analysis: nil, now: now)
+        if let file = staged.placedFile { placed.append(file) }
+        guard staged.result.document.sha256 == item.file.sha256 else {
+            throw ImportApplyError.planOutdated("\(item.file.fileName) changed since it was read")
+        }
+        guard let id = staged.result.document.id else { throw EvidenceLibraryError.documentNotFound }
+        return id
     }
 
     /// The source folders' files of the plan (`ImportFile.sourceFolderId`), now that the user
