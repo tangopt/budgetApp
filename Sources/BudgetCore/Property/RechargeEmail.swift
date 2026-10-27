@@ -139,6 +139,23 @@ public enum RechargeEmail {
                      body: render(template.body, values), attachmentDocumentIds: ids)
     }
 
+    /// Where an attached document's copy goes in `folder`: under its own name ("/" made "-"; the stored file's extension
+    /// when the name has none; "Invoice" when it has no name), "name (2).pdf" when two documents share one.
+    public static func attachmentTarget(for document: EvidenceDocument, in folder: URL) -> URL {
+        let name = (document.canonicalName ?? document.originalFileName).replacingOccurrences(of: "/", with: "-")
+        var base = (name as NSString).deletingPathExtension
+        var ext = (name as NSString).pathExtension
+        if ext.isEmpty { ext = (document.storedRelativePath as NSString).pathExtension }
+        if base.isEmpty { base = "Invoice" }
+        var target = folder.appendingPathComponent(base).appendingPathExtension(ext)
+        var copy = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            target = folder.appendingPathComponent("\(base) (\(copy))").appendingPathExtension(ext)
+            copy += 1
+        }
+        return target
+    }
+
     /// `text` with each `{name}` replaced; an empty value leaves no stray space before
     /// punctuation ("Olá {tenant}," → "Olá,").
     public static func render(_ text: String, _ values: [String: String]) -> String {

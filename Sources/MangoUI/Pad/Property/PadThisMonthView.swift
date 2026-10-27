@@ -396,7 +396,7 @@ struct PadThisMonthView: View {
             guard let browser, let item = browser.downloadedItems.first(where: { $0.id == id }) ?? browser.tray.items().first(where: { $0.id == id })
             else { return }
             if browser.checkSource != nil { checking = item } else { browser.present() }
-        case .billsAndRecharges, .recharges, .evidence:
+        case .billsAndRecharges, .recharges, .prepareEmail, .evidence:
             go(destination)
         }
     }

@@ -259,18 +259,8 @@ final class RechargeStatementModel: ObservableObject {
             var attachments: [URL] = []
             for documentId in draft.attachmentDocumentIds {
                 guard let document = documents.first(where: { $0.id == documentId }) else { continue }
-                let name = (document.canonicalName ?? document.originalFileName).replacingOccurrences(of: "/", with: "-")
-                var base = (name as NSString).deletingPathExtension
-                var ext = (name as NSString).pathExtension
-                if ext.isEmpty { ext = (document.storedRelativePath as NSString).pathExtension }
-                if base.isEmpty { base = "Invoice" }
                 // Two documents with the same name: "name (2).pdf".
-                var target = folder.appendingPathComponent(base).appendingPathExtension(ext)
-                var copy = 2
-                while FileManager.default.fileExists(atPath: target.path) {
-                    target = folder.appendingPathComponent("\(base) (\(copy))").appendingPathExtension(ext)
-                    copy += 1
-                }
+                let target = RechargeEmail.attachmentTarget(for: document, in: folder)
                 try FileManager.default.copyItem(at: library.fileURL(for: document), to: target)
                 attachments.append(target)
             }

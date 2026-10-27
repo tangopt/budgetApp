@@ -129,6 +129,9 @@ public struct PadRootView: View {
         switch destination {
         case .billsAndRecharges, .recharges:
             selection = .billsAndRecharges
+        case .prepareEmail(let statementId):
+            selection = .billsAndRecharges
+            tabs.padBills.emailStatementId = statementId
         case .evidence:
             selection = .evidence
         case .site, .check:

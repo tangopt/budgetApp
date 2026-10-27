@@ -10,8 +10,10 @@ enum PadDestination: Equatable {
     case check(UUID)
     /// Bills & recharges: the bills grid.
     case billsAndRecharges
-    /// Bills & recharges: the recharge statements (to email one, or link a payment by hand).
+    /// Bills & recharges: the recharge statements (to link a payment by hand).
     case recharges
+    /// Bills & recharges with the draft statement's Prepare email sheet open.
+    case prepareEmail(statementId: Int64)
     case evidence
 }
 
@@ -117,7 +119,8 @@ public final class PadThisMonthModel: ObservableObject {
         case .fetchStatement(let kind): return .site(kind, name: nil)
         case .openSite(let providerId): return .site(.utility, name: snapshot?.checklist.step(.billsIn)?.providers.first { $0.providerId == providerId }?.name)
         case .check(let id): return .check(id)
-        case .prepareEmail, .markReceived: return .recharges
+        case .prepareEmail(let statementId): return .prepareEmail(statementId: statementId)
+        case .markReceived: return .recharges
         case .confirmMatch: return nil
         }
     }

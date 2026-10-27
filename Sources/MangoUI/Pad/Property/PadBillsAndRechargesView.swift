@@ -15,6 +15,7 @@ struct PadBillsAndRechargesView: View {
     @State private var correcting: UtilityBill?
     @Environment(\.phoneTheme) private var theme
     @Environment(\.padBrowser) private var browser
+    @Environment(\.documentPanelSource) private var documentSource
 
     var body: some View {
         NavigationStack {
@@ -30,7 +31,7 @@ struct PadBillsAndRechargesView: View {
                         summary
                         PadBillsGridView(model: model, property: property)
                         PadStatementsList(model: model, write: write, open: { model.openStatementId = $0.id },
-                                          choosePayment: choosePayment)
+                                          prepareEmail: { model.emailStatementId = $0.id }, choosePayment: choosePayment)
                     }
                 }
                 .padding(20)
@@ -53,6 +54,11 @@ struct PadBillsAndRechargesView: View {
         .sheet(isPresented: Binding(get: { model.openStatementId != nil }, set: { if !$0 { model.openStatementId = nil } })) {
             if let id = model.openStatementId {
                 PadStatementSheet(model: model, write: write, statementId: id, choosePayment: choosePayment)
+            }
+        }
+        .sheet(isPresented: Binding(get: { model.emailStatementId != nil }, set: { if !$0 { model.emailStatementId = nil } })) {
+            if let id = model.emailStatementId {
+                PrepareEmailSheet(model: model.prepareEmailModel(statementId: id, open: documentSource?.open), write: write)
             }
         }
     }

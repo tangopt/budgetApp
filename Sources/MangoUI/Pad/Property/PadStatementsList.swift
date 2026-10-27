@@ -53,6 +53,7 @@ struct PadStatementsList: View {
     @ObservedObject var model: PadBillsAndRechargesModel
     @ObservedObject var write: PadWriteModel
     let open: (PadBillsAndRechargesModel.Statement) -> Void
+    let prepareEmail: (PadBillsAndRechargesModel.Statement) -> Void
     let choosePayment: (PadBillsAndRechargesModel.Statement) -> Void
     @Environment(\.phoneTheme) private var theme
 
@@ -110,7 +111,7 @@ struct PadStatementsList: View {
         if let action = model.listAction(for: statement) {
             switch action {
             case .prepareEmail:
-                Button(action.title) { open(statement) }
+                Button(action.title) { prepareEmail(statement) }
                     .buttonStyle(.pad(.secondary, size: .small))
                     .accessibilityLabel("\(action.title), \(name)")
             case .recordPayment:
@@ -124,7 +125,8 @@ struct PadStatementsList: View {
 }
 
 /// One statement opened (from the list, a bill, or the summary's difference): its charges, the bank credits that pay it
-/// (each with Unlink), the credits that might, and the actions its status offers. Email follows in the next step.
+/// (each with Unlink), the credits that might, and the actions its status offers; a draft's Prepare email opens
+/// `PrepareEmailSheet` over it.
 struct PadStatementSheet: View {
     @ObservedObject var model: PadBillsAndRechargesModel
     @ObservedObject var write: PadWriteModel
@@ -132,7 +134,9 @@ struct PadStatementSheet: View {
     let choosePayment: (PadBillsAndRechargesModel.Statement) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.documentPanelSource) private var documentSource
     @State private var confirmsDelete = false
+    @State private var emailing = false
 
     var body: some View {
         NavigationStack {
@@ -151,6 +155,9 @@ struct PadStatementSheet: View {
             .navigationTitle(model.statements.first { $0.id == statementId }.map(model.monthTitle) ?? "Statement")
             .navigationBarTitleDisplayModeInline()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .sheet(isPresented: $emailing) {
+            PrepareEmailSheet(model: model.prepareEmailModel(statementId: statementId, open: documentSource?.open), write: write)
         }
     }
 
@@ -219,10 +226,12 @@ struct PadStatementSheet: View {
         let offered = model.actions(for: statement)
         if !offered.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(offered.filter { $0 != .prepareEmail }, id: \.self) { action in
+                ForEach(offered, id: \.self) { action in
                     switch action {
+                    case .prepareEmail:
+                        Button(action.title) { emailing = true }.buttonStyle(.pad(.primary))
                     case .markSent:
-                        Button(action.title) { Task { await model.markSent(statement) } }.buttonStyle(.pad(.primary))
+                        Button(action.title) { Task { await model.markSent(statement) } }.buttonStyle(.pad(.secondary))
                     case .recordPayment:
                         Button(action.title) { choosePayment(statement) }.buttonStyle(.pad(.secondary))
                     case .reopen:

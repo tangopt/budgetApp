@@ -90,6 +90,21 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
+        // Task 12: Prepare email on the draft statement: the text, the statement PDF, what's missing (the demo's draft bill
+        // has no PDF yet), Open in Mail / Share instead / Mark as sent….
+        DemoRoute(name: "pad-prepare-email", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = billsTabs(context)
+            let draft = tabs.padBills.statements.first { $0.statement.status == .draft }
+            let model = tabs.padBills.prepareEmailModel(statementId: draft?.id ?? 0, open: nil)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-prepare-email", isDirectory: true)
+            let library = RechargeEmailPackage.Library(folder: folder) { _ in nil }
+            if let id = draft?.id, let package = try? context.dbQueue.read({ db in
+                try RechargeEmailPackage.build(db: db, statementId: id, language: .portuguese, library: library)
+            }) {
+                model.preload(package)
+            }
+            return AnyView(PrepareEmailSheet(model: model, write: tabs.padWrite))
+        },
         DemoRoute(name: "pad-rent-receipts", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
             let tabs = editingTabs(context)
             tabs.padRentReceipts.preload(PadRentReceiptsModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))

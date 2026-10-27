@@ -177,6 +177,8 @@ public final class PadBillsAndRechargesModel: ObservableObject {
     @Published public var selectedBillId: String?
     /// The statement whose sheet is open.
     @Published public var openStatementId: Int64?
+    /// The draft statement whose email is being prepared (from the list, or This month's step 4).
+    @Published public var emailStatementId: Int64?
 
     public let property: PadPropertyModel
     public let write: PadWriteModel
@@ -570,7 +572,7 @@ public final class PadBillsAndRechargesModel: ObservableObject {
         return saved
     }
 
-    /// Makes the next month's statement (the invoices since the last one) and opens it. The email itself is Task 12's.
+    /// Makes the next month's statement (the invoices since the last one) and opens it; its email is prepared from there.
     @discardableResult
     public func prepareNext() async -> Bool {
         guard let tenancyId = property.selectedTenancyId else { return false }
@@ -583,6 +585,14 @@ public final class PadBillsAndRechargesModel: ObservableObject {
         await refresh()
         openStatementId = id
         return true
+    }
+
+    /// The Prepare email sheet's model for draft statement `statementId`: the library's files through `open` (downloaded
+    /// when not on this iPad), Mark as sent through this screen's writer, the screen read again once it is.
+    public func prepareEmailModel(statementId: Int64, open: (@Sendable (String) async throws -> URL)?) -> PrepareEmailModel {
+        let month = statements.first { $0.id == statementId }.map { RechargeEmail.monthName($0.statement.month, language: .english) }
+        return PrepareEmailModel(statementId: statementId, monthName: month ?? "Statement", dbQueue: dbQueue, write: write,
+                                 open: open, today: today, onMarkedSent: { [weak self] in await self?.refresh() })
     }
 
     /// Rent matching, then exact recharge payments (the Mac's "Match payments").

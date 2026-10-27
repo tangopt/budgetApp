@@ -41,7 +41,7 @@ final class PadThisMonthModelTests: XCTestCase {
         XCTAssertEqual(model.destination(for: .fetchStatement(.bank)), .site(.bank, name: nil))
         XCTAssertEqual(model.destination(for: .fetchStatement(.tax)), .site(.tax, name: nil))
         XCTAssertEqual(model.destination(for: .check(trayItemId: trayId)), .check(trayId))
-        XCTAssertEqual(model.destination(for: .prepareEmail(statementId: 1)), .recharges)
+        XCTAssertEqual(model.destination(for: .prepareEmail(statementId: 1)), .prepareEmail(statementId: 1))
         XCTAssertEqual(model.destination(for: .markReceived), .recharges)
         XCTAssertNil(model.destination(for: .confirmMatch(transactionId: 1)))
         // An open-site action names the provider so its own saved site opens.
