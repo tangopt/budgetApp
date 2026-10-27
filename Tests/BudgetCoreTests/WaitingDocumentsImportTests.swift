@@ -250,7 +250,8 @@ final class WaitingDocumentsImportTests: XCTestCase {
         _ = try bill(date: Self.day(2026, 1, 10), amount: 6_000)
         let summary = try await importStatement("january.csv", [powerRow])
         try undo(try XCTUnwrap(summary.paymentLinks.first))
-        XCTAssertEqual(try db.read { db in try ImportUndo.conflicts(db: db, runId: summary.runId) }, [])
+        let conflicts = try ImportUndo.conflicts(dbQueue: db, runId: summary.runId)
+        XCTAssertEqual(conflicts, [])
         _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId, now: now)
         XCTAssertNil(try transaction("EXAMPLE POWER DD 0001"))
         XCTAssertEqual(try links(), [])
@@ -344,18 +345,23 @@ final class WaitingDocumentsImportTests: XCTestCase {
         await scheduler.stop()
 
         let paidOnMac = try XCTUnwrap(try h.localId("transaction_", uuid: paid.uuid, on: h.adminMac))
-        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [paidOnMac])
+        let value1 = try await transactionLinks(h.adminMac, document: setup.document)
+        XCTAssertEqual(value1, [paidOnMac])
         let pair = WaitingDocuments.Pair(documentId: setup.document, transactionId: paidOnMac)
-        XCTAssertEqual(try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }.map(\.pair), [pair])
+        let value2 = try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }.map(\.pair)
+        XCTAssertEqual(value2, [pair])
 
         try await h.adminMac2.engine.pull()
         let documentOn2 = try XCTUnwrap(try h.localId("document", uuid: setup.documentUuid, on: h.adminMac2))
-        XCTAssertEqual(try await transactionLinks(h.adminMac2, document: documentOn2), [paid.id], "the link synced back as an ordinary document link")
+        let value3 = try await transactionLinks(h.adminMac2, document: documentOn2)
+        XCTAssertEqual(value3, [paid.id], "the link synced back as an ordinary document link")
 
         // Seen: dismissed, the link stays; an undone one leaves the list too.
         try await macDb.write { db in try WaitingDocuments.dismissRecentAutoLinks(db: db, [pair]) }
-        XCTAssertEqual(try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }, [])
-        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [paidOnMac])
+        let value4 = try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }
+        XCTAssertEqual(value4, [])
+        let value5 = try await transactionLinks(h.adminMac, document: setup.document)
+        XCTAssertEqual(value5, [paidOnMac])
     }
 
     /// The Mac links after a pull; the person unlinks it by hand; a later pull bringing another transaction doesn't
@@ -364,7 +370,8 @@ final class WaitingDocumentsImportTests: XCTestCase {
         let setup = try await syncSetup()
         let h = setup.h
         let paid = try await addOn2(setup, "EXAMPLE POWER DD 0001", -6_000)
-        XCTAssertEqual(try await pullWithHook(h.adminMac).linked.count, 1)
+        let value6 = try await pullWithHook(h.adminMac).linked.count
+        XCTAssertEqual(value6, 1)
         let paidOnMac = try XCTUnwrap(try h.localId("transaction_", uuid: paid.uuid, on: h.adminMac))
         let document = setup.document
         try await h.adminMac.db.write { db in _ = try EvidenceLinks.unlink(db: db, documentId: document, from: .transaction(paidOnMac)) }
@@ -372,8 +379,10 @@ final class WaitingDocumentsImportTests: XCTestCase {
         _ = try await addOn2(setup, "SHOP A", -1_250)
         let later = try await pullWithHook(h.adminMac)
         XCTAssertEqual(later.linked, [])
-        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [])
-        XCTAssertEqual(try await h.adminMac.db.read { db in try WaitingDocuments.recentAutoLinks(db: db) }, [])
+        let value7 = try await transactionLinks(h.adminMac, document: setup.document)
+        XCTAssertEqual(value7, [])
+        let value8 = try await h.adminMac.db.read { db in try WaitingDocuments.recentAutoLinks(db: db) }
+        XCTAssertEqual(value8, [])
     }
 
     /// The Mac links after a pull and the person undoes it there; Mac 2 pulls the unlink (and a new transaction of
@@ -382,7 +391,8 @@ final class WaitingDocumentsImportTests: XCTestCase {
         let setup = try await syncSetup()
         let h = setup.h
         let paid = try await addOn2(setup, "EXAMPLE POWER DD 0001", -6_000)
-        let pair = try XCTUnwrap(try await pullWithHook(h.adminMac).linked.first)
+        let first = try await pullWithHook(h.adminMac)
+        let pair = try XCTUnwrap(first.linked.first)
         try await h.adminMac.db.write { db in
             try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .documentLink, db: db) { try WaitingDocuments.undo(db: db, pair, now: Date()) }
         }
@@ -399,8 +409,10 @@ final class WaitingDocumentsImportTests: XCTestCase {
         let documentOn2 = try XCTUnwrap(try h.localId("document", uuid: setup.documentUuid, on: h.adminMac2))
         let onTwo = try await pullWithHook(h.adminMac2)
         XCTAssertEqual(onTwo.linked, [])
-        XCTAssertEqual(try await transactionLinks(h.adminMac2, document: documentOn2), [], "the undo arrived and stays")
-        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [])
+        let value9 = try await transactionLinks(h.adminMac2, document: documentOn2)
+        XCTAssertEqual(value9, [], "the undo arrived and stays")
+        let value10 = try await transactionLinks(h.adminMac, document: setup.document)
+        XCTAssertEqual(value10, [])
         _ = paid
     }
 }

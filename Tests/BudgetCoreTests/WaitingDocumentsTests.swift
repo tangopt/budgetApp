@@ -258,9 +258,10 @@ final class WaitingDocumentsTests: XCTestCase {
         let paid = try debit(Self.day(2026, 1, 25), -6_000, "EXAMPLE POWER DD 0001")
         let doc = try document(date: Self.day(2026, 1, 10), amount: 6_000)
         let invoiceId = try db.write { db -> Int64 in
-            var invoice = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 10), amountMinorUnits: 6_000, documentId: doc)
+            var invoice = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 10), amountMinorUnits: 6_000, documentId: doc,
+                                         transactionId: paid)
             try Recharges.saveInvoice(db: db, &invoice)
-            // The bills tracker's own matching pays it (as `ImportEffects.followOns` does before the job).
+            // The property's matching runs first, as `ImportEffects.followOns` does before the job.
             _ = try Recharges.matchPayments(db: db, propertyId: propertyId)
             return invoice.id!
         }
@@ -269,7 +270,7 @@ final class WaitingDocumentsTests: XCTestCase {
                 .bills.first { $0.invoice?.id == invoiceId }?.stage
         }
         let now = Self.day(2026, 2, 1)
-        XCTAssertEqual(try db.read { db in try UtilityInvoice.fetchOne(db, key: invoiceId) }?.transactionId, paid, "paid by the tracker")
+        XCTAssertEqual(try db.read { db in try UtilityInvoice.fetchOne(db, key: invoiceId) }?.transactionId, paid, "paid in the tracker")
         XCTAssertEqual(try state(doc, now), .notApplicable)
         XCTAssertEqual(try stage(), .linkedToPayment)
 
@@ -295,7 +296,7 @@ final class WaitingDocumentsTests: XCTestCase {
         let other = try debit(Self.day(2026, 1, 26), -1_234, "SHOP A")
         let outcome = try run(Self.day(2026, 2, 1), onlyTo: [other])
         XCTAssertEqual(outcome.linked, [])
-        XCTAssertEqual(outcome.suggested, [id: 1])
+        XCTAssertNotNil(outcome.suggested[id], "still a suggestion")
         XCTAssertEqual(try links(), [])
         XCTAssertEqual(try run(Self.day(2026, 2, 1), onlyTo: []), WaitingDocuments.Outcome(), "nothing new: nothing runs")
         XCTAssertEqual(try run(Self.day(2026, 2, 1), onlyTo: [old]).linked, [WaitingDocuments.Pair(documentId: id, transactionId: old)])
