@@ -113,8 +113,9 @@ final class ImportCenterModel: ObservableObject {
     /// Shows a learnt rule on the Rules page (Rules ▸ Import rules, the rule selected): "Show on Rules page".
     var onShowImportRule: ((Int64) -> Void)?
 
-    #if SNAPSHOTS
+    /// The database: the finished import's payment links are named and undone here.
     private let dbQueue: DatabaseQueue
+    #if SNAPSHOTS
     private let library: EvidenceLibrary
     private let categorizationService: CategorizationService
     #endif
@@ -125,8 +126,8 @@ final class ImportCenterModel: ObservableObject {
     init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService,
          modelReader: (any DocumentModelReading)?, currentAppUserId: @escaping () -> Int64? = { nil }) {
         self.currentAppUserId = currentAppUserId
-        #if SNAPSHOTS
         self.dbQueue = dbQueue
+        #if SNAPSHOTS
         self.library = library
         self.categorizationService = categorizationService
         #endif
@@ -459,6 +460,23 @@ final class ImportCenterModel: ObservableObject {
 }
 
 extension ImportCenterModel {
+    /// The finished import's automatic payment links, named (`WaitingDocuments.describe`): the document and the
+    /// transaction's title, by pair. A pair that can't be read is left out.
+    func paymentLinkNames(_ pairs: [WaitingDocuments.Pair]) async -> [WaitingDocuments.Pair.ID: (document: String, payment: String)] {
+        (try? await dbQueue.read { db in
+            var names: [WaitingDocuments.Pair.ID: (document: String, payment: String)] = [:]
+            for pair in pairs { names[pair.id] = try WaitingDocuments.describe(db: db, pair) }
+            return names
+        }) ?? [:]
+    }
+
+    /// Takes one automatic payment link back (the summary's Undo): unlinked as the signed-in user with Edit on
+    /// Documents, and never made again. Throws the refusal (a filed return it would change, no permission).
+    func undoPaymentLink(_ pair: WaitingDocuments.Pair) async throws {
+        let now = AppClock.now
+        try await dbQueue.write(.documents, origin: .documentLink) { db in try WaitingDocuments.undo(db: db, pair, now: now) }
+    }
+
     /// Hides why a run's undo was refused.
     func dismissUndoRefusal(_ runId: Int64) {
         session.dismissUndoRefusal(runId)

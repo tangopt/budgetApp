@@ -324,12 +324,23 @@ public final class ImportCoordinator {
     /// adjustment added when ticked — in the same transaction (`StatementCheck.finish`), so a
     /// failed commit leaves neither an adjustment nor a recorded mismatch behind. Returns that
     /// check's outcome (nil without a statement). Either way the account's flagged mismatch is
-    /// re-checked (`StatementCheck.recheckStoredMismatch`).
+    /// re-checked (`StatementCheck.recheckStoredMismatch`). Then the waiting documents the rows paid are linked
+    /// (`WaitingDocuments.run`), in the same write.
     @discardableResult
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
         try dbQueue.write { db in
-            try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+            let outcome = try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions,
+                                              statement: statement)
+            try Self.linkWaitingDocuments(db: db, added: staged.count)
+            return outcome
         }
+    }
+
+    /// After rows are saved by `commit` or `finish` (not the `db:` variant: its caller, the document importer, runs it):
+    /// the waiting documents they paid are linked (`WaitingDocuments.run`). Nothing added, nothing run.
+    private static func linkWaitingDocuments(db: Database, added: Int) throws {
+        guard added > 0 else { return }
+        try WaitingDocuments.run(db: db)
     }
 
     /// `commit` in the caller's write transaction (one-off tools and the document importer,
@@ -414,6 +425,7 @@ public final class ImportCoordinator {
             let outcome: StatementFinishOutcome?
             if !staged.isEmpty {
                 outcome = try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+                try Self.linkWaitingDocuments(db: db, added: staged.count)
             } else {
                 outcome = try statement.map { try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
             }

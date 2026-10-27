@@ -72,6 +72,10 @@ public actor SyncScheduler {
     let pushDebounce: TimeInterval
     let periodic: TimeInterval
     let keyWaitRetry: TimeInterval
+    /// Run after every pull that finished (a full sync, before its push), never after a push-only one nor a pull that
+    /// threw: the Mac links the waiting documents the pulled transactions paid (`RealSync`), and the push sends the
+    /// links. It handles its own errors (a sync never fails because of it). Nil on the iPhone and iPad.
+    let afterPull: (@Sendable () async -> Void)?
 
     public private(set) var status: SyncStatus = .off {
         didSet {
@@ -117,7 +121,8 @@ public actor SyncScheduler {
 
     public init(engine: SyncEngineCore, db: any DatabaseWriter, clock: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
-                pushDebounce: TimeInterval = 5, periodic: TimeInterval = 900, keyWaitRetry: TimeInterval = 300) {
+                pushDebounce: TimeInterval = 5, periodic: TimeInterval = 900, keyWaitRetry: TimeInterval = 300,
+                afterPull: (@Sendable () async -> Void)? = nil) {
         self.engine = engine
         self.db = db
         self.clock = clock
@@ -125,6 +130,7 @@ public actor SyncScheduler {
         self.pushDebounce = pushDebounce
         self.periodic = periodic
         self.keyWaitRetry = keyWaitRetry
+        self.afterPull = afterPull
     }
 
     // MARK: Lifecycle
@@ -266,6 +272,7 @@ public actor SyncScheduler {
             if kind == .full {
                 report.pull = try await engine.pull()
                 pulled = true
+                await afterPull?()
                 try Task.checkCancellation()
                 status = .syncing(.pushing)
             }
