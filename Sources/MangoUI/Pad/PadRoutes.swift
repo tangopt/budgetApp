@@ -80,6 +80,20 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .tenancies, columns: .doubleColumn))
         },
+        // Step 10, Task 15: Money (the year's tiles, cost categories as chips, the months newest first, one expanded to its
+        // transactions), then with a transaction's document open in the panel, and Calendar (the agenda, then the month grid).
+        DemoRoute(name: "pad-money", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-money-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar-month", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .month), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
             let model = tabs.padDocuments
@@ -281,6 +295,48 @@ public enum PadRoutes {
         if let selecting, let receipt = tabs.padTenancies.detail.receipts.first(where: selecting) {
             tabs.padTenancies.selectedReceiptId = receipt.id
         }
+        return tabs
+    }
+
+    /// Editing tabs with Money read for the demo's year; the newest month with transactions expanded, and with `selecting` the
+    /// first transaction with a document open in the panel.
+    @MainActor
+    static func moneyTabs(_ context: PhoneDemoContext, selecting: Bool) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padMoney
+        let propertyId = tabs.padProperty.property?.id
+        let snapshot = PadMoneyModel.readNow(context.dbQueue, propertyId: propertyId, period: model.period, today: context.today)
+        guard let propertyId, let summary = snapshot.summary else {
+            model.preload(snapshot)
+            return tabs
+        }
+        let months = summary.months.reversed()
+        let candidates = months.compactMap { month in
+            PadMoneyModel.breakdownNow(context.dbQueue, propertyId: propertyId, month: month).map { (month, $0) }
+        }
+        let chosen = candidates.first { pair in
+            selecting && pair.1.groups.flatMap(\.lines).contains { (snapshot.documentCounts[$0.transaction.id ?? 0] ?? 0) > 0 }
+        } ?? candidates.first { !$0.1.groups.isEmpty }
+        var panel: PadMoneyModel.Panel?
+        if selecting, let (month, breakdown) = chosen {
+            model.preload(snapshot, expanded: month.start, breakdown: breakdown)
+            let lines = breakdown.groups.flatMap { model.lines($0) }
+            if let line = lines.first(where: { $0.documentCount > 0 }) {
+                panel = PadMoneyModel.panelNow(context.dbQueue, line: line, month: month.start)
+            }
+        }
+        model.preload(snapshot, expanded: chosen?.0.start, breakdown: chosen?.1, panel: panel)
+        return tabs
+    }
+
+    /// Editing tabs with Calendar read; `layout` Month shows the grid for the demo's month.
+    @MainActor
+    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padCalendar
+        model.preload(PadCalendarModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
+        model.layout = layout
+        if layout == .month, let first = model.snapshot.upcoming.first { model.selectedId = first.id }
         return tabs
     }
 

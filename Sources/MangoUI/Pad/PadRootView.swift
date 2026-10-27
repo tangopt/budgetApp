@@ -8,8 +8,8 @@ import BudgetCore
 /// on iPhone.
 ///
 /// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) and Tenancies another
-/// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the tax year's (`PadEvidenceView`, Task 14); Money,
-/// Calendar, Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's links through
+/// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the tax year's (`PadEvidenceView`, Task 14); Money and Calendar are Task 15's
+/// (`PadMoneyView`, `PadCalendarView`); Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's links through
 /// `padDocumentWrite` (Evidence's "Mark not available" through `padWrite`).
 ///
 /// The built-in browser (step 10, Task 5; `browser`, nil with demo data) is presented over everything when a screen
@@ -56,7 +56,7 @@ public struct PadRootView: View {
         GeometryReader { proxy in
             let state = PadSidebarState(isCollapsed: sidebarCollapsed).effective(
                 width: proxy.size.width, height: proxy.size.height,
-                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .tenancies && tabs.padTenancies.selectedReceiptId != nil) || (selection == .evidence && evidence.selectedItemId != nil))
+                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .tenancies && tabs.padTenancies.selectedReceiptId != nil) || (selection == .evidence && evidence.selectedItemId != nil) || (selection == .money && tabs.padMoney.panel != nil))
             HStack(spacing: 0) {
                 PadSidebar(state: state, selection: $selection, hasProperty: tabs.hasProperty, userName: userName, avatar: nil,
                            sync: SyncSidebarStatus.make(isRunning: syncStatus != .off, status: syncStatus, progress: nil, refusal: nil),
@@ -122,7 +122,14 @@ public struct PadRootView: View {
             PadEvidenceView(model: tabs.padEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus,
                             showBills: { selection = .billsAndRecharges })
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .money, .calendar, .checks, .profile:
+        case .money:
+            PadMoneyView(model: tabs.padMoney, write: tabs.padDocumentWrite, syncStatus: syncStatus, showDocument: showDocument)
+                .environment(\.quickEdit, tabs.quickEdit)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .calendar:
+            PadCalendarView(model: tabs.padCalendar, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .checks, .profile:
             PlaceholderPadScreen(section: section)
         }
     }

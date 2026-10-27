@@ -33,6 +33,13 @@ public enum TenancyReceipts {
     }
 }
 
+/// `PropertyPage.transactions` under a name no client's own types hide: the transactions behind a Money figure, oldest first.
+public enum PropertyDrillTransactions {
+    public static func transactions(db: Database, propertyId: Int64, period: DateInterval, drillDown: PropertyDrillDown) throws -> [Transaction] {
+        try PropertyPage.transactions(db: db, propertyId: propertyId, period: period, drillDown: drillDown)
+    }
+}
+
 /// The transactions behind a figure of the money summary.
 public enum PropertyDrillDown: Hashable, Sendable {
     /// The rent credits (rent received and recharges).
