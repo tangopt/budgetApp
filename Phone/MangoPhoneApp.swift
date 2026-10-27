@@ -55,6 +55,8 @@ struct PhoneRoot: View {
 
     @ObservedObject var lock: PhoneLockModel
     @ObservedObject var sync: PhoneSyncController
+    /// The widget's snapshot and Settings ▸ Widgets (step 7b).
+    @ObservedObject private var outputs = PhoneOutputs.shared
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
     /// "Show what's here" on the iCloud explanation, for this run of the app.
@@ -99,13 +101,18 @@ struct PhoneRoot: View {
         .onChange(of: lock.state) { _, state in
             // The cover window dismisses open sheets in UIKit on a lock; their SwiftUI state is cleared here too, so
             // nothing re-presents after unlocking and the avatar opens Settings again.
-            guard case .locked = state else { return }
+            guard case .locked = state else {
+                refreshOutputs()
+                return
+            }
             showingSettings = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: sync.sceneBecameActive()
+            case .active:
+                sync.sceneBecameActive()
+                refreshOutputs()
             case .background: sync.sceneEnteredBackground()
             default: break
             }
@@ -118,6 +125,19 @@ struct PhoneRoot: View {
             guard case .loading = stage else { return }
             await load()
         }
+        .onOpenURL { url in
+            // The widget's link: Home or Month, over whatever was open.
+            guard let link = WidgetLink.tab(from: url), case .ready(_, let tabs) = stage else { return }
+            showingSettings = false
+            tabs.dismissSheets()
+            tabs.selection = link == .home ? .home : .month
+        }
+    }
+
+    /// The widget's snapshot written again for this device's viewer (nothing in demo data, which clears it).
+    private func refreshOutputs() {
+        guard case .ready(let environment, _) = stage, !environment.isDemo else { return }
+        outputs.refresh(viewer: sync.deviceViewer)
     }
 
     /// Opens demo data while it is on, else the phone's own database (and attaches sync to it).
@@ -147,6 +167,8 @@ struct PhoneRoot: View {
                 }
             }
             stage = .ready(environment, tabs)
+            outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
+            refreshOutputs()
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
             stage = .failed(error.localizedDescription)
@@ -230,7 +252,8 @@ struct PhoneRoot: View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
         return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
-                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing)
+                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
+                             outputs: $outputs.settings)
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))

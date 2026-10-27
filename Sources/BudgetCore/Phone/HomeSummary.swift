@@ -38,6 +38,8 @@ public struct HomeSummary: Equatable, Sendable {
     public let leftToSpendMinorUnits: Int
     /// The pay month's projected spending (`month.expenses.projected`, positive).
     public let plannedSpendingMinorUnits: Int
+    /// The current pay month's close day (its payday): the pay calendar's close date.
+    public let paydayDate: Date
     /// Days from today to the current pay month's close day (its payday); 0 on payday.
     public let daysToPayday: Int
     public let attention: AttentionItems
@@ -77,6 +79,7 @@ public struct HomeSummary: Equatable, Sendable {
             month: month,
             leftToSpendMinorUnits: max(0, planned - month.expenses.actual),
             plannedSpendingMinorUnits: planned,
+            paydayDate: payday,
             daysToPayday: daysToPayday,
             attention: DashboardCalculator.attentionItems(input),
             upcoming: try upcoming(input, db: db, today: day)

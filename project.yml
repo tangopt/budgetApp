@@ -74,6 +74,10 @@ targets:
         UILaunchScreen: {}
         # The household invitation (a CKShare link) opens this app and reaches the scene delegate (step 7a).
         CKSharingSupported: true
+        # The widget's link (step 7b): mango://home, mango://month (WidgetLink).
+        CFBundleURLTypes:
+          - CFBundleURLName: ubberninja.mango.ios.widget
+            CFBundleURLSchemes: [mango]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         # Export compliance: only Apple's own encryption (CryptoKit), so TestFlight doesn't ask on every build.

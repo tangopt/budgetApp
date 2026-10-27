@@ -117,6 +117,9 @@ final class PhoneSyncController: ObservableObject {
     private nonisolated let writerRecordName = OSAllocatedUnfairLock<String?>(initialState: nil)
     /// Demo data is shown: nothing here touches CloudKit or the Keychain.
     private var isDemo = PhoneDemoData.isOn
+    /// The widget's snapshot (step 7b): written again after a sync that moved `lastSync` and once the iCloud user is
+    /// known; cleared on demo data and when no iCloud user is bound here.
+    var outputs: PhoneOutputs = .shared
 
     /// Sync runs here (so "Sync now" means something).
     var isRunning: Bool { scheduler != nil }
@@ -234,6 +237,7 @@ final class PhoneSyncController: ObservableObject {
         }
         guard generation == identityGeneration, !isDemo else { return }
         viewerRecordName = recordName
+        outputs.refresh(viewer: deviceViewer)
         if switching || awaitingICloudUser || scheduler == nil {
             awaitingICloudUser = false
             await startEngine(viewer: .none)
@@ -250,6 +254,8 @@ final class PhoneSyncController: ObservableObject {
         readingRecordName = false
         awaitingICloudUser = true
         viewerRecordName = nil
+        // Nobody bound here until the new user is read: the previous user's figures leave the widget.
+        outputs.clear()
         await stopEngine()
         checkAccount()
         readViewerRecordName()
@@ -413,6 +419,7 @@ final class PhoneSyncController: ObservableObject {
     /// the Keychain until `leaveDemo()`.
     func enterDemo() async {
         isDemo = true
+        outputs.clear()
         engineGeneration += 1
         accountCheck?.cancel()
         accountCheck = nil
@@ -494,7 +501,9 @@ final class PhoneSyncController: ObservableObject {
         guard !isDemo else { return }
         self.status = status
         guard let scheduler, let dbQueue else { return }
+        let previousSync = lastSync
         lastSync = await scheduler.lastSync
+        if let lastSync, lastSync != previousSync { outputs.refresh(viewer: deviceViewer) }
         downloadedRecords = await scheduler.receivedRecords
         if let pulled = try? await dbQueue.read({ db in try SyncEngineCore.hasChangeToken(db: db) }) {
             isFirstDownload = !pulled
@@ -548,6 +557,8 @@ final class PhoneSyncController: ObservableObject {
                 }
             }.value
         }
+        // The household's figures leave the widget with its data.
+        outputs.clear()
         householdNotice = HouseholdCopy.removedNotice
         joinState = .removed
         memberOwner = nil
