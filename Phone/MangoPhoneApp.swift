@@ -227,6 +227,8 @@ struct PhoneRoot: View {
                 // The flag goes anyway: the phone shows its own data; the folder is retried on the next leave.
                 UserDefaults.standard.removeObject(forKey: PhoneDemoMode.defaultsKey)
             }
+            // Demo data's sites, sessions and downloads go before the phone's own database opens.
+            await PhoneBrowser.purge()
             sync.leaveDemo()
             await load()
         }

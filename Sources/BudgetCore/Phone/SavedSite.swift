@@ -106,6 +106,8 @@ extension SavedSiteStore {
 /// address no longer passes `SavedSite.validate` is left out.
 public struct LocalSavedSiteStore: SavedSiteStore {
     public static let defaultSuite = "ubberninja.mango.savedSites"
+    /// Demo data's sites (step 10): kept apart from the device's own, never adopted by the household, cleared on each purge.
+    public static let demoSuite = "ubberninja.mango.savedSites.demo"
     static let key = "savedSites"
     private static let lock = NSLock()
 

@@ -80,11 +80,15 @@ public final class BrowserModel {
     /// This device's own sites, still to move into `store` (step 10 Task 6); nil once moved, or with nothing to move.
     @ObservationIgnored private var adopting: LocalSavedSiteStore?
     @ObservationIgnored private let websiteData: any WebsiteDataClearing
+    /// Demo data's sites: their own suite, never adopted by the household, emptied by `purgeAll`.
+    @ObservationIgnored private let demoSites: LocalSavedSiteStore
 
-    public init(tray: DownloadsTray, store: any SavedSiteStore, websiteData: any WebsiteDataClearing = WebKitWebsiteData()) {
+    public init(tray: DownloadsTray, store: any SavedSiteStore, websiteData: any WebsiteDataClearing = WebKitWebsiteData(),
+                demoSites: LocalSavedSiteStore = LocalSavedSiteStore(suiteName: LocalSavedSiteStore.demoSuite)) {
         self.tray = tray
         self.store = store
         self.websiteData = websiteData
+        self.demoSites = demoSites
     }
 
     /// For the snapshot routes: the strip, an open site's host and the tray, as given.
@@ -101,6 +105,12 @@ public final class BrowserModel {
         self.store = store
         adopting = local
         await reload()
+    }
+
+    /// Demo data: its own sites (no Check), apart from this device's and the household's.
+    public func useDemoSites() async {
+        checkSource = nil
+        await use(demoSites)
     }
 
     /// Reads the saved sites and the tray again.
@@ -238,10 +248,11 @@ public final class BrowserModel {
     // MARK: Sign-out
 
     /// Sign-out, leaving the household, demo data: the tray emptied and the browser's website data cleared (awaited),
-    /// the site closed. The saved sites stay (addresses only).
+    /// the site closed. The saved sites stay (addresses only), except demo data's, which go.
     public func purgeAll() async {
         generation += 1
         closeSite()
+        demoSites.removeAll()
         let tray = tray
         await Task.detached { tray.purgeAll() }.value
         downloadedItems = []

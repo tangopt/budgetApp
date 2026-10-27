@@ -243,4 +243,31 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertEqual(browser.sites, [bank])
         XCTAssertFalse(browser.canEditSites, "Add and Remove are hidden")
     }
+
+    /// Demo data's sites live in their own suite, never the device's (which the household adopts), and go on each purge
+    /// (entering or leaving demo data, sign-out).
+    func testDemoSitesKeptApartAndPurged() async throws {
+        let suite = "mango.tests.savedSites." + UUID().uuidString
+        let demoSuite = suite + ".demo"
+        defer {
+            UserDefaults().removePersistentDomain(forName: suite)
+            UserDefaults().removePersistentDomain(forName: demoSuite)
+        }
+        let local = LocalSavedSiteStore(suiteName: suite)
+        let browser = BrowserModel(tray: DownloadsTray(directory: folder.appendingPathComponent("Tray", isDirectory: true)),
+                                   store: local, websiteData: FakeWebsiteData(), demoSites: LocalSavedSiteStore(suiteName: demoSuite))
+        await browser.useDemoSites()
+        try await browser.addSite(name: "Demo bank", address: "bank.example.test", kind: .bank)
+        XCTAssertEqual(browser.sites.map(\.name), ["Demo bank"])
+        let onDevice = try await local.all()
+        XCTAssertEqual(onDevice, [], "the device's own sites (adopted by the household) never get demo sites")
+        let household = MemorySites()
+        await browser.use(household, adopting: local)
+        XCTAssertEqual(browser.sites, [])
+
+        await browser.purgeAll()
+        let left = try await LocalSavedSiteStore(suiteName: demoSuite).all()
+        XCTAssertEqual(left, [], "demo sites cleared")
+        XCTAssertNotEqual(LocalSavedSiteStore.demoSuite, LocalSavedSiteStore.defaultSuite)
+    }
 }

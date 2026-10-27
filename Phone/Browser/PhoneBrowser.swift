@@ -21,12 +21,11 @@ enum PhoneBrowser {
 
     /// The strip's sites once the database is open: the household's (step 10 Task 6: synced, each add and remove written
     /// through the device writer as Property), with the sites saved on this device before moved into them once. With
-    /// demo data (read-only, never synced), this device's own.
+    /// demo data (read-only, never synced), demo data's own, apart from this device's (never adopted; cleared on purge).
     static func attach(_ environment: PhoneEnvironment) async {
         guard let browser = shared else { return }
         if environment.isDemo {
-            browser.checkSource = nil
-            await browser.use(LocalSavedSiteStore())
+            await browser.useDemoSites()
         } else {
             // Check and link (step 10 Task 8): the tray's files read as the Mac's import reads them, saved through the
             // device writer into this iPad's library.
