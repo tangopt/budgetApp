@@ -25,6 +25,8 @@ public final class PhoneTabsModel: ObservableObject {
     public let search: SearchViewModel
     /// The iPad's Property screens (tenancies, bills); unused on the iPhone.
     public let padProperty: PadPropertyModel
+    /// The iPad's Documents library; its `open` is set once sync can download a document on demand.
+    public let padDocuments: PadDocumentsModel
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -48,6 +50,7 @@ public final class PhoneTabsModel: ObservableObject {
         property = PropertyViewModel(dbQueue: dbQueue, today: today)
         search = SearchViewModel(dbQueue: dbQueue, today: today)
         padProperty = PadPropertyModel(dbQueue: dbQueue, today: today)
+        padDocuments = PadDocumentsModel(dbQueue: dbQueue)
     }
 
     /// Whether the database has a property row, read off the main actor; nil when the read fails (the tab then stays

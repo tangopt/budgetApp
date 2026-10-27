@@ -85,7 +85,10 @@ public struct PadRootView: View {
         case .bills:
             PadBillsView(model: tabs.padProperty, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .recharges, .rentReceipts, .documents, .missingEvidence:
+        case .documents:
+            PadDocumentsView(model: tabs.padDocuments, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .recharges, .rentReceipts, .missingEvidence:
             PadPlaceholder(section: section)
         }
     }

@@ -28,6 +28,12 @@ public enum PadRoutes {
             AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .bills,
                                 columns: .doubleColumn))
         },
+        DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            let tabs = tabs(context)
+            let model = tabs.padDocuments
+            model.preload(PadDocumentsModel.readNow(context.dbQueue))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
     ]
 
     /// Tabs over the demo with Property's models already read, so the first frame has its data.
