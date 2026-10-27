@@ -22,6 +22,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        # CloudKit sharing (the household's share sheet), as on the iPhone.
+        CKSharingSupported: true
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.personal.budget.account-reference
             UTTypeDescription: Mango account reference

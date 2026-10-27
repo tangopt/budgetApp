@@ -21,8 +21,9 @@ final class HouseholdController: ObservableObject {
     }
 
     @Published private(set) var state = HouseholdPaneState.empty
-    /// The system share sheet asked for; the pane shows it and clears this.
-    @Published var sharePrompt: SharePrompt?
+    /// Shows the system share sheet for a prompt, from the open pane (`LiveHouseholdSettings`); false: it couldn't.
+    /// Nil while the pane isn't open.
+    var presenter: ((SharePrompt) -> Bool)?
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -38,6 +39,8 @@ final class HouseholdController: ObservableObject {
     private var ambiguous: String?
     private var error: String?
     private var busy = false
+    /// "Invite…" is running its gate (the pane says so: the server audit can take a while).
+    private var checking = false
     private var refreshing = false
 
     init(dbQueue: DatabaseQueue, session: SessionModel) {
@@ -147,6 +150,7 @@ final class HouseholdController: ObservableObject {
         var next = HouseholdPaneState()
         next.unclaimed = unclaimed
         next.busy = busy
+        next.progress = busy && checking ? HouseholdCopy.inviteChecking : nil
         next.error = error
         if let member {
             next.member = member.displayName
@@ -197,22 +201,32 @@ final class HouseholdController: ObservableObject {
         }
     }
 
+    /// "Invite…": the gate (`HouseholdInvite.press`), then the system share sheet through `presenter`. Every outcome
+    /// shows in the pane: the reasons under "Not yet:", or the error line when the sheet can't open.
     func invite() async {
+        checking = true
+        defer { checking = false }
         await run {
             blockers = []
-            let local = try await dbQueue.read { db in try HouseholdInvite.localBlockers(db: db) }
-            guard local.isEmpty else { blockers = local.map { HouseholdCopy.blocker($0) }; return }
-            guard isRunning() else { blockers = [HouseholdCopy.blocker(.syncNotOn)]; return }
             let transport = cloud()
-            let existed = (try? await transport.zoneShare(SyncZones.household)) != nil
-            let result = try await HouseholdInvite.invite(transport: transport, keys: keys, db: dbQueue, title: "Mango household")
-            switch result {
-            case .blocked(let found):
-                blockers = found.map { HouseholdCopy.blocker($0, alreadyShared: existed) }
-            case .share(let made):
+            let outcome = try await HouseholdInvite.press(running: isRunning(), transport: transport, keys: keys, db: dbQueue,
+                                                          title: "Mango household") {
+                try await transport.shareForSheet(SyncZones.household)
+            }
+            switch outcome {
+            case .blocked(let lines):
+                Self.log.notice("Household invite: blocked (\(lines.count, privacy: .public) reason(s))")
+                blockers = lines
+            case .sheetUnavailable(let made):
+                Self.log.error("Household invite: share made but its CKShare couldn't be read")
                 share = made
-                guard let sheet = try await transport.shareForSheet(SyncZones.household) else { error = HouseholdCopy.shareFailed; return }
-                sharePrompt = SharePrompt(share: sheet.share, container: sheet.container)
+                error = HouseholdCopy.shareFailed
+            case .present(let made, let sheet):
+                share = made
+                let prompt = SharePrompt(share: sheet.share, container: sheet.container)
+                let shown = presenter?(prompt) ?? false
+                Self.log.notice("Household invite: share sheet \(shown ? "shown" : "not shown", privacy: .public)")
+                if !shown { error = HouseholdCopy.shareFailed }
             }
         }
     }
@@ -231,11 +245,6 @@ final class HouseholdController: ObservableObject {
                 share = upgraded
             }
         }
-    }
-
-    func shareFailed() {
-        error = HouseholdCopy.shareFailed
-        Task { await publish() }
     }
 
     func remove() async {

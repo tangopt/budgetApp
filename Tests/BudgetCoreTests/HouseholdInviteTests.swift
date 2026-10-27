@@ -262,6 +262,70 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertEqual(second.participants.map(\.userRecordName), [member], "the same share: she's still on it")
     }
 
+    // MARK: Pressing "Invite…" on the Mac (`press`)
+
+    private func press(_ h: TwoPersonHousehold, running: Bool = true, transport: (any SyncTransport & SyncShareTransport)? = nil,
+                       sheet: () async throws -> String? = { "sheet" }) async throws -> HouseholdInvite.PressOutcome<String> {
+        try await HouseholdInvite.press(running: running, transport: transport ?? h.macTransport, keys: h.adminKeys,
+                                        db: h.adminMac.db, title: "Synthetic household", sheet: sheet)
+    }
+
+    private func lines(_ outcome: HouseholdInvite.PressOutcome<String>, file: StaticString = #filePath, line: UInt = #line) -> [String] {
+        guard case .blocked(let lines) = outcome else { XCTFail("expected blocked, got \(outcome)", file: file, line: line); return [] }
+        return lines
+    }
+
+    func testPressPresentsTheSheetForTheShare() async throws {
+        let h = try await ready()
+        var asked = 0
+        let outcome = try await press(h) { asked += 1; return "sheet" }
+        guard case .present(let made, let sheet) = outcome else { return XCTFail("expected the sheet, got \(outcome)") }
+        XCTAssertEqual(sheet, "sheet")
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(made.zone, household)
+        let held = try await h.cloud.zoneShare(household)
+        XCTAssertEqual(held, made)
+    }
+
+    func testPressWithSyncOffIsBlockedVisiblyAndSharesNothing() async throws {
+        let h = try await ready()
+        var asked = 0
+        let outcome = try await press(h, running: false) { asked += 1; return "sheet" }
+        XCTAssertEqual(lines(outcome), ["Turn on iCloud sync first, in Settings ▸ Sync."])
+        XCTAssertEqual(asked, 0)
+        try await noShare(h)
+    }
+
+    func testPressLocalBlockersAreLines() async throws {
+        let h = try await ready()
+        try write(h.adminMac.db) { db in try db.execute(sql: "UPDATE personSharing SET ownershipConfirmedAt = NULL") }
+        let outcome = try await press(h)
+        XCTAssertEqual(lines(outcome).first, "Confirm who owns each account first, in Settings ▸ Sharing.")
+        try await noShare(h)
+    }
+
+    func testPressOfflineIsALine() async throws {
+        let h = try await ready()
+        let outcome = try await press(h, transport: OfflineShareTransport())
+        XCTAssertEqual(lines(outcome), ["Mango couldn't check iCloud. Try again when you're online."])
+    }
+
+    func testPressWithoutASheetSaysSo() async throws {
+        let h = try await ready()
+        let outcome = try await press(h) { nil }
+        guard case .sheetUnavailable(let made) = outcome else { return XCTFail("expected sheetUnavailable, got \(outcome)") }
+        XCTAssertEqual(made.zone, household)
+    }
+
+    func testPressSheetErrorIsThrownForTheErrorLine() async throws {
+        struct Refused: Error {}
+        let h = try await ready()
+        do {
+            _ = try await press(h) { throw Refused() }
+            XCTFail("must throw")
+        } catch is Refused {}
+    }
+
     // MARK: Binding
 
     func testAcceptedParticipantIsBoundToMember() async throws {
