@@ -120,6 +120,7 @@ struct BillsSection: View {
     let propertyId: Int64
     @State private var chosenYear: Int?
     @Environment(\.theme) private var theme
+    @Environment(\.selectedRowScroller) private var pageScroller
 
     private var grid: UtilityBillsGrid { bills.grid }
     private var year: Int {
@@ -132,6 +133,7 @@ struct BillsSection: View {
         return nil
     }
 
+    private static let scrollID = "BillsSection.panel"
     private static let monthName = Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.abbreviated)
 
     var body: some View {
@@ -159,6 +161,14 @@ struct BillsSection: View {
                     legend
                 }
             }
+        }
+        .id(Self.scrollID)
+        // The grid sits below the chart: a bill opened from elsewhere (a link, a deep route) brings it into view.
+        .task(id: openCell.map { "\($0.0)|\($0.1.timeIntervalSince1970)" }) {
+            guard openCell != nil, let pageScroller else { return }
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            pageScroller.scrollTo(Self.scrollID, anchor: .center)
         }
         .onAppear(perform: reload)
         .onChange(of: viewModel.rechargesRevision) { _, _ in reload() }
