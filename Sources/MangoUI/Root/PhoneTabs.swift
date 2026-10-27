@@ -33,7 +33,8 @@ public final class PhoneTabsModel: ObservableObject {
     public let padWrite: PadWriteModel
     /// Bills & recharges (step 10, Task 11): the grid, the statements and their actions.
     public let padBills: PadBillsAndRechargesModel
-    public let padRentReceipts: PadRentReceiptsModel
+    /// Tenancies (step 10, Task 13): the tenancy's details, its rent receipts and their actions.
+    public let padTenancies: PadTenanciesModel
     /// The iPad's Documents and Missing evidence edits (step 8, Task 10), through the device writer in Documents.
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
@@ -68,7 +69,7 @@ public final class PhoneTabsModel: ObservableObject {
         padDocuments = PadDocumentsModel(dbQueue: dbQueue)
         padWrite = PadWriteModel(writer: writer)
         padBills = PadBillsAndRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
-        padRentReceipts = PadRentReceiptsModel(property: padProperty, write: padWrite, dbQueue: dbQueue)
+        padTenancies = PadTenanciesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)

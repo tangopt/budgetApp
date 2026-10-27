@@ -56,6 +56,11 @@ public final class PadWriteModel: ObservableObject {
         self.refusal = refusal
     }
 
+    /// Keeps `message` under row `rowId` for something refused before it reached the writer (a form's own check).
+    public func refuse(rowId: String, message: String) {
+        refusal = Refusal(rowId: rowId, message: message)
+    }
+
     /// Reads again whether the user has Edit on the area, and what is left unsent.
     public func refresh() async {
         guard let writer else {

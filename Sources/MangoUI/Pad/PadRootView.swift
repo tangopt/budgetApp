@@ -7,8 +7,8 @@ import BudgetCore
 /// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
 ///
-/// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) with the document panel; Rent receipts
-/// stay reachable from Tenancies until Task 13 rebuilds it. Evidence is the step 8 Missing evidence screen; Money,
+/// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) and Tenancies another
+/// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the step 8 Missing evidence screen; Money,
 /// Calendar, Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's through
 /// `padDocumentWrite`.
 ///
@@ -56,7 +56,7 @@ public struct PadRootView: View {
         GeometryReader { proxy in
             let state = PadSidebarState(isCollapsed: sidebarCollapsed).effective(
                 width: proxy.size.width, height: proxy.size.height,
-                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .evidence && evidence.selectedItemId != nil))
+                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .tenancies && tabs.padTenancies.selectedReceiptId != nil) || (selection == .evidence && evidence.selectedItemId != nil))
             HStack(spacing: 0) {
                 PadSidebar(state: state, selection: $selection, hasProperty: tabs.hasProperty, userName: userName, avatar: nil,
                            sync: SyncSidebarStatus.make(isRunning: syncStatus != .off, status: syncStatus, progress: nil, refusal: nil),
@@ -108,7 +108,9 @@ public struct PadRootView: View {
                              go: open)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .tenancies:
-            PadTenanciesView(model: tabs.padProperty, rentReceipts: tabs.padRentReceipts, write: tabs.padWrite, syncStatus: syncStatus)
+            PadTenanciesScreen(model: tabs.padTenancies, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus,
+                               showDocument: showDocument)
+                .environment(\.quickEdit, tabs.quickEdit)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .billsAndRecharges:
             PadBillsAndRechargesView(model: tabs.padBills, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
@@ -122,6 +124,12 @@ public struct PadRootView: View {
         case .money, .calendar, .checks, .profile:
             PlaceholderPadScreen(section: section)
         }
+    }
+
+    /// Tenancies' Show in Documents: the Documents screen with that document selected.
+    private func showDocument(_ id: Int64) {
+        tabs.padDocuments.selectedId = id
+        selection = .documents
     }
 
     /// Where This month's actions go.

@@ -43,7 +43,7 @@ final class PadPropertyActionsTests: XCTestCase {
         await tabs.padProperty.reload()
         await tabs.padWrite.refresh()
         await tabs.padBills.reload()
-        await tabs.padRentReceipts.reload()
+        await tabs.padTenancies.reload()
         return tabs
     }
 
@@ -170,16 +170,16 @@ final class PadPropertyActionsTests: XCTestCase {
             return receipt.id!
         }
         let tabs = await tabs()
-        let receipt = try XCTUnwrap(tabs.padRentReceipts.receipts.first { $0.id == receiptId })
-        XCTAssertTrue(tabs.padRentReceipts.canLink(receipt))
-        let creditChoices = await tabs.padRentReceipts.candidates(for: receipt)
+        let receipt = try XCTUnwrap(tabs.padTenancies.detail.receipts.first { $0.id == receiptId })
+        XCTAssertTrue(tabs.padTenancies.actions(for: receipt).contains(.linkPayment))
+        let creditChoices = await tabs.padTenancies.candidates(for: receipt)
         let credit = try XCTUnwrap(creditChoices.first)
         XCTAssertEqual(credit.date, Self.day(2026, 10, 12))
-        let saved = await tabs.padRentReceipts.link(receipt, transactionId: credit.id!)
+        let saved = await tabs.padTenancies.link(receipt, transactionId: credit.id!)
         XCTAssertTrue(saved)
-        let now = try XCTUnwrap(tabs.padRentReceipts.receipts.first { $0.id == receiptId })
+        let now = try XCTUnwrap(tabs.padTenancies.detail.receipts.first { $0.id == receiptId })
         XCTAssertTrue(now.isCovered)
-        XCTAssertFalse(tabs.padRentReceipts.canLink(now))
+        XCTAssertFalse(tabs.padTenancies.actions(for: now).contains(.linkPayment))
         XCTAssertEqual(after.value, 1)
     }
 
@@ -196,7 +196,7 @@ final class PadPropertyActionsTests: XCTestCase {
             XCTAssertNil(tabs.padBills.listAction(for: statement))
             XCTAssertEqual(tabs.padBills.actions(for: statement), [])
         }
-        for receipt in tabs.padRentReceipts.receipts { XCTAssertFalse(tabs.padRentReceipts.canLink(receipt)) }
+        for receipt in tabs.padTenancies.detail.receipts { XCTAssertEqual(tabs.padTenancies.actions(for: receipt).filter(\.edits), []) }
         // Nothing is written even if asked.
         let saved = await tabs.padBills.markSent(try bill("invoice54", tabs))
         XCTAssertFalse(saved)
