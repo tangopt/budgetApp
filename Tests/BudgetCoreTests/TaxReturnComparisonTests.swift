@@ -64,7 +64,7 @@ final class TaxReturnComparisonTests: XCTestCase {
         let higher = try line(comparison, "Higher rate tax")
         XCTAssertFalse(higher.inCurrent)
         XCTAssertEqual(higher.why, "No income in this band in 2025/26")
-        XCTAssertEqual(try line(comparison, "Balancing payment").current, current.calculation.balancingPayment)
+        XCTAssertEqual(try line(comparison, "Balancing payment (negative: repayment)").current, current.calculation.balancingPayment)
     }
 
     func testComparingAYearWithItselfChangesNothing() throws {

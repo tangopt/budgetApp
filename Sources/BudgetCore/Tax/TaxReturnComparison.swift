@@ -186,7 +186,7 @@ public enum TaxReturnComparison {
         // Payments.
         add("poaMade", .payments, "Payments on account made", previous: pc.paymentsOnAccountMade, current: cc.paymentsOnAccountMade,
             why: pc.paymentsOnAccountMade != cc.paymentsOnAccountMade ? "Set by \(p)'s liability" : nil)
-        add("balancing", .payments, pc.balancingPayment >= 0 && cc.balancingPayment >= 0 ? "Balancing payment" : "Balancing payment (negative: repayment)",
+        add("balancing", .payments, "Balancing payment (negative: repayment)",
             previous: pc.balancingPayment, current: cc.balancingPayment, total: true,
             why: pc.paymentsOnAccountMade != cc.paymentsOnAccountMade && pc.balancingPayment != cc.balancingPayment
                 ? "Payments on account made were \(Money.format(pc.paymentsOnAccountMade, currency: .gbp)), now \(Money.format(cc.paymentsOnAccountMade, currency: .gbp))" : nil)
