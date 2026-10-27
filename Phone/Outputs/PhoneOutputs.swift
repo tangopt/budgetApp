@@ -134,6 +134,8 @@ final class PhoneOutputs: ObservableObject {
             }
             guard generation == self.generation else { return }
             notificationOperations.enqueue { [weak self] in
+                // After any refresh before it has finished: the ledger is never written for the previous user afterwards.
+                if case .iCloudUser(let recordName?) = viewer { ledger.follow(recordName: recordName) }
                 await NotificationScheduler.refresh(plan: plan, client: center, ledger: ledger,
                                                     isCurrent: { generation == self?.generation })
             }

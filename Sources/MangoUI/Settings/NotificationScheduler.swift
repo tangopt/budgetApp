@@ -21,9 +21,11 @@ public protocol NotificationCenterClient: Sendable {
 }
 
 /// Every notification id this iPhone has ever handed to the notification center, so a reminder that already fired is
-/// not sent again. Per device: `UserDefaults` never syncs.
+/// not sent again. Per device: `UserDefaults` never syncs. It belongs to one iCloud user (`follow(recordName:)`).
 public struct LedgerStore: @unchecked Sendable {
     public static let defaultsKey = "phone.notificationLedger"
+    /// The iCloud user's record name the ledger's ids were handed over for.
+    public static let ownerKey = "phone.notificationLedger.owner"
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults) {
@@ -37,6 +39,15 @@ public struct LedgerStore: @unchecked Sendable {
     public func insert(_ added: [String]) {
         guard !added.isEmpty else { return }
         defaults.set(Array(ids.union(added)).sorted(), forKey: Self.defaultsKey)
+    }
+
+    /// The ledger is `recordName`'s: another iCloud user's ids go (hers are planned for her, and the same id may
+    /// name another event of hers). A ledger with no owner yet is adopted as it is.
+    public func follow(recordName: String) {
+        let owner = defaults.string(forKey: Self.ownerKey)
+        guard owner != recordName else { return }
+        if owner != nil { defaults.removeObject(forKey: Self.defaultsKey) }
+        defaults.set(recordName, forKey: Self.ownerKey)
     }
 }
 

@@ -171,6 +171,8 @@ struct PhoneRoot: View {
             // is out of the view tree while locked and the name is usually read before the first unlock.
             if !environment.isDemo {
                 tabs.follow(recordNames: sync.$viewerRecordName)
+                // A quick edit moved figures: the widget and the reminders follow at once.
+                tabs.afterEdit = { [outputs] in outputs.refresh(viewer: sync.deviceViewer) }
                 // The iPad's Documents open a file by downloading it on demand (the iPhone has no such screen).
                 if UIDevice.current.userInterfaceIdiom == .pad {
                     tabs.padDocuments.open = { path in try await sync.openDocument(storedRelativePath: path) }

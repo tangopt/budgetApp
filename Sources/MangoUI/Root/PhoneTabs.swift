@@ -124,12 +124,16 @@ public final class PhoneTabsModel: ObservableObject {
         return true
     }
 
-    /// After a quick edit: the screens that show transactions read again, the open lists in place.
+    /// After a quick edit saved, once the screens have read again: the app's outputs (widget snapshot, reminders).
+    public var afterEdit: (@MainActor () -> Void)?
+
+    /// After a quick edit: the screens that show transactions read again, the open lists in place, then `afterEdit`.
     private func reloadAfterEdit() async {
         await reloadViewerScreens()
         await search.load()
         await month.refreshTransactionLists()
         await quickEdit.load()
+        afterEdit?()
     }
 
     private func reloadViewerScreens() async {

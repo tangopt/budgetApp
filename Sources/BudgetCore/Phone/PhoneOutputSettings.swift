@@ -7,7 +7,8 @@ public enum NotificationKind: String, CaseIterable, Codable, Sendable {
 
 /// What this iPhone shows outside the app: whether the widget's figures show on the lock screen (off until turned on),
 /// and which reminders it sends (all until turned off). Per device by construction: kept in `UserDefaults`, which never
-/// syncs, under `defaultsKey` in the App Group's suite (`PhoneAppGroup.identifier`) so the widget reads it too.
+/// syncs, under `defaultsKey` in the App Group's suite (`PhoneAppGroup.identifier`). The app reads it; the widget
+/// does not (it reads only the snapshot's own `showFiguresOnLockScreen`, copied in when the snapshot is written).
 public struct PhoneOutputSettings: Codable, Equatable, Sendable {
     public var showFiguresOnLockScreen = false
     public var notifications: Set<NotificationKind> = Set(NotificationKind.allCases)

@@ -62,6 +62,15 @@ final class WidgetEntryTests: XCTestCase {
     }
 
     @MainActor
+    func testAQuickEditRefreshesTheOutputsOnceTheScreensReadAgain() async throws {
+        let tabs = PhoneTabsModel(dbQueue: try TestDatabase.migrated(), today: { Date() }, hasProperty: false, viewer: .iCloudUser(recordName: nil))
+        var refreshed = 0
+        tabs.afterEdit = { refreshed += 1 }
+        await tabs.quickEdit.onChange?()
+        XCTAssertEqual(refreshed, 1)
+    }
+
+    @MainActor
     func testOpeningALinkSelectsTheTabAndLeavesAPendingLinkForTheSidebar() throws {
         let tabs = PhoneTabsModel(dbQueue: try TestDatabase.migrated(), today: { Date() }, hasProperty: false, viewer: .iCloudUser(recordName: nil))
         XCTAssertNil(tabs.pendingLink)

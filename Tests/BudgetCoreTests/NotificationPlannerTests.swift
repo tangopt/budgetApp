@@ -79,7 +79,7 @@ final class NotificationPlannerTests: XCTestCase {
 
     // MARK: Rent
 
-    func testRentLateNotifiesFiveDaysAfterDue() throws {
+    func testRentLateNotifiesTenDaysAfterDue() throws {
         // November's rent is due on the 12th (the day October's came): late once the 10-day window has passed.
         let today = Self.day(2026, 11, 30)
         let now = Self.london.date(from: DateComponents(year: 2026, month: 11, day: 30, hour: 8))!

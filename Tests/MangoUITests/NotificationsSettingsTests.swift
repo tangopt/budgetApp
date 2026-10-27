@@ -167,6 +167,22 @@ final class NotificationsSettingsTests: XCTestCase {
         XCTAssertTrue(delivered.isEmpty)
     }
 
+    func testLedgerStartsEmptyForAnotherICloudUser() throws {
+        let (ledger, cleanup) = try ledger()
+        defer { cleanup() }
+        ledger.insert(["a"])
+        // A ledger from before it had an owner is adopted.
+        ledger.follow(recordName: "_userA")
+        XCTAssertEqual(ledger.ids, ["a"])
+        ledger.follow(recordName: "_userA")
+        XCTAssertEqual(ledger.ids, ["a"])
+        ledger.follow(recordName: "_userB")
+        XCTAssertTrue(ledger.ids.isEmpty)
+        ledger.insert(["b"])
+        ledger.follow(recordName: "_userA")
+        XCTAssertTrue(ledger.ids.isEmpty)
+    }
+
     func testAdminOnlyToggleHiddenForMember() {
         XCTAssertEqual(NotificationsSection.kinds(isAdmin: true), [.rentLate, .billDue, .taxDue, .noImport])
         XCTAssertEqual(NotificationsSection.kinds(isAdmin: false), [.rentLate, .billDue, .taxDue])
