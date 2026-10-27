@@ -4,7 +4,7 @@ import BudgetCore
 import struct BudgetCore.Transaction
 import GRDB
 
-/// The Bills tab's data (small batch item 1): one tenancy's `UtilityBills` grid, read off the main
+/// The utility bills data (Recharges tab, first section): one tenancy's `UtilityBills` grid, read off the main
 /// thread. Held by `PropertyViewModel`, so the tab and its side panel read the same grid.
 @MainActor
 final class BillsModel: ObservableObject {
@@ -110,29 +110,10 @@ struct BillStagePill: View {
     }
 }
 
-/// The Bills tab: the tenancy's utility bills as a provider × month grid, each cell the stage of
-/// its bill(s) on the way from the landlord's payment to the tenant's. Clicking a cell opens
-/// the bill beside the page (`UtilityBillPanel`). Nothing is edited here.
-struct PropertyBillsTab: View {
-    @ObservedObject var viewModel: PropertyViewModel
-
-    var body: some View {
-        if let tenancy = viewModel.selectedTenancy, let propertyId = viewModel.propertyId {
-            BillsTenancyView(viewModel: viewModel, bills: viewModel.bills, tenancy: tenancy, propertyId: propertyId)
-                .id(tenancy.id)
-        } else {
-            Panel {
-                EmptyState(systemImage: "bolt.horizontal", title: "No tenancies yet",
-                           message: "Utility bills are followed per tenancy: add the tenancy on Tenancies first.") {
-                    Button("Tenancies ›") { viewModel.tab = .tenancies }
-                }
-                .inPanel()
-            }
-        }
-    }
-}
-
-struct BillsTenancyView: View {
+/// The tenancy's utility bills as a provider × month grid, each cell the stage of its bill(s) on
+/// the way from the landlord's payment to the tenant's: the first section of the Recharges tab.
+/// Clicking a cell opens the bill beside the page (`UtilityBillPanel`). Nothing is edited here.
+struct BillsSection: View {
     @ObservedObject var viewModel: PropertyViewModel
     @ObservedObject var bills: BillsModel
     let tenancy: Tenancy
@@ -155,7 +136,6 @@ struct BillsTenancyView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-            header
             if let message = bills.errorMessage { InlineBanner(.error, message) { bills.errorMessage = nil } }
             Panel("Utility bills", subtitle: grid.summaryText) {
                 if grid.years.count > 1 {
@@ -187,25 +167,6 @@ struct BillsTenancyView: View {
 
     private func reload() {
         bills.load(dbQueue: viewModel.dbQueue, propertyId: propertyId, tenancyId: tenancy.id!)
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Picker("Tenancy", selection: Binding(get: { viewModel.selectedTenancy?.id }, set: { viewModel.selectedTenancyId = $0 })) {
-                ForEach(viewModel.snapshot.tenancies.reversed()) { tenancy in
-                    Text("\(tenancy.referenceLabel) · \(PropertyFormat.period(tenancy.startDate, tenancy.endDate))").tag(tenancy.id)
-                }
-            }
-            .labelsHidden().fixedSize()
-            .accessibilityLabel("Tenancy")
-            Spacer(minLength: 8)
-            Button("Recharges ›") { viewModel.tab = .recharges }
-                .buttonStyle(.link)
-                .help("The statements, and the tenant's payments")
-            ImportShortcutButton("Utility invoices…", shortcut: .utilityInvoices(propertyId: propertyId))
-                .help("Add utility invoices and match them to their debits")
-        }
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var months: [Date] { (1...12).map { MonthRange.of(year: year, month: $0).start } }
@@ -275,7 +236,7 @@ struct BillsTenancyView: View {
     }
 }
 
-/// One bill beside the Bills tab: its stage and figures, the invoice (page 1, Quick Look), the
+/// One bill beside the Recharges tab: its stage and figures, the invoice (page 1, Quick Look), the
 /// payment that settled it, and the actions the Recharges tab already has: add the invoice, add
 /// to a recharge, open the statement (mark sent, there), or go to Recharges for the tenant's payment.
 struct UtilityBillPanel: View {

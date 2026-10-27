@@ -324,6 +324,7 @@ struct RechargesTenancyView: View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             header
             banners
+            BillsSection(viewModel: viewModel, bills: viewModel.bills, tenancy: tenancy, propertyId: model.propertyId)
             if !model.suggestions.isEmpty { suggestionsPanel }
             summaryPanel
             SplitRow(ratio: 0.62) {

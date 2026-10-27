@@ -841,8 +841,8 @@ enum SnapshotCatalog {
                 }
             },
             // The running tenancy's latest bill that isn't settled yet.
-            screen("property", "bills_panel", "Property: Bills, the latest open bill beside the grid", .property, settle: 1.6) { models, context in
-                models.property.tab = .bills
+            screen("property", "bills_panel", "Property: Recharges, the bills section with the latest open bill beside it", .property, settle: 1.6) { models, context in
+                models.property.tab = .recharges
                 if let (key, month, tenancy) = context.latestOpenBill() {
                     models.property.selectedTenancyId = tenancy
                     models.property.sidePanel = .utilityBill(providerKey: key, month: month, tenancyId: tenancy)
