@@ -16,6 +16,31 @@ public enum DeviceWriteRefusal: Error, Equatable, LocalizedError {
     }
 }
 
+/// What a device's screen reads with (step 10, `DeviceWriter.readScope`).
+public enum DeviceReadScope: Equatable, Sendable {
+    /// Everything, as the Mac reads: demo data and tests only.
+    case everything
+    /// What this app user may see.
+    case actor(AccessActor)
+    /// Nothing: the device's user isn't known yet, or couldn't be read.
+    case nothing
+
+    /// Whether the scope shows `area` (View on it): always with everything, never with nothing.
+    public func sees(_ area: AccessArea, db: Database) throws -> Bool {
+        switch self {
+        case .everything: return true
+        case .nothing: return false
+        case .actor(let actor): return try AccessPolicy.can(actor, .view, area, db: db)
+        }
+    }
+
+    /// The viewer the reads take when they show something (nil: everything).
+    public var viewer: AccessActor? {
+        if case .actor(let actor) = self { return actor }
+        return nil
+    }
+}
+
 /// Every iPad write (step 8). The actor is the app user bound to the device's iCloud user (`PhoneViewer`), resolved
 /// at each write, so a household pull that names her lets the next write through. Each write runs in one
 /// transaction through `ActorWrite.perform` with its area and origin: outside the actor's Edit areas it throws
@@ -42,6 +67,22 @@ public struct DeviceWriter: Sendable {
     public func actor() async throws -> AccessActor? {
         let viewer = viewer()
         return try await db.read { db in try Self.actor(viewer, db: db) }
+    }
+
+    /// What the device's screens read with (step 10): everything for demo data and tests (`.demoAdmin`, `.everyone`,
+    /// as the Mac reads); the bound app user's view for an iCloud user; nothing while she isn't known, or when it can't
+    /// be read (as `PhoneViewer.iCloudUser` shows nobody's figures on Home until it is named).
+    public func readScope() async -> DeviceReadScope {
+        let viewer = viewer()
+        do {
+            let actor = try await db.read { db in try Self.actor(viewer, db: db) }
+            switch viewer {
+            case .demoAdmin, .everyone: return .everything
+            case .iCloudUser: return actor.map(DeviceReadScope.actor) ?? .nothing
+            }
+        } catch {
+            return .nothing
+        }
     }
 
     /// Whether the actor has Edit on `area` (false with no actor, or when it can't be read).

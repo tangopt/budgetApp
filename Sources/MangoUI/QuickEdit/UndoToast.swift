@@ -2,20 +2,31 @@ import SwiftUI
 import BudgetCore
 
 /// The toast at the foot of Quick sort: what was just done, with Undo while there is a way back. It stays six seconds
-/// (`QuickEditModel.toastSeconds`), then goes by itself.
+/// (`QuickEditModel.toastSeconds`), then goes by itself. The iPad's Checks shows the same toast after "Not expected any more".
 struct UndoToastView: View {
-    let toast: UndoToast
+    let message: String
+    let canUndo: Bool
     let onUndo: () -> Void
     @Environment(\.phoneTheme) private var theme
 
+    init(toast: UndoToast, onUndo: @escaping () -> Void) {
+        self.init(message: toast.message, canUndo: toast.canUndo, onUndo: onUndo)
+    }
+
+    init(message: String, canUndo: Bool, onUndo: @escaping () -> Void) {
+        self.message = message
+        self.canUndo = canUndo
+        self.onUndo = onUndo
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Text(toast.message)
+            Text(message)
                 .font(.callout)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if toast.canUndo {
+            if canUndo {
                 Button("Undo", action: onUndo)
                     .font(.callout.weight(.semibold))
                     .frame(minWidth: 44, minHeight: 44)

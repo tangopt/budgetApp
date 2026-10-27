@@ -155,7 +155,7 @@ public extension Properties {
     }
 
     /// Whether giving a property `address` changes its country (the one address field the tax figures read).
-    static func addressChangesCountry(_ address: PropertyAddress, of property: Property) -> Bool {
+    public static func addressChangesCountry(_ address: PropertyAddress, of property: Property) -> Bool {
         let normalized = { (country: String) in country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
         return normalized(address.country) != normalized(property.country)
     }
@@ -164,7 +164,7 @@ public extension Properties {
     /// street lines, postcode and city, and its map location is cleared when `clearingLocation`. Its country changes
     /// only with `includingCountry`: without it the save moves no tax figure (street, postcode, city and the map
     /// location are read by none), so it needs no filed-year check.
-    static func saveAddress(db: Database, propertyId: Int64, _ address: PropertyAddress, clearingLocation: Bool,
+    public static func saveAddress(db: Database, propertyId: Int64, _ address: PropertyAddress, clearingLocation: Bool,
                             includingCountry: Bool) throws {
         guard var property = try Property.fetchOne(db, key: propertyId) else { throw PropertyError.propertyNotFound }
         let country = property.country

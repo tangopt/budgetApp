@@ -246,18 +246,8 @@ struct MortgageTermsSheet: View {
 
     // MARK: Overrides
 
-    /// The revision days a rate can be given for: the last four and the next two.
-    private var overrideChoices: [Date] {
-        let calendar = MonthRange.calendar
-        let dates = MortgageTerms.revisionDates(months: Array(months.isEmpty ? Set(MortgageTerms.defaultRevisionMonths) : months),
-                                                from: calendar.date(byAdding: .year, value: -2, to: today)!,
-                                                to: calendar.date(byAdding: .year, value: 1, to: today)!)
-        // The period in force first, then the next ones, then the earlier ones.
-        let past = Array(dates.filter { $0 <= today }.suffix(4).reversed())
-        let next = Array(dates.filter { $0 > today }.prefix(2))
-        let given = Set(overrides.map(\.periodStart))
-        return (past.prefix(1) + next + past.dropFirst()).filter { !given.contains($0) }
-    }
+    /// The revision days a rate can be given for (`MortgageTermsEditing.Form.overrideChoices`).
+    private var overrideChoices: [Date] { form.overrideChoices(today: today) }
 
     @ViewBuilder
     private var overrideRows: some View {
@@ -294,12 +284,13 @@ struct MortgageTermsSheet: View {
     }
 
     private func addOverride(start: Date) {
-        guard let rate = percentValue(newOverrideText), let propertyId = viewModel.propertyId else {
-            error = "“\(newOverrideText)” isn't a rate: enter a percentage such as 3.250."
+        guard viewModel.propertyId != nil else { return }
+        var form = self.form
+        if let problem = form.addOverride(start: start, text: newOverrideText) {
+            error = problem.message
             return
         }
-        overrides.append(MortgageRateOverride(propertyId: propertyId, periodStart: start, ratePercent: rate))
-        overrides.sort { $0.periodStart < $1.periodStart }
+        overrides = form.overrides
         newOverrideText = ""
         newOverrideStart = nil
         error = nil
@@ -307,59 +298,37 @@ struct MortgageTermsSheet: View {
 
     // MARK: Preview and save
 
-    private var derivedFinalDate: Date? {
-        guard hasFirstDate, let first = firstDate, let total = Int(totalText.trimmingCharacters(in: .whitespaces)), total >= 1 else { return nil }
-        return MortgageTerms.dueDate(monthsAfter: total - 1, first: first)
+    /// The fields as `MortgageTermsEditing.Form` (shared with the iPad's sheet): its checks, terms and preview.
+    private var form: MortgageTermsEditing.Form {
+        var form = MortgageTermsEditing.Form(terms: stored, overrides: overrides)
+        form.index = index
+        form.spreadText = spreadText
+        form.fixedRateText = fixedRateText
+        form.convention = convention
+        form.businessDays = businessDays
+        form.months = months
+        form.totalText = totalText
+        form.hasFirstDate = hasFirstDate
+        form.firstDate = firstDate
+        form.hasFinalDate = hasFinalDate
+        form.finalDate = finalDate
+        form.balloonText = balloonText
+        form.borrowedText = borrowedText
+        form.dayCount = dayCount
+        form.rounding = rounding
+        form.indexDecimals = indexDecimals
+        return form
     }
 
-    /// The terms as the fields stand (nil while a field doesn't read).
-    private var draft: PropertyMortgageTerms? {
-        guard let propertyId = viewModel.propertyId else { return nil }
-        let spread = percentValue(spreadText)
-        let fixed = percentValue(fixedRateText)
-        let total = Int(totalText.trimmingCharacters(in: .whitespaces))
-        let balloonInput = balloonText.trimmingCharacters(in: .whitespaces)
-        let balloon = balloonInput.isEmpty ? nil : Money.parseMinorUnits(balloonInput)
-        let borrowedInput = borrowedText.trimmingCharacters(in: .whitespaces)
-        let borrowed = borrowedInput.isEmpty ? nil : Money.parseMinorUnits(borrowedInput)
-        return PropertyMortgageTerms(propertyId: propertyId, revisionMonths: Array(months), rateNote: stored.rateNote,
-                                     finalInstalmentDate: hasFinalDate ? (finalDate ?? derivedFinalDate ?? today) : nil,
-                                     balloonMinorUnits: balloon == 0 ? nil : balloon,
-                                     annualRatePercent: index == .fixed ? fixed : nil, rateIndex: index,
-                                     spreadPercent: index == .fixed ? stored.spreadPercent : spread,
-                                     fixingConvention: convention, fixingBusinessDays: businessDays, dayCount: dayCount,
-                                     totalInstalments: total, firstInstalmentDate: hasFirstDate ? (firstDate ?? today) : nil,
-                                     indexDecimals: indexDecimals, interestRounding: rounding,
-                                     amountBorrowedMinorUnits: borrowed == 0 ? nil : borrowed)
-    }
+    private var derivedFinalDate: Date? { form.derivedFinalDate }
 
     /// The rate these rules give today.
-    private var previewText: String? {
-        guard let terms = draft, !months.isEmpty,
-              let start = MortgageRate.periodStart(containing: today, months: Array(months)) ?? (index == .fixed ? today : nil),
-              let rate = MortgageRate.rate(periodStart: start, terms: terms, series: series, overrides: overrides) else { return nil }
-        return "\(rate.explanation) from \(MortgageTerms.dayText(start))"
-    }
-
-    private func percentValue(_ text: String) -> Double? {
-        let input = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".").replacingOccurrences(of: "%", with: "")
-        return input.isEmpty ? nil : Double(input)
-    }
+    private var previewText: String? { form.preview(series: series, today: today) }
 
     private func save() {
-        let balloonInput = balloonText.trimmingCharacters(in: .whitespaces)
-        if !balloonInput.isEmpty, Money.parseMinorUnits(balloonInput) == nil { error = MoneyField.invalidAmountMessage(balloonInput); return }
-        let borrowedInput = borrowedText.trimmingCharacters(in: .whitespaces)
-        if !borrowedInput.isEmpty, Money.parseMinorUnits(borrowedInput) == nil { error = MoneyField.invalidAmountMessage(borrowedInput); return }
-        for (text, name) in [(index == .fixed ? fixedRateText : spreadText, index == .fixed ? "rate" : "spread")] {
-            if !text.trimmingCharacters(in: .whitespaces).isEmpty, percentValue(text) == nil {
-                error = "“\(text)” isn't a \(name): enter a percentage such as 1.000."
-                return
-            }
-        }
-        let totalInput = totalText.trimmingCharacters(in: .whitespaces)
-        if !totalInput.isEmpty, Int(totalInput) == nil { error = "“\(totalText)” isn't a number of instalments."; return }
-        guard let terms = draft else { return }
-        if let failure = viewModel.saveMortgageTerms(terms, overrides: overrides) { error = failure } else { dismiss() }
+        guard viewModel.propertyId != nil else { return }
+        let form = self.form
+        if let problem = form.validate(today: today).first { error = problem.message; return }
+        if let failure = viewModel.saveMortgageTerms(form.terms(today: today), overrides: form.overrides) { error = failure } else { dismiss() }
     }
 }

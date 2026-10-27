@@ -1,5 +1,6 @@
 import SwiftUI
 import BudgetCore
+import GRDB
 
 /// The iPad's snapshot routes (step 8, Task 6): rendered by `--device ipad` at the iPad window sizes.
 public enum PadRoutes {
@@ -16,17 +17,96 @@ public enum PadRoutes {
                                                           preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-property-overview", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .propertyOverview,
-                                columns: .doubleColumn))
+        // Step 10, Task 3: the sidebar over This month (its progress and counts are the figures), expanded (pad-root shows it over Home) and collapsed to the icon rail.
+        DemoRoute(name: "pad-sidebar-expanded", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
+                                waitingChanges: 2, columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-tenancies", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .tenancies,
-                                columns: .doubleColumn))
+        DemoRoute(name: "pad-sidebar-collapsed", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
+                                sidebarCollapsed: true, columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-bills", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .bills,
-                                columns: .doubleColumn))
+        // Step 10, Task 10: This month for the demo's tenancy (two downloads waiting), with nothing to show yet, and with every step done.
+        DemoRoute(name: "pad-this-month", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let browser = sampleBrowser("pad-this-month", items: 2)
+            let tabs = editingTabs(context)
+            tabs.padThisMonth.trayItems = { browser.tray.items() }
+            tabs.padThisMonth.preload(PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId,
+                                                                 today: context.today, tray: browser.tray.items()))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, browser: browser,
+                                       columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-this-month-empty", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            // A household with no tenancy: nothing to read.
+            let tabs = PhoneTabsModel(dbQueue: (try? DatabaseQueue()) ?? context.dbQueue, today: { context.today }, hasProperty: true, viewer: .demoAdmin)
+            tabs.padProperty.preload(PadPropertyModel.Snapshot(property: nil, tenancies: [], bills: nil))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-this-month-allDone", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let tabs = editingTabs(context)
+            if var snapshot = PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId, today: context.today) {
+                snapshot.checklist.steps = snapshot.checklist.steps.map { step in
+                    var step = step
+                    step.state = .done
+                    step.actions = []
+                    step.isWaitingForMac = false
+                    step.providers = step.providers.map { var p = $0; p.state = .checked; p.trayItemIds = []; return p }
+                    switch step.id {
+                    case .lastRechargePaid: step.detail = ThisMonthCopy.paid
+                    case .billsIn: step.detail = ThisMonthCopy.billsChecked(step.providers.count, of: step.providers.count)
+                    case .chargesInGrid: step.detail = ThisMonthCopy.chargesIn(step.providers.count)
+                    case .emailTenant: step.detail = ThisMonthCopy.sentOn(context.today)
+                    }
+                    return step
+                }
+                tabs.padThisMonth.preload(snapshot)
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, columns: .doubleColumn))
+        },
+        // Step 10, Task 13: Tenancies (the current tenancy's details and its receipts by month), then with a receipt's document
+        // panel open (the rent paid line under its details), and with a filed-year refusal under a receipt.
+        DemoRoute(name: "pad-tenancies", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let tabs = tenanciesTabs(context)
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .tenancies, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-tenancies-panel", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let tabs = tenanciesTabs(context, selecting: { $0.row.documentCount > 0 && !$0.row.payments.isEmpty })
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .tenancies, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-tenancies-refusal", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let tabs = tenanciesTabs(context, selecting: { $0.row.documentCount > 0 && !$0.row.payments.isEmpty })
+            if let receipt = tabs.padTenancies.selectedReceipt {
+                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(rowId: receipt.rowId, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .tenancies, columns: .doubleColumn))
+        },
+        // Step 10, Task 15: Money (the year's tiles, cost categories as chips, the months newest first, one expanded to its
+        // transactions), then with a transaction's document open in the panel, and Calendar (the agenda, then the month grid).
+        DemoRoute(name: "pad-money", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-money-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar-month", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .month), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        // Step 10, Task 16: Checks (the check lines, the deposit's card beside them, the recurring costs by provider, the Undo
+        // toast after "Not expected any more"), Profile (details, address and map, owners, mortgage, accounts, groups,
+        // documents) and its mortgage terms form.
+        DemoRoute(name: "pad-checks", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .checks, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-profile", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .profile, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-mortgage-terms", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = profileTabs(context)
+            let form = tabs.padProfile.mortgageForm() ?? MortgageTermsEditing.Form(terms: PropertyMortgageTerms(propertyId: 0), overrides: [])
+            return AnyView(PadMortgageTermsSheet(model: tabs.padProfile, write: tabs.padWrite, form: form))
         },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
@@ -34,45 +114,66 @@ public enum PadRoutes {
             model.preload(PadDocumentsModel.readNow(context.dbQueue))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
-        // Task 8: the Property screens with their actions (the demo's admin edits).
-        DemoRoute(name: "pad-recharges", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            tabs.padRecharges.preload(PadRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
-                                                                tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .recharges, columns: .doubleColumn))
+        // Step 10, Task 11: Bills & recharges as one screen (summary, the year's grid by stage, statements), then with a bill's
+        // document panel open, and with a filed-year refusal under a bill.
+        DemoRoute(name: "pad-bills-recharges", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context)
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-rent-receipts", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            tabs.padRentReceipts.preload(PadRentReceiptsModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .rentReceipts, columns: .doubleColumn))
+        DemoRoute(name: "pad-bills-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context, selecting: { $0.invoice?.documentId != nil && $0.stage >= .inRecharge && $0.stage < .paidByTenant })
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
-        // A filed-year refusal under the latest draft's bill, its cell selected.
-        DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            if let grid = tabs.padProperty.bills, let bill = grid.bills.last(where: { $0.stage == .inRecharge }) ?? grid.bills.last {
-                tabs.padProperty.selectedCellId = grid.rows.compactMap { grid.cell(row: $0, month: bill.month) }
-                    .first { cell in cell.bills.contains { $0.id == bill.id } }?.id
-                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(
-                    rowId: bill.id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
+        DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context, selecting: { $0.stage == .inRecharge })
+            if let id = tabs.padBills.selectedBillId {
+                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(rowId: id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
             }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .bills, columns: .doubleColumn))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
-        // Task 10: Missing evidence for 2025/26, its first missing item with suggestions in the side panel (Link offered).
-        DemoRoute(name: "pad-missing-evidence", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            let model = tabs.padMissingEvidence
-            let year = UKTaxYear(startYear: 2025)
-            if let snapshot = PadMissingEvidenceModel.readNow(context.dbQueue, year: year, today: context.today) {
-                let catalog = snapshot.catalog
-                let panels = (try? context.dbQueue.read { db in
-                    try snapshot.items.filter { $0.status == .missing }.lazy
-                        .map { try PadMissingEvidenceModel.panel(db, item: $0, catalog: catalog) }
-                        .first { !$0.suggestions.isEmpty }
-                }) ?? nil
-                model.year = year
-                model.preload(snapshot, selecting: panels?.itemId ?? snapshot.items.first?.id, panel: panels)
+        // Task 12: Prepare email on the draft statement: the text, the statement PDF, what's missing (the demo's draft bill
+        // has no PDF yet), Open in Mail / Share instead / Mark as sent….
+        DemoRoute(name: "pad-prepare-email", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = billsTabs(context)
+            let draft = tabs.padBills.statements.first { $0.statement.status == .draft }
+            let model = tabs.padBills.prepareEmailModel(statementId: draft?.id ?? 0, open: nil)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-prepare-email", isDirectory: true)
+            let library = RechargeEmailPackage.Library(folder: folder) { _ in nil }
+            if let id = draft?.id, let package = try? context.dbQueue.read({ db in
+                try RechargeEmailPackage.build(db: db, statementId: id, language: .portuguese, library: library)
+            }) {
+                model.preload(package)
             }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .missingEvidence, columns: .doubleColumn))
+            return AnyView(PrepareEmailSheet(model: model, write: tabs.padWrite))
+        },
+        // Step 10, Task 14: Evidence for the tax year by area (Open site and Link existing document on each item; utility
+        // bills pointed to Bills & recharges), then a missing item with a suggested document open in the panel.
+        DemoRoute(name: "pad-evidence", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .evidence,
+                                browser: sampleBrowser("pad-evidence", items: 0), columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-evidence-panel", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .evidence,
+                                browser: sampleBrowser("pad-evidence-panel", items: 0), columns: .doubleColumn))
+        },
+        // Step 10, Task 2: the shared document panel (thumbnail, buttons, details, Documents' edits) over the library, a
+        // linked document selected, and the full-view modal with its details open.
+        DemoRoute(name: "pad-document-panel", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            let tabs = editingTabs(context)
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            tabs.padDocuments.preload(snapshot)
+            if let document = linkedDocument(snapshot, context) {
+                tabs.padDocuments.selectedId = document.id
+                tabs.padDocuments.preload(links: PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-document-fullview", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            let tabs = editingTabs(context)
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            let id = linkedDocument(snapshot, context)?.id ?? snapshot.all.first?.id ?? 0
+            return AnyView(DocumentFullView(documentId: id, showsDetails: true)
+                .environment(\.documentPanelSource, tabs.padDocuments.panelSource))
         },
         // A filed-year refusal under a document's transaction link (Unlink refused), the edits offered.
         DemoRoute(name: "pad-document-refusal", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
@@ -93,7 +194,70 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
+        // Step 10, Task 5: the built-in browser (a site open, its page a still placeholder) with the Downloads tray beside
+        // it, and the tray with no site open (a long name, a shared file). Synthetic sites and PDFs.
+        DemoRoute(name: "pad-browser", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { _ in
+            let browser = sampleBrowser("pad-browser", items: 2)
+            browser.load(sampleSites[0])
+            return AnyView(BrowserView(model: browser, showsWebView: false, onDone: {}))
+        },
+        DemoRoute(name: "pad-tray", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { _ in
+            AnyView(BrowserView(model: sampleBrowser("pad-tray", items: 3), showsWebView: false, onDone: {}))
+        },
+        // Step 10, Task 8: the Check and link sheet for a utility bill (a figure to check, the suggested payment, the tenant's
+        // share), a bank statement (sent to the Mac), and a bill that Save was refused (a filed year), the file still in the tray.
+        DemoRoute(name: "pad-check-utility", sizes: DemoRoute.padSizes, minimumFigures: 6, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.utility(refusal: nil), showsLivePreview: false, onClose: {}))
+        },
+        DemoRoute(name: "pad-check-statement", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.statement(), showsLivePreview: false, onClose: {}))
+        },
+        DemoRoute(name: "pad-check-refusal", sizes: DemoRoute.padSizes, minimumFigures: 6, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.utility(refusal: DeviceWriteCopy.filedYear(years: ["2024/25"])),
+                                      showsLivePreview: false, onClose: {}))
+        },
     ]
+
+    /// The browser routes' saved sites: synthetic names on `example.test` hosts.
+    static let sampleSites: [SavedSite] = [
+        ("Example Water", "water.example.test", SavedSiteKind.utility), ("Example Energy", "energy.example.test", .utility),
+        ("Example Bank", "bank.example.test", .bank), ("Tax portal", "tax.example.test", .tax),
+        ("Building management", "condo.example.test", .condominium),
+    ].enumerated().map { index, site in
+        SavedSite(name: site.0, url: URL(string: "https://\(site.1)")!, kind: site.2, sortOrder: index)
+    }
+
+    /// A browser over `sampleSites` and a tray (in the temporary folder, emptied first) holding the first `items` of three
+    /// synthetic PDFs.
+    @MainActor
+    static func sampleBrowser(_ name: String, items: Int) -> BrowserModel {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-\(name)-tray", isDirectory: true)
+        let files: [(String, String?, Int)] = [
+            ("Water bill October 2026.pdf", "water.example.test", 95),
+            ("statement-2026-10-current-account-ending-0000-with-a-very-long-name-from-the-bank.pdf", "bank.example.test", 41),
+            ("Electricity invoice.pdf", nil, 12),
+        ]
+        DownloadsTray(directory: folder).purgeAll()
+        for (index, file) in files.prefix(items).enumerated() {
+            let source = FileManager.default.temporaryDirectory.appendingPathComponent("mango-snapshot-\(UUID().uuidString).pdf")
+            let body = "%PDF-1.4\n% \(file.0)\n" + String(repeating: "0", count: 1024 * (index + 1) * 40) + "\n%%EOF\n"
+            try? Data(body.utf8).write(to: source)
+            let received = Date().addingTimeInterval(-Double(file.2) * 60)
+            _ = try? DownloadsTray(directory: folder, now: { received }).ingest(fileAt: source, suggestedName: file.0, sourceHost: file.1)
+        }
+        let tray = DownloadsTray(directory: folder)
+        let browser = BrowserModel(tray: tray, store: FixedSavedSites(sites: sampleSites), websiteData: NoWebsiteData())
+        browser.preload(sites: sampleSites, current: nil, items: tray.items())
+        return browser
+    }
+
+    /// The newest document with a link and a date, an amount or a period to show.
+    @MainActor
+    static func linkedDocument(_ snapshot: PadDocumentsModel.Snapshot, _ context: PhoneDemoContext) -> EvidenceDocumentSummary? {
+        snapshot.all.first { document in
+            document.amountMinorUnits != nil && !PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id).isEmpty
+        } ?? snapshot.all.first { !PadDocumentsModel.linksNow(context.dbQueue, documentId: $0.id).isEmpty }
+    }
 
     /// `tabs`, writing as the demo's admin (nothing is written by a render).
     @MainActor
@@ -104,13 +268,162 @@ public enum PadRoutes {
         return tabs
     }
 
+    /// Editing tabs with Evidence read for the current tax year; `selecting`: its first missing item with a suggested
+    /// document, open in the panel.
+    @MainActor
+    static func evidenceTabs(_ context: PhoneDemoContext, selecting: Bool) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padEvidence
+        guard let snapshot = PadEvidenceModel.readNow(context.dbQueue, year: model.year) else { return tabs }
+        guard selecting else {
+            model.preload(snapshot)
+            return tabs
+        }
+        let catalog = snapshot.catalog
+        let panel = (try? context.dbQueue.read { db in
+            try snapshot.areas.flatMap(\.items).filter { $0.state == .missing }.lazy
+                .map { try PadEvidenceModel.panel(db, item: $0.item, catalog: catalog) }
+                .first { !$0.suggestions.isEmpty }
+        }) ?? nil
+        model.preload(snapshot, selecting: panel?.itemId ?? snapshot.areas.flatMap(\.items).first?.id, panel: panel)
+        return tabs
+    }
+
+    /// Editing tabs with Bills & recharges read, the first bill `selecting` accepts (latest first) open in the panel.
+    @MainActor
+    static func billsTabs(_ context: PhoneDemoContext, selecting: ((UtilityBill) -> Bool)? = nil) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        tabs.padBills.preload(PadBillsAndRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
+                                                                tenancyId: tabs.padProperty.selectedTenancyId, today: context.today))
+        if let selecting, let bill = tabs.padProperty.bills?.bills.sorted(by: { $0.month > $1.month }).first(where: selecting) {
+            tabs.padBills.selectedBillId = bill.id
+        }
+        return tabs
+    }
+
+    /// Editing tabs with Tenancies read, the latest receipt `selecting` accepts open in the panel.
+    @MainActor
+    static func tenanciesTabs(_ context: PhoneDemoContext, selecting: ((PadTenanciesModel.Receipt) -> Bool)? = nil) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        tabs.padTenancies.preload(PadTenanciesModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))
+        if let selecting, let receipt = tabs.padTenancies.detail.receipts.first(where: selecting) {
+            tabs.padTenancies.selectedReceiptId = receipt.id
+        }
+        return tabs
+    }
+
+    /// Editing tabs with Money read for the demo's year; the newest month with transactions expanded, and with `selecting` the
+    /// first transaction with a document open in the panel.
+    @MainActor
+    static func moneyTabs(_ context: PhoneDemoContext, selecting: Bool) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padMoney
+        let propertyId = tabs.padProperty.property?.id
+        let snapshot = PadMoneyModel.readNow(context.dbQueue, propertyId: propertyId, period: model.period, today: context.today)
+        guard let propertyId, let summary = snapshot.summary else {
+            model.preload(snapshot)
+            return tabs
+        }
+        let months = summary.months.reversed()
+        let candidates = months.compactMap { month in
+            PadMoneyModel.breakdownNow(context.dbQueue, propertyId: propertyId, month: month).map { (month, $0) }
+        }
+        let chosen = candidates.first { pair in
+            selecting && pair.1.groups.flatMap(\.lines).contains { (snapshot.documentCounts[$0.transaction.id ?? 0] ?? 0) > 0 }
+        } ?? candidates.first { !$0.1.groups.isEmpty }
+        var panel: PadMoneyModel.Panel?
+        if selecting, let (month, breakdown) = chosen {
+            model.preload(snapshot, expanded: month.start, breakdown: breakdown)
+            let lines = breakdown.groups.flatMap { model.lines($0) }
+            if let line = lines.first(where: { $0.documentCount > 0 }) {
+                panel = PadMoneyModel.panelNow(context.dbQueue, line: line, month: month.start)
+            }
+        }
+        model.preload(snapshot, expanded: chosen?.0.start, breakdown: chosen?.1, panel: panel)
+        return tabs
+    }
+
+    /// Editing tabs with Checks read for the demo's year, the deposit's card open and the toast after "Not expected any more".
+    @MainActor
+    static func checksTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padChecks
+        let snapshot = PadChecksModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, period: model.period, today: context.today)
+        model.preload(snapshot)
+        let cost = model.recurringCosts.first
+        model.preload(snapshot, selected: .deposit,
+                      toast: cost.map { PadChecksModel.Toast(message: "\($0.pattern.title) is no longer expected.", undo: $0) })
+        return tabs
+    }
+
+    /// Editing tabs with Profile read.
+    @MainActor
+    static func profileTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        tabs.padProfile.preload(PadProfileModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
+        return tabs
+    }
+
+    /// Editing tabs with Calendar read; `layout` Month shows the grid for the demo's month.
+    @MainActor
+    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padCalendar
+        model.preload(PadCalendarModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
+        model.layout = layout
+        if layout == .month, let first = model.snapshot.upcoming.first { model.selectedId = first.id }
+        return tabs
+    }
+
     /// Tabs over the demo with Property's models already read, so the first frame has its data.
     @MainActor
     static func tabs(_ context: PhoneDemoContext, writer: DeviceWriter? = nil) -> PhoneTabsModel {
         let today = context.today
         let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: writer)
         tabs.padProperty.preload(PadPropertyModel.readNow(context.dbQueue, today: today))
+        #if canImport(UIKit)
+        // The demo's documents have no files: every one opens the same synthetic three-page PDF.
+        tabs.padDocuments.open = { _ in try SampleDocumentFile.url() }
+        tabs.padDocuments.panelLocalFile = { _ in try? SampleDocumentFile.url() }
+        #endif
         tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
+        tabs.padThisMonth.preload(PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId, today: today))
         return tabs
     }
 }
+
+/// The snapshot routes' saved sites: fixed, nothing saved.
+struct FixedSavedSites: SavedSiteStore {
+    let sites: [SavedSite]
+    func all() async throws -> [SavedSite] { sites }
+    func save(_ site: SavedSite) async throws {}
+    func remove(id: UUID) async throws {}
+}
+
+/// The snapshot routes' website data: nothing to clear.
+struct NoWebsiteData: WebsiteDataClearing {
+    @MainActor func clearAll() async {}
+}
+
+#if canImport(UIKit)
+/// A synthetic three-page PDF in the temporary folder, for the snapshot routes' document panel and full view.
+enum SampleDocumentFile {
+    static func url() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mango-sample-document.pdf")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let bounds = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
+            for page in 1...3 {
+                context.beginPage()
+                let title: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 28)]
+                "Sample document".draw(at: CGPoint(x: 48, y: 64), withAttributes: title)
+                "Page \(page) of 3".draw(at: CGPoint(x: 48, y: 110), withAttributes: [.font: UIFont.systemFont(ofSize: 16)])
+                UIColor.systemGray5.setFill()
+                for line in 0..<14 { UIBezierPath(rect: CGRect(x: 48, y: 170 + line * 40, width: line % 3 == 2 ? 300 : 499, height: 12)).fill() }
+            }
+        }
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+}
+#endif

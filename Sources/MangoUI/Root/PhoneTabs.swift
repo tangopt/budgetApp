@@ -19,6 +19,11 @@ public final class PhoneTabsModel: ObservableObject {
     /// Property is absent while the database has no property row (spec §3.9, permission None's analogue; ruling for
     /// step 4).
     @Published public private(set) var hasProperty: Bool
+    /// Whether this device's user may see Property (step 10: View on it; demo data and tests, yes; an iCloud user not
+    /// read yet, no). Read again with `refreshPropertyAccess`.
+    @Published public private(set) var seesProperty: Bool
+    /// The iPad's Property sections are shown: there is a property and she may see it (None hides the area).
+    public var showsPropertySections: Bool { hasProperty && seesProperty }
 
     public let home: HomeViewModel
     public let month: MonthViewModel
@@ -31,13 +36,26 @@ public final class PhoneTabsModel: ObservableObject {
     public let padDocuments: PadDocumentsModel
     /// The iPad's Property edits (step 8, Task 8), through the device writer (nil: demo data, nothing offered).
     public let padWrite: PadWriteModel
-    public let padBillActions: PadBillActions
-    public let padRecharges: PadRechargesModel
-    public let padRentReceipts: PadRentReceiptsModel
-    /// The iPad's Documents and Missing evidence edits (step 8, Task 10), through the device writer in Documents.
+    /// Bills & recharges (step 10, Task 11): the grid, the statements and their actions.
+    public let padBills: PadBillsAndRechargesModel
+    /// Tenancies (step 10, Task 13): the tenancy's details, its rent receipts and their actions.
+    public let padTenancies: PadTenanciesModel
+    /// Money (step 10, Task 15): the period's figures and transactions; a document linked or unlinked goes through `padDocumentWrite`.
+    public let padMoney: PadMoneyModel
+    /// Calendar (step 10, Task 15): the obligations as an agenda and a month grid; reads only.
+    public let padCalendar: PadCalendarModel
+    /// Checks (step 10, Task 16): the period's checks and the recurring costs; "Not expected any more" goes through `padWrite`.
+    public let padChecks: PadChecksModel
+    /// Profile (step 10, Task 16): the property's details, map, owners, accounts, groups, documents and mortgage terms;
+    /// every edit through `padWrite`.
+    public let padProfile: PadProfileModel
+    /// The iPad's Documents and Evidence edits (step 8, Task 10), through the device writer in Documents.
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
-    public let padMissingEvidence: PadMissingEvidenceModel
+    /// Evidence for the tax year (step 10, Task 14): links through `padDocumentWrite`, "Mark not available" through `padWrite`.
+    public let padEvidence: PadEvidenceModel
+    /// The iPad's This-month checklist (step 10, Task 10); its edit (Confirm match) goes through `padWrite`.
+    public let padThisMonth: PadThisMonthModel
     /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
     public let quickEdit: QuickEditModel
 
@@ -56,6 +74,7 @@ public final class PhoneTabsModel: ObservableObject {
                 home: HomeViewModel? = nil, writer: DeviceWriter? = nil) {
         self.dbQueue = dbQueue
         self.hasProperty = hasProperty
+        if case .iCloudUser = viewer { seesProperty = false } else { seesProperty = true }
         self.viewer = viewer
         self.home = home ?? HomeViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         month = MonthViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
@@ -65,12 +84,16 @@ public final class PhoneTabsModel: ObservableObject {
         padProperty = PadPropertyModel(dbQueue: dbQueue, today: today)
         padDocuments = PadDocumentsModel(dbQueue: dbQueue)
         padWrite = PadWriteModel(writer: writer)
-        padBillActions = PadBillActions(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
-        padRecharges = PadRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
-        padRentReceipts = PadRentReceiptsModel(property: padProperty, write: padWrite, dbQueue: dbQueue)
+        padBills = PadBillsAndRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padTenancies = PadTenanciesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
-        padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        padMoney = PadMoneyModel(property: padProperty, write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        padCalendar = PadCalendarModel(property: padProperty, dbQueue: dbQueue, today: today)
+        padChecks = PadChecksModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padProfile = PadProfileModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padEvidence = PadEvidenceModel(write: padDocumentWrite, propertyWrite: padWrite, dbQueue: dbQueue, today: today)
+        padThisMonth = PadThisMonthModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)
         quickEdit.viewer = viewer
         // After an edit saves, what it moved is read again: the figures, the lists, the queue.
@@ -85,6 +108,7 @@ public final class PhoneTabsModel: ObservableObject {
 
     /// After a sync: reads again whether there's a property; leaving Property for Home if it went.
     public func reload(for key: Date?) async {
+        await refreshPropertyAccess()
         guard key != loadedKey else { return }
         loadedKey = key
         guard let has = await Self.hasProperty(dbQueue) else { return }
@@ -92,8 +116,24 @@ public final class PhoneTabsModel: ObservableObject {
         if !has, selection == .property { selection = .home }
     }
 
+    /// Reads again whether this device's user may see Property (`DeviceWriter.readScope`; nothing while she isn't known
+    /// or can't be read).
+    public func refreshPropertyAccess() async {
+        let scope = await padWrite.readScope()
+        seesProperty = (try? await dbQueue.read { db in try scope.sees(.property, db: db) }) ?? false
+    }
+
     public nonisolated static func reloadKey(_ status: SyncStatus) -> Date? {
         HomeViewModel.reloadKey(status)
+    }
+
+    /// The signed-in person's name, for the iPad sidebar's footer; nil when the viewer is nobody in particular.
+    public func viewerName() async -> String? {
+        let viewer = viewer
+        return try? await dbQueue.read { db in
+            guard let id = try viewer.resolve(db: db).personId else { return nil }
+            return try Person.fetchOne(db, key: id)?.name
+        }
     }
 
     /// Follows this iPhone's iCloud user as sync reads it (`PhoneSyncController.$viewerRecordName`, on the main actor):
@@ -137,6 +177,7 @@ public final class PhoneTabsModel: ObservableObject {
     }
 
     private func reloadViewerScreens() async {
+        await refreshPropertyAccess()
         await home.load()
         await month.load()
         await accounts.load()

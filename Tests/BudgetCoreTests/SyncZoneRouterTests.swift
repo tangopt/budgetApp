@@ -37,6 +37,7 @@ final class SyncZoneRouterTests: XCTestCase {
         "pensionContribution": .shared, "hmrcPayment": .shared, "hmrcRate": .shared, "taxYear": .shared,
         "taxFiledBox": .shared, "taxYearSplit": .shared, "taxAttributionRule": .shared, "taxExpenseTypeMap": .shared,
         "taxManualItem": .shared, "taxPolicyReceipt": .shared, "taxNotClaimed": .shared, "taxTransactionOwner": .shared,
+        "savedSite": .shared,
     ]
 
     private let household = SyncZones.household

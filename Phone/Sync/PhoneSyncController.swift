@@ -47,6 +47,11 @@ import MangoUI
 ///   only); an undetermined one (no account, offline, a blip) drops nothing and keeps sync stopped until it is known.
 /// - **Removed from the household** (`SyncScheduler.leftHousehold`, a member device): the household's data and key go
 ///   from this device, the membership is forgotten, and `householdNotice` says so.
+/// - **The iPad's browser** (step 10, Task 5): signing out of iCloud (the account becomes unavailable, checked with
+///   or without sync running), another iCloud user bound here, leaving the household and demo data each empty the
+///   Downloads tray and clear the browser's website data, awaited (`PhoneBrowser.purge`).
+/// - **Changes waiting** (step 10, Task 5): `waitingChanges` counts this device's unsent changes in the zones it pushes
+///   to (`SyncWaitingChanges`), read again with each status and after each local write; the iPad's sidebar shows it.
 @MainActor
 final class PhoneSyncController: ObservableObject {
     @Published private(set) var status: SyncStatus = .off
@@ -71,6 +76,8 @@ final class PhoneSyncController: ObservableObject {
     @Published private(set) var joinState: HouseholdJoinState?
     /// How the running engine writes: `.readOnly` until this device's user has Edit somewhere.
     @Published private(set) var writeMode: SyncWriteMode = .readOnly
+    /// This device's changes not yet taken by the server, in the zones it pushes to (0 on a read-only device).
+    @Published private(set) var waitingChanges = 0
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
 
@@ -132,6 +139,7 @@ final class PhoneSyncController: ObservableObject {
     /// A write committed here (`DeviceWriter.afterWrite`): asks for a push. Nothing while the engine is read-only.
     func localChange() {
         guard !isDemo, writeMode != .readOnly, let scheduler else { return }
+        Task { await refreshWaitingChanges() }
         Task { await scheduler.requestSync(.localChange) }
     }
 
@@ -162,6 +170,15 @@ final class PhoneSyncController: ObservableObject {
             Task { @MainActor [weak self] in await self?.shareReceived(metadata) }
         }
         checkAccount()
+        // Watched even when sync is off here: signing out of iCloud still clears the browser (`checkAccount`).
+        if canUseCloudKit, accountWatch == nil {
+            accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.checkAccount()
+                    await self?.iCloudAccountChanged()
+                }
+            }
+        }
         if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit,
                                       demoModeOn: PhoneDemoData.isOn) {
             Self.log.info("Sync is off on this iPhone: \(refusal, privacy: .public)")
@@ -185,11 +202,6 @@ final class PhoneSyncController: ObservableObject {
             } catch {
                 // Documents then stay "not on this iPad"; sync itself goes on.
                 Self.log.error("Sync: the library folder couldn't be made (\(String(describing: type(of: error)), privacy: .public))")
-            }
-        }
-        if canUseCloudKit, accountWatch == nil {
-            accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in await self?.iCloudAccountChanged() }
             }
         }
         // The household's zone starts at once; this iPhone's iCloud user is read beside it (and again on a later
@@ -221,7 +233,11 @@ final class PhoneSyncController: ObservableObject {
         guard let dbQueue else { return }
         let stored = (try? await dbQueue.read { db in try SyncAccountSwitch.stored(db: db) }) ?? nil
         let switching = stored != nil && stored != recordName
-        if switching { await stopEngine() }
+        if switching {
+            await stopEngine()
+            // Someone else: the sites' sessions and the downloads waiting go from this iPad.
+            await PhoneBrowser.purge()
+        }
         guard generation == identityGeneration else { return }
         do {
             let action = try await dbQueue.write { db in try SyncAccountSwitch.apply(current: recordName, db: db) }
@@ -429,6 +445,7 @@ final class PhoneSyncController: ObservableObject {
     func enterDemo() async {
         isDemo = true
         outputs.clear()
+        waitingChanges = 0
         engineGeneration += 1
         accountCheck?.cancel()
         accountCheck = nil
@@ -462,6 +479,8 @@ final class PhoneSyncController: ObservableObject {
         downloadedRecords = 0
         keyHeld = nil
         account = .unknown
+        // Demo data hides the browser: the sites' sessions and the downloads waiting go first.
+        await PhoneBrowser.purge()
     }
 
     /// Demo data was left: the next `attach` (the phone's own database) may sync again.
@@ -510,6 +529,7 @@ final class PhoneSyncController: ObservableObject {
         guard !isDemo else { return }
         self.status = status
         guard let scheduler, let dbQueue else { return }
+        await refreshWaitingChanges()
         let previousSync = lastSync
         lastSync = await scheduler.lastSync
         if let lastSync, lastSync != previousSync { outputs.refresh(viewer: deviceViewer) }
@@ -566,12 +586,25 @@ final class PhoneSyncController: ObservableObject {
                 }
             }.value
         }
-        // The household's figures leave the widget with its data.
+        // The household's figures leave the widget with its data, and the browser's sessions and downloads go too.
         outputs.clear()
+        await PhoneBrowser.purge()
         householdNotice = HouseholdCopy.removedNotice
         joinState = .removed
         memberOwner = nil
         await startEngine(viewer: .none)
+    }
+
+    /// Reads `waitingChanges` again for the running engine's mode.
+    private func refreshWaitingChanges() async {
+        guard let dbQueue, !isDemo else {
+            waitingChanges = 0
+            return
+        }
+        let mode = writeMode
+        let count = (try? await dbQueue.read { db in try SyncWaitingChanges.count(db: db, mode: mode) }) ?? 0
+        guard !isDemo else { return }
+        waitingChanges = count
     }
 
     /// The notice was read.
@@ -761,12 +794,15 @@ final class PhoneSyncController: ObservableObject {
         accountCheck = Task { [weak self] in
             let status = await CloudKitAccountStatus.current()
             guard !Task.isCancelled, let self, self.accountGeneration == generation else { return }
+            let previous = self.account
             self.account = switch status {
             case .available: .available
             case .noAccount: .noAccount
             case .restricted: .restricted
             case .couldNotDetermine: .couldNotDetermine
             }
+            // Signed out of iCloud: the sites' sessions and the downloads waiting go from this iPad (once per change).
+            if self.account.isUnavailable, self.account != previous { await PhoneBrowser.purge() }
         }
     }
 }

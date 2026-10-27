@@ -87,7 +87,8 @@ public enum AccessAreaMap {
         }
         for table in ["category", "categoryGroup", "rule", "importRule", "taxExpenseTypeMap"] { map[table] = .rulesAndCategories }
         for table in ["forecastGroup", "forecastEntry", "plannedOccurrenceException", "scenario", "scenarioApplication"] { map[table] = .forecast }
-        for table in ["mortgageRateOverride", "interestIndexValue", "propertyCheckDecision", "evidenceRequirement", "evidenceWaiver"] {
+        for table in ["mortgageRateOverride", "interestIndexValue", "propertyCheckDecision", "evidenceRequirement", "evidenceWaiver",
+                      "savedSite"] {
             map[table] = .property
         }
         for table in ["document", "documentLink", "customDocumentKind"] { map[table] = .documents }

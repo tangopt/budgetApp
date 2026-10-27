@@ -176,6 +176,7 @@ public final class SyncZoneRouter {
         "rechargeLine", "utilityInvoice",
         "employment", "employmentIncome", "benefitInKind", "otherIncome", "pensionContribution", "hmrcPayment",
         "hmrcRate", "taxYear", "taxFiledBox", "taxYearSplit", "taxAttributionRule", "taxExpenseTypeMap", "taxManualItem",
+        "savedSite",  // the iPad browser's saved sites: the household's (step 10 Task 6)
     ]
 
     /// Every synced table's rule.

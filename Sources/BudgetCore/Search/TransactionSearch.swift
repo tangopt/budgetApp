@@ -104,6 +104,17 @@ public enum TransactionSearch {
         /// hidden from budget figures (`TransferLinks.budgetFacing`), the money counted as sent.
         public let outgoingTransactionId: Int64?
 
+        public init(transaction: Transaction, category: Category?, categoryName: String, accountName: String, currency: Currency,
+                    isLinkedTransfer: Bool, outgoingTransactionId: Int64?) {
+            self.transaction = transaction
+            self.category = category
+            self.categoryName = categoryName
+            self.accountName = accountName
+            self.currency = currency
+            self.isLinkedTransfer = isLinkedTransfer
+            self.outgoingTransactionId = outgoingTransactionId
+        }
+
         public var isIncomingTransferLeg: Bool { outgoingTransactionId != nil }
         public var id: Int64 { transaction.id ?? -1 }
         public var date: Date { transaction.date }

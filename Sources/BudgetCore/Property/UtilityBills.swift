@@ -117,7 +117,7 @@ public struct UtilityBillsGrid: Equatable, Sendable {
 /// its stage, derived from the recorded invoices, utility payments, recharge statements and
 /// the tenant's credits (nothing of its own is stored).
 public enum UtilityBills {
-    static func key(_ providerId: Int64?) -> String { providerId.map { "p\($0)" } ?? "none" }
+    public static func key(_ providerId: Int64?) -> String { providerId.map { "p\($0)" } ?? "none" }
 
     public static func read(db: Database, propertyId: Int64, tenancyId: Int64) throws -> UtilityBillsGrid {
         guard let tenancy = try Tenancy.fetchOne(db, key: tenancyId) else { throw RechargeError.tenancyNotFound }

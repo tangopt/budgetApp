@@ -170,6 +170,16 @@ public enum MortgageTerms {
     /// more; a rate of 0–50%; the final day as a day; a blank note as none.
     public static func save(db: Database, _ terms: PropertyMortgageTerms) throws {
         guard try Property.fetchOne(db, key: terms.propertyId) != nil else { throw PropertyError.propertyNotFound }
+        var terms = try checked(terms)
+        let note = terms.rateNote?.trimmingCharacters(in: .whitespacesAndNewlines)
+        terms.rateNote = note?.isEmpty == false ? note : nil
+        try terms.save(db)
+    }
+
+    /// The terms as `save` stores them (months in order, days as days), or the first rule they break: revision months
+    /// 1–12, at least one; a balloon of 0 or more and an amount borrowed above it; a rate of 0–50%; a spread of −5–20%;
+    /// 1–1,200 instalments, 0–10 business days, 0–6 decimals; the final instalment not before the first.
+    public static func checked(_ terms: PropertyMortgageTerms) throws -> PropertyMortgageTerms {
         let months = Self.months(terms.revisionMonthsText)
         guard !months.isEmpty, Self.allMonthsValid(terms.revisionMonthsText) else { throw MortgageTermsError.invalidRevisionMonths }
         if let balloon = terms.balloonMinorUnits, balloon < 0 { throw MortgageTermsError.negativeBalloon }
@@ -187,9 +197,7 @@ public enum MortgageTerms {
         if let first = terms.firstInstalmentDate, let final = terms.effectiveFinalInstalmentDate, final < first {
             throw MortgageTermsError.finalBeforeFirst
         }
-        let note = terms.rateNote?.trimmingCharacters(in: .whitespacesAndNewlines)
-        terms.rateNote = note?.isEmpty == false ? note : nil
-        try terms.save(db)
+        return terms
     }
 
     /// The 1st of each of `months` in `[from, to)`, in order.

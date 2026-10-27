@@ -471,16 +471,7 @@ final class PropertyViewModel: ObservableObject {
     /// Saves the mortgage's terms and the rates given for single periods (Profile ▸ Mortgage
     /// terms…): the overrides listed replace the stored ones.
     func saveMortgageTerms(_ terms: PropertyMortgageTerms, overrides: [MortgageRateOverride]) -> String? {
-        write { db in
-            try MortgageTerms.save(db: db, terms)
-            let kept = Set(overrides.map { MonthRange.calendar.startOfDay(for: $0.periodStart) })
-            for existing in try MortgageRate.overrides(db: db, propertyId: terms.propertyId) where !kept.contains(existing.periodStart) {
-                try MortgageRate.removeOverride(db: db, propertyId: terms.propertyId, periodStart: existing.periodStart)
-            }
-            for given in overrides {
-                try MortgageRate.setOverride(db: db, propertyId: terms.propertyId, periodStart: given.periodStart, ratePercent: given.ratePercent, note: given.note)
-            }
-        }
+        write { db in try MortgageTermsEditing.apply(db: db, terms: terms, overrides: overrides) }
     }
 
     func addGroup(_ groupId: Int64) {
@@ -748,17 +739,7 @@ enum PropertyMessages {
         }
     }
 
-    static func text(_ error: MortgageTermsError) -> String {
-        switch error {
-        case .invalidRevisionMonths: return "Choose at least one month the rate is revised in."
-        case .negativeBalloon: return "The balloon can't be negative."
-        case .invalidRate: return "Enter a rate between 0% and 50%."
-        case .invalidSpread: return "Enter a spread between −5% and 20%."
-        case .invalidCount: return "Enter between 1 and 1,200 instalments (and 0–10 business days, 0–6 decimals)."
-        case .finalBeforeFirst: return "The final instalment is before the first."
-        case .invalidAmountBorrowed: return "The amount borrowed must be more than the balloon."
-        }
-    }
+    static func text(_ error: MortgageTermsError) -> String { MortgageTermsEditing.message(error) }
 
     static func text(_ error: RentPaymentError) -> String { error.userMessage }
 }

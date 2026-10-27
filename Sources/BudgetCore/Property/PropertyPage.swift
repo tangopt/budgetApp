@@ -26,6 +26,20 @@ public struct TenancyReceiptRow: Equatable, Identifiable, Sendable {
     public var isPaid: Bool { receipt.status == .issued && paidMinorUnits >= receipt.amountReceivedMinorUnits }
 }
 
+/// `PropertyPage.receiptRows` under a name no client's own types hide (MangoUI has a `PropertyPage` of its own).
+public enum TenancyReceipts {
+    public static func rows(db: Database, tenancyId: Int64) throws -> [TenancyReceiptRow] {
+        try PropertyPage.receiptRows(db: db, tenancyId: tenancyId)
+    }
+}
+
+/// `PropertyPage.transactions` under a name no client's own types hide: the transactions behind a Money figure, oldest first.
+public enum PropertyDrillTransactions {
+    public static func transactions(db: Database, propertyId: Int64, period: DateInterval, drillDown: PropertyDrillDown) throws -> [Transaction] {
+        try PropertyPage.transactions(db: db, propertyId: propertyId, period: period, drillDown: drillDown)
+    }
+}
+
 /// The transactions behind a figure of the money summary.
 public enum PropertyDrillDown: Hashable, Sendable {
     /// The rent credits (rent received and recharges).
