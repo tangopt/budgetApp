@@ -267,7 +267,7 @@ struct SignInSettingsContent: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 520)
+        .reportsScrollContentHeight()
         .task {
             model.userChanged(to: session.currentUser?.id)
             await model.load()

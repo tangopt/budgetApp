@@ -17,6 +17,8 @@ struct SettingsView: View {
     private let householdState: HouseholdPaneState?
     private let householdDraft: PermissionGrid?
     @StateObject private var admin = SettingsAdminWatch()
+    /// Each pane's natural height, as it reported it; the window takes the current pane's (the macOS Settings way).
+    @State private var heights: [Pane: CGFloat] = [:]
 
     /// `signInModel`, `sharingModel`: snapshot routes only.
     init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil, sharingModel: SharingSettingsModel? = nil,
@@ -28,33 +30,53 @@ struct SettingsView: View {
         self.sharingModel = sharingModel
     }
 
+    /// The most a pane's content may take before it scrolls instead: the screen's visible height less the window's
+    /// title bar, tab strip and margins.
+    private static var tallestPane: CGFloat {
+        max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 200)
+    }
+
+    /// The pane at its natural height (at most `tallestPane`; taller content scrolls inside the pane). The window
+    /// follows, animating from one pane's height to the next's.
+    private func sized<Content: View>(_ which: Pane, @ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .frame(height: min(heights[which] ?? 320, Self.tallestPane))
+            .onPreferenceChange(SettingsPaneHeightKey.self) { height in
+                guard height > 0 else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { heights[which] = height }
+            }
+    }
+
     var body: some View {
         TabView(selection: $pane) {
             Tab("Appearance", systemImage: "circle.lefthalf.filled", value: Pane.appearance) {
-                AppearanceSettings()
+                sized(.appearance) { AppearanceSettings() }
             }
             Tab("Theme", systemImage: "paintpalette", value: Pane.theme) {
-                ThemeSettings()
+                sized(.theme) { ThemeSettings() }
             }
             Tab("Evidence", systemImage: "folder.badge.gearshape", value: Pane.evidence) {
-                EvidenceSourcesSettings()
+                sized(.evidence) { EvidenceSourcesSettings() }
             }
             Tab("Sign-in", systemImage: "person.badge.key", value: Pane.signIn) {
-                SignInSettings(model: signInModel)
+                sized(.signIn) { SignInSettings(model: signInModel) }
             }
             Tab(SharingCopy.paneTitle, systemImage: "person.2.badge.key", value: Pane.sharing) {
-                SharingSettings(model: sharingModel)
+                sized(.sharing) { SharingSettings(model: sharingModel) }
             }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud", value: Pane.sync) {
-                SyncSettings()
+                sized(.sync) { SyncSettings() }
             }
             // Admin only.
             if admin.isAdmin || householdState != nil {
                 Tab(HouseholdCopy.paneTitle, systemImage: "person.2.circle", value: Pane.household) {
-                    if let householdState {
-                        HouseholdPane(state: householdState, draft: householdDraft)
-                    } else {
-                        HouseholdSettings()
+                    sized(.household) {
+                        if let householdState {
+                            HouseholdPane(state: householdState, draft: householdDraft)
+                        } else {
+                            HouseholdSettings()
+                        }
                     }
                 }
             }
@@ -136,6 +158,7 @@ private struct AppearanceSettings: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 8)
+        .reportsIdealHeight()
     }
 }
 
@@ -159,6 +182,7 @@ private struct ThemeSettings: View {
             .padding(4)
         }
         .frame(height: 470)
+        .preference(key: SettingsPaneHeightKey.self, value: 470)
     }
 }
 
@@ -250,5 +274,33 @@ struct ThemeSwatchCard: View {
         .background(background)
         .overlay(Rectangle().frame(height: 0.5).foregroundStyle(.separator), alignment: .bottom)
         .overlay(Rectangle().frame(width: 2).foregroundStyle(stripe), alignment: .leading)
+    }
+}
+
+/// A pane's natural content height, reported up to `SettingsView` so the window can fit it.
+struct SettingsPaneHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ScrollContentHeight: ViewModifier {
+    @State private var height: CGFloat = 0
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom
+            } action: { _, new in height = new }
+            .preference(key: SettingsPaneHeightKey.self, value: height)
+    }
+}
+
+extension View {
+    /// For a pane that is a scrolling form: reports the height of everything in it.
+    func reportsScrollContentHeight() -> some View { modifier(ScrollContentHeight()) }
+
+    /// For a pane that isn't a scroll view: reports its own ideal height.
+    func reportsIdealHeight() -> some View {
+        fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { Color.clear.preference(key: SettingsPaneHeightKey.self, value: $0.size.height) })
     }
 }
