@@ -213,6 +213,8 @@ public enum EvidenceDocumentSearch {
         /// Not linked, or linked to debits that paid only part of its amount (`Entry.isPartlyPaid`):
         /// what Link document… lists before anything is typed.
         case unlinkedOrPartlyPaid
+        /// Filed before the payment that settles it and not yet lapsed (`WaitingDocuments.State.waiting`).
+        case waiting
     }
 
     public struct Filter: Equatable, Sendable {
@@ -252,19 +254,23 @@ public enum EvidenceDocumentSearch {
         public let year: Int?
         /// Its linked debits (in its currency) paid less than its amount: there's a rest to link.
         public let isPartlyPaid: Bool
+        /// Whether it waits for its payment, has lapsed into an ordinary unlinked document, or neither
+        /// (read when the index was, `WaitingDocuments.states`).
+        public let waitingState: WaitingDocuments.State
         /// Name, file name, kind, note, persons, source path and text, folded.
         let haystack: String
 
         public var id: Int64 { summary.id }
 
         public init(summary: EvidenceDocumentSummary, linkCount: Int, transactionLinkCount: Int, accountIds: Set<Int64>, year: Int?,
-                    isPartlyPaid: Bool = false, haystack: String) {
+                    isPartlyPaid: Bool = false, waitingState: WaitingDocuments.State = .notApplicable, haystack: String) {
             self.summary = summary
             self.linkCount = linkCount
             self.transactionLinkCount = transactionLinkCount
             self.accountIds = accountIds
             self.year = year
             self.isPartlyPaid = isPartlyPaid
+            self.waitingState = waitingState
             self.haystack = haystack
         }
     }
@@ -281,17 +287,17 @@ public enum EvidenceDocumentSearch {
         }
 
         /// Reads every document (the first `indexedTextLength` characters of its text) with its links.
-        public init(db: Database) throws {
+        public init(db: Database, now: Date = Date()) throws {
             catalog = try DocumentKindCatalog.load(db: db)
-            entries = try EvidenceDocumentSearch.entries(db: db, ids: nil, catalog: catalog)
+            entries = try EvidenceDocumentSearch.entries(db: db, ids: nil, catalog: catalog, now: now)
         }
 
         /// The index with `documentIds`' entries re-read (after an edit or a link change),
         /// keeping its order; a document that's gone is dropped, a new one goes first.
-        public func updating(db: Database, documentIds: [Int64]) throws -> Index {
+        public func updating(db: Database, documentIds: [Int64], now: Date = Date()) throws -> Index {
             guard !documentIds.isEmpty else { return self }
             let catalog = try DocumentKindCatalog.load(db: db)
-            let fresh = try EvidenceDocumentSearch.entries(db: db, ids: documentIds, catalog: catalog)
+            let fresh = try EvidenceDocumentSearch.entries(db: db, ids: documentIds, catalog: catalog, now: now)
             var byId = Dictionary(fresh.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let wanted = Set(documentIds)
             var updated: [Entry] = []
@@ -323,7 +329,7 @@ public enum EvidenceDocumentSearch {
     public static let indexedTextLength = 20_000
 
     /// Entries for every document (`ids` nil) or for `ids`, newest added first.
-    static func entries(db: Database, ids: [Int64]?, catalog: DocumentKindCatalog) throws -> [Entry] {
+    static func entries(db: Database, ids: [Int64]?, catalog: DocumentKindCatalog, now: Date = Date()) throws -> [Entry] {
         let idList = ids.map { $0.map(String.init).joined(separator: ",") }
         let documentFilter = idList.map { " AND documentId IN (\($0))" } ?? ""
         let summaries = try (ids.map { EvidenceDocumentSummary.newestFirst.filter(keys: $0) } ?? EvidenceDocumentSummary.newestFirst).fetchAll(db)
@@ -351,12 +357,13 @@ public enum EvidenceDocumentSearch {
             accounts[row[0], default: []].insert(row[1])
         }
         let paid = try EvidenceMatcher.linkedDebits(db: db, documentIds: ids).mapValues { $0.reduce(0) { $0 + $1.amountMinorUnits } }
+        let waiting = try WaitingDocuments.states(db: db, now: now)
         return summaries.map { summary in
             // Only a kind paid by debits (a bill, a notice): never a statement's or a contract's figure.
             let partly = EvidenceMatcher.isPaidByDebits(summary.kindRef)
                 && paid[summary.id].map { $0 > 0 && $0 < abs(summary.amountMinorUnits ?? 0) } ?? false
             return Entry(summary: summary, linkCount: linkCounts[summary.id] ?? 0, transactionLinkCount: transactionCounts[summary.id] ?? 0,
-                         accountIds: accounts[summary.id] ?? [], year: year(of: summary), isPartlyPaid: partly,
+                         accountIds: accounts[summary.id] ?? [], year: year(of: summary), isPartlyPaid: partly, waitingState: waiting[summary.id] ?? .notApplicable,
                          haystack: haystack(summary, kindName: catalog.displayName(summary.kindRef), text: texts[summary.id]))
         }
     }
@@ -381,6 +388,12 @@ public enum EvidenceDocumentSearch {
             .map(fold).joined(separator: "\u{1}")
     }
 
+    /// The documents the overview lists as not linked yet: no link and not waiting for their payment
+    /// (a waiting document is expected, not neglected), in the given order.
+    public static func notLinkedYet(_ entries: [Entry]) -> [Entry] {
+        entries.filter { $0.linkCount == 0 && $0.waitingState != .waiting }
+    }
+
     /// The entries matching `filter`, in the index's order (newest added first).
     public static func entries(_ index: Index, filter: Filter) -> [Entry] {
         let terms = filter.text.split(whereSeparator: \.isWhitespace).map { word in
@@ -397,6 +410,7 @@ public enum EvidenceDocumentSearch {
             case .linked: if entry.linkCount == 0 { return false }
             case .unlinked: if entry.linkCount > 0 { return false }
             case .unlinkedOrPartlyPaid: if entry.linkCount > 0 && !entry.isPartlyPaid { return false }
+            case .waiting: if entry.waitingState != .waiting { return false }
             }
             for term in terms {
                 let amountMatches = term.amount != nil && summary.amountMinorUnits.map(abs) == term.amount

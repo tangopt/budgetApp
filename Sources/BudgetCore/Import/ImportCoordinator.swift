@@ -102,9 +102,13 @@ public final class ImportCoordinator {
     /// batch-count mismatch (see `OnDeviceCategorizer.suggestCategories`) low.
     private static let categorizationBatchSize = 25
 
-    public init(dbQueue: DatabaseQueue, categorizationService: CategorizationService) {
+    /// The day the waiting documents' 90 days are counted to, when `commit` and `finish` link them.
+    private let clock: @Sendable () -> Date
+
+    public init(dbQueue: DatabaseQueue, categorizationService: CategorizationService, clock: @escaping @Sendable () -> Date = { Date() }) {
         self.dbQueue = dbQueue
         self.categorizationService = categorizationService
+        self.clock = clock
     }
 
     /// `alreadyStaged`: the rows of earlier statements of the same account in one batch (the
@@ -328,19 +332,26 @@ public final class ImportCoordinator {
     /// (`WaitingDocuments.run`), in the same write.
     @discardableResult
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
-        try dbQueue.write { db in
+        let now = clock()
+        return try dbQueue.write { db in
+            let last = try Self.lastTransactionId(db: db)
             let outcome = try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions,
                                               statement: statement)
-            try Self.linkWaitingDocuments(db: db, added: staged.count)
+            try Self.linkWaitingDocuments(db: db, after: last, now: now)
             return outcome
         }
     }
 
+    static func lastTransactionId(db: Database) throws -> Int64 {
+        try Int64.fetchOne(db, sql: "SELECT MAX(id) FROM \(Transaction.databaseTableName)") ?? 0
+    }
+
     /// After rows are saved by `commit` or `finish` (not the `db:` variant: its caller, the document importer, runs it):
-    /// the waiting documents they paid are linked (`WaitingDocuments.run`). Nothing added, nothing run.
-    private static func linkWaitingDocuments(db: Database, added: Int) throws {
-        guard added > 0 else { return }
-        try WaitingDocuments.run(db: db)
+    /// the waiting documents the rows inserted after `last` paid are linked (`WaitingDocuments.run`). None, nothing run.
+    private static func linkWaitingDocuments(db: Database, after last: Int64, now: Date) throws {
+        let added = Set(try Int64.fetchAll(db, sql: "SELECT id FROM \(Transaction.databaseTableName) WHERE id > ?", arguments: [last]))
+        guard !added.isEmpty else { return }
+        try WaitingDocuments.run(db: db, newTransactions: added, now: now)
     }
 
     /// `commit` in the caller's write transaction (one-off tools and the document importer,
@@ -420,12 +431,14 @@ public final class ImportCoordinator {
     /// fill actually wrote (nil when nothing), for the finish message.
     public func finish(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
                        statement: StatementFinish?, accountFill: StatementAccountFill?) throws -> ImportFinishResult {
-        try dbQueue.write { db in
+        let now = clock()
+        return try dbQueue.write { db in
             let filled = try accountFill.flatMap { try StatementAccountCheck.fill(db: db, accountId: accountId, with: $0) }
             let outcome: StatementFinishOutcome?
             if !staged.isEmpty {
+                let last = try Self.lastTransactionId(db: db)
                 outcome = try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
-                try Self.linkWaitingDocuments(db: db, added: staged.count)
+                try Self.linkWaitingDocuments(db: db, after: last, now: now)
             } else {
                 outcome = try statement.map { try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
             }

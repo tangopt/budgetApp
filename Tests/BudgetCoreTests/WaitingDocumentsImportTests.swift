@@ -115,7 +115,9 @@ final class WaitingDocumentsImportTests: XCTestCase {
 
     private func rerun() throws -> WaitingDocuments.Outcome {
         let now = self.now
-        return try db.write { db in try WaitingDocuments.run(db: db, now: now) }
+        return try db.write { db in
+            try WaitingDocuments.run(db: db, newTransactions: Set(try Int64.fetchAll(db, sql: "SELECT id FROM transaction_")), now: now)
+        }
     }
 
     private let powerRow = (day: "25/01/2026", description: "EXAMPLE POWER DD 0001", amount: "-60.00")
@@ -237,16 +239,37 @@ final class WaitingDocumentsImportTests: XCTestCase {
         XCTAssertEqual(try links(), [], "the next run leaves it")
     }
 
+    func testSummaryCountsUndonePairs() {
+        var summary = ImportRunSummary(runId: 1, filed: 1, linked: 0, recorded: 0, transactions: 2, duplicates: 0, leftOut: 0, backupPath: nil)
+        summary.paymentLinks = [WaitingDocuments.Pair(documentId: 1, transactionId: 2), WaitingDocuments.Pair(documentId: 3, transactionId: 4)]
+        XCTAssertEqual(summary.text(paymentLinksUndone: 1), "1 document filed, 2 transactions, 2 documents linked to their payments · 1 undone")
+    }
+
+    /// The summary's Undo of one pair, then Undo of the whole import: the link already gone is no conflict.
+    func testPairUndoThenRunUndo() async throws {
+        _ = try bill(date: Self.day(2026, 1, 10), amount: 6_000)
+        let summary = try await importStatement("january.csv", [powerRow])
+        try undo(try XCTUnwrap(summary.paymentLinks.first))
+        XCTAssertEqual(try db.read { db in try ImportUndo.conflicts(db: db, runId: summary.runId) }, [])
+        _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId, now: now)
+        XCTAssertNil(try transaction("EXAMPLE POWER DD 0001"))
+        XCTAssertEqual(try links(), [])
+    }
+
     // MARK: Sync
 
-    /// The admin's second Mac imports the debit; the Mac (its scheduler's `afterPull` the job, as `RealSync` sets it)
-    /// pulls it and links the waiting bill; its push sends the link, an ordinary document link, back to the second Mac.
-    func testSyncMergeLinksWaitingBill() async throws {
+    /// A household whose Mac holds a waiting €60 bill (ten days old) and a Utilities category, both on Mac 2 too.
+    private struct SyncSetup {
+        let h: TwoPersonHousehold
+        let document: Int64
+        let documentUuid: String
+        let accountOn2: Int64
+        let utilitiesOn2: Int64
+    }
+
+    private func syncSetup() async throws -> SyncSetup {
         let h = try TwoPersonHousehold.make()
-        let today = Date()
-        let billDate = UKTaxYear.utcCalendar.date(byAdding: .day, value: -10, to: today)!
-        let paidDate = UKTaxYear.utcCalendar.date(byAdding: .day, value: -2, to: today)!
-        let shared = h.fixture.shared
+        let billDate = UKTaxYear.utcCalendar.date(byAdding: .day, value: -10, to: Date())!
         let (document, utilities) = try await h.adminMac.db.write { db -> (Int64, Int64) in
             var category = Category(name: "Utilities", type: .expense)
             try category.insert(db)
@@ -257,47 +280,127 @@ final class WaitingDocumentsImportTests: XCTestCase {
             return (document.id!, category.id!)
         }
         let documentUuid = try h.uuid("document", document)
-        let sharedUuid = try h.uuid("account", shared)
+        let sharedUuid = try h.uuid("account", h.fixture.shared)
+        let utilitiesUuid = try h.uuid("category", utilities)
         try await h.adminMac.engine.pushPending()
         try await h.adminMac2.engine.pull()
-
+        _ = try await h.adminMac2.db.write { db in try SyncPulledRows.takeTransactions(db: db) }  // what the first download brought
         let accountOn2 = try XCTUnwrap(try h.localId("account", uuid: sharedUuid, on: h.adminMac2))
-        let utilitiesOn2 = try XCTUnwrap(try h.localId("category", uuid: try h.uuid("category", utilities), on: h.adminMac2))
-        let paidOn2 = try await h.adminMac2.db.write { db -> Int64 in
-            var batch = ImportBatch(accountId: accountOn2, sourceFileName: "synthetic.csv", importedAt: today)
+        let utilitiesOn2 = try XCTUnwrap(try h.localId("category", uuid: utilitiesUuid, on: h.adminMac2))
+        return SyncSetup(h: h, document: document, documentUuid: documentUuid, accountOn2: accountOn2, utilitiesOn2: utilitiesOn2)
+    }
+
+    /// A debit added on Mac 2 (two days ago unless `daysAgo`), pushed: its UUID.
+    private func addOn2(_ setup: SyncSetup, _ description: String, _ amount: Int, daysAgo: Int = 2) async throws -> (id: Int64, uuid: String) {
+        let date = UKTaxYear.utcCalendar.date(byAdding: .day, value: -daysAgo, to: Date())!
+        let (account, category) = (setup.accountOn2, setup.utilitiesOn2)
+        let id = try await setup.h.adminMac2.db.write { db -> Int64 in
+            var batch = ImportBatch(accountId: account, sourceFileName: "synthetic.csv", importedAt: Date())
             try batch.insert(db)
-            var transaction = Transaction(importBatchId: batch.id!, accountId: accountOn2, date: paidDate, rawDescription: "EXAMPLE POWER DD 0001",
-                                          amountMinorUnits: -6_000, categoryId: utilitiesOn2, status: .confirmed, categorizedBy: .manual,
+            var transaction = Transaction(importBatchId: batch.id!, accountId: account, date: date, rawDescription: description,
+                                          amountMinorUnits: amount, categoryId: category, status: .confirmed, categorizedBy: .manual,
                                           fingerprint: UUID().uuidString)
             try transaction.insert(db)
             return transaction.id!
         }
-        let paidUuid = try await h.adminMac2.db.write { db in try SyncRecordStore.uuid(for: "transaction_", localId: paidOn2, db: db) }
-        try await h.adminMac2.engine.pushPending()
+        let uuid = try await setup.h.adminMac2.db.write { db in try SyncRecordStore.uuid(for: "transaction_", localId: id, db: db) }
+        try await setup.h.adminMac2.engine.pushPending()
+        return (id, uuid)
+    }
+
+    /// A device's pull with the Mac's hook (as `RealSync` sets `afterPull`), then its push.
+    private func pullWithHook(_ device: TwoPersonHousehold.Device) async throws -> WaitingDocuments.Outcome {
+        try await device.engine.pull()
+        let outcome = try await device.db.write { db in
+            try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .edit, db: db) { try WaitingDocuments.runAfterPull(db: db) }
+        }
+        try await device.engine.pushPending()
+        return outcome
+    }
+
+    private func transactionLinks(_ device: TwoPersonHousehold.Device, document: Int64) async throws -> [Int64] {
+        try await device.db.read { db in
+            try Int64.fetchAll(db, sql: "SELECT entityId FROM documentLink WHERE documentId = ? AND entityType = ?",
+                               arguments: [document, EvidenceEntityType.transaction.rawValue])
+        }
+    }
+
+    /// The admin's second Mac imports the debit; the Mac (its scheduler's `afterPull` the job, as `RealSync` sets it)
+    /// pulls it and links the waiting bill, kept for "Linked automatically"; its push sends the link, an ordinary
+    /// document link, back to the second Mac.
+    func testSyncMergeLinksWaitingBill() async throws {
+        let setup = try await syncSetup()
+        let h = setup.h
+        let paid = try await addOn2(setup, "EXAMPLE POWER DD 0001", -6_000)
 
         let macDb = h.adminMac.db
         let scheduler = SyncScheduler(engine: h.adminMac.engine, db: macDb, afterPull: {
             _ = try? await macDb.write { db in
-                try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .edit, db: db) { try WaitingDocuments.run(db: db) }
+                try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .edit, db: db) { try WaitingDocuments.runAfterPull(db: db) }
             }
         })
         await scheduler.start()
         _ = try await scheduler.syncNowAndWait()
         await scheduler.stop()
 
-        let paidOnMac = try XCTUnwrap(try h.localId("transaction_", uuid: paidUuid, on: h.adminMac))
-        let linksOnMac = try await macDb.read { db in
-            try Int64.fetchAll(db, sql: "SELECT entityId FROM documentLink WHERE documentId = ? AND entityType = ?",
-                               arguments: [document, EvidenceEntityType.transaction.rawValue])
-        }
-        XCTAssertEqual(linksOnMac, [paidOnMac])
+        let paidOnMac = try XCTUnwrap(try h.localId("transaction_", uuid: paid.uuid, on: h.adminMac))
+        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [paidOnMac])
+        let pair = WaitingDocuments.Pair(documentId: setup.document, transactionId: paidOnMac)
+        XCTAssertEqual(try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }.map(\.pair), [pair])
 
         try await h.adminMac2.engine.pull()
-        let documentOn2 = try XCTUnwrap(try h.localId("document", uuid: documentUuid, on: h.adminMac2))
-        let linksOn2 = try await h.adminMac2.db.read { db in
-            try Int64.fetchAll(db, sql: "SELECT entityId FROM documentLink WHERE documentId = ? AND entityType = ?",
-                               arguments: [documentOn2, EvidenceEntityType.transaction.rawValue])
+        let documentOn2 = try XCTUnwrap(try h.localId("document", uuid: setup.documentUuid, on: h.adminMac2))
+        XCTAssertEqual(try await transactionLinks(h.adminMac2, document: documentOn2), [paid.id], "the link synced back as an ordinary document link")
+
+        // Seen: dismissed, the link stays; an undone one leaves the list too.
+        try await macDb.write { db in try WaitingDocuments.dismissRecentAutoLinks(db: db, [pair]) }
+        XCTAssertEqual(try await macDb.read { db in try WaitingDocuments.recentAutoLinks(db: db) }, [])
+        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [paidOnMac])
+    }
+
+    /// The Mac links after a pull; the person unlinks it by hand; a later pull bringing another transaction doesn't
+    /// link it again (the debit isn't new).
+    func testHandUnlinkedPairIsNotRelinkedByALaterPull() async throws {
+        let setup = try await syncSetup()
+        let h = setup.h
+        let paid = try await addOn2(setup, "EXAMPLE POWER DD 0001", -6_000)
+        XCTAssertEqual(try await pullWithHook(h.adminMac).linked.count, 1)
+        let paidOnMac = try XCTUnwrap(try h.localId("transaction_", uuid: paid.uuid, on: h.adminMac))
+        let document = setup.document
+        try await h.adminMac.db.write { db in _ = try EvidenceLinks.unlink(db: db, documentId: document, from: .transaction(paidOnMac)) }
+
+        _ = try await addOn2(setup, "SHOP A", -1_250)
+        let later = try await pullWithHook(h.adminMac)
+        XCTAssertEqual(later.linked, [])
+        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [])
+        XCTAssertEqual(try await h.adminMac.db.read { db in try WaitingDocuments.recentAutoLinks(db: db) }, [])
+    }
+
+    /// The Mac links after a pull and the person undoes it there; Mac 2 pulls the unlink (and a new transaction of
+    /// the Mac's) with the hook too: it never had the decline, but the debit isn't new to it, so it isn't relinked.
+    func testUndoSyncedToAnotherMacIsNotRelinked() async throws {
+        let setup = try await syncSetup()
+        let h = setup.h
+        let paid = try await addOn2(setup, "EXAMPLE POWER DD 0001", -6_000)
+        let pair = try XCTUnwrap(try await pullWithHook(h.adminMac).linked.first)
+        try await h.adminMac.db.write { db in
+            try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .documentLink, db: db) { try WaitingDocuments.undo(db: db, pair, now: Date()) }
         }
-        XCTAssertEqual(linksOn2, [paidOn2], "the link synced back as an ordinary document link")
+        try await h.adminMac.db.write { db in
+            var batch = ImportBatch(accountId: h.fixture.shared, sourceFileName: "synthetic.csv", importedAt: Date())
+            try batch.insert(db)
+            var transaction = Transaction(importBatchId: batch.id!, accountId: h.fixture.shared, date: Date(), rawDescription: "SHOP B",
+                                          amountMinorUnits: -900, categoryId: nil, status: .pendingReview, categorizedBy: .none,
+                                          fingerprint: UUID().uuidString)
+            try transaction.insert(db)
+        }
+        try await h.adminMac.engine.pushPending()
+
+        let documentOn2 = try XCTUnwrap(try h.localId("document", uuid: setup.documentUuid, on: h.adminMac2))
+        let onTwo = try await pullWithHook(h.adminMac2)
+        XCTAssertEqual(onTwo.linked, [])
+        XCTAssertEqual(try await transactionLinks(h.adminMac2, document: documentOn2), [], "the undo arrived and stays")
+        XCTAssertEqual(try await transactionLinks(h.adminMac, document: setup.document), [])
+        _ = paid
     }
 }

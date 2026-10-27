@@ -39,14 +39,19 @@ public struct ImportRunSummary: Equatable, Sendable {
 
     /// "3 documents filed, 2 linked, 142 transactions, 1 document linked to its payment"; counts that are zero are left out
     /// (except the documents), duplicates and left-out files last; then the run's notes.
-    public var text: String {
+    public var text: String { text(paymentLinksUndone: 0) }
+
+    /// `text` once `undone` of the payment links were taken back from the summary: "2 documents linked to their
+    /// payments · 1 undone".
+    public func text(paymentLinksUndone undone: Int) -> String {
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
         var parts = [plural(filed, "document", "documents") + " filed"]
         if linked > 0 { parts.append("\(linked) linked") }
         if recorded > 0 { parts.append("\(recorded) recorded") }
         if transactions > 0 { parts.append(plural(transactions, "transaction", "transactions")) }
         if !paymentLinks.isEmpty {
-            parts.append(paymentLinks.count == 1 ? "1 document linked to its payment" : "\(paymentLinks.count) documents linked to their payments")
+            let linked = paymentLinks.count == 1 ? "1 document linked to its payment" : "\(paymentLinks.count) documents linked to their payments"
+            parts.append(undone > 0 ? "\(linked) · \(undone) undone" : linked)
         }
         if duplicates > 0 { parts.append(plural(duplicates, "duplicate", "duplicates") + " skipped") }
         if leftOut > 0 { parts.append("\(leftOut) left out") }
@@ -392,9 +397,8 @@ public struct ImportApplier: Sendable {
         // Documents first, statements later: the waiting documents the new rows paid are linked, each in its own
         // filed-year-guarded savepoint (a refused one stays a suggestion), captured with the run so its Undo
         // takes them back too.
-        let addedTransactions = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM \(Transaction.databaseTableName) WHERE id > ?)",
-                                                  arguments: [lastTransaction]) ?? false
-        let paymentLinks = try addedTransactions ? WaitingDocuments.run(db: db, now: now).linked : []
+        let added = Set(try Int64.fetchAll(db, sql: "SELECT id FROM \(Transaction.databaseTableName) WHERE id > ?", arguments: [lastTransaction]))
+        let paymentLinks = try added.isEmpty ? [] : WaitingDocuments.run(db: db, newTransactions: added, now: now).linked
         try AutoForecastGenerator.refresh(db: db)
 
         // The confirm-time backstop: the batch as a whole (per-item checks aren't additive).

@@ -62,6 +62,18 @@ final class DocumentsViewModel: ObservableObject {
     /// A note about the last folder review ("Nothing new or changed in …").
     @Published var infoMessage: String?
 
+    /// A link Mango made itself after a sync, shown with Undo.
+    struct AutoLinkedRow: Identifiable, Equatable {
+        let pair: WaitingDocuments.Pair
+        let documentName: String
+        let paymentText: String
+        var id: String { pair.id }
+    }
+    @Published private(set) var autoLinked: [AutoLinkedRow] = []
+    /// The recent automatic links (document, payment), newest first. Not wired yet: the controller sets it to
+    /// `WaitingDocuments.recentAutoLinks` once that exists; nil shows no section.
+    var recentAutoLinkSource: (@Sendable (Database) throws -> [WaitingDocuments.Pair])?
+
     private var queryTask: Task<Void, Never>?
     private var indexGeneration = 0
     private var entriesGeneration = 0
@@ -112,6 +124,7 @@ final class DocumentsViewModel: ObservableObject {
                 guard generation == indexGeneration else { return }
                 self.index = index
                 refreshEntries()
+                loadAutoLinked()
                 if let select {
                     // Re-read even when it's already selected (its details may have changed).
                     if selectedId == select { loadSelection() } else { selectedId = select }
@@ -257,6 +270,37 @@ final class DocumentsViewModel: ObservableObject {
         }
     }
 
+    private func loadAutoLinked() {
+        guard let source = recentAutoLinkSource else { autoLinked = []; return }
+        autoLinked = ((try? dbQueue.read { db -> [AutoLinkedRow] in
+            try source(db).prefix(8).compactMap { pair in
+                guard let document = try EvidenceDocument.fetchOne(db, key: pair.documentId),
+                      let transaction = try Transaction.fetchOne(db, key: pair.transactionId) else { return nil }
+                return AutoLinkedRow(pair: pair, documentName: document.displayName,
+                                     paymentText: "\(DocumentFormat.day(transaction.date)) \(transaction.rawDescription)")
+            }
+        }) ?? [])
+    }
+
+    /// Takes an automatic link back (the guarded unlink, remembered so it is not made again).
+    func undoAutoLink(_ pair: WaitingDocuments.Pair) {
+        let library = library
+        Task {
+            guard let result = await guarded({ try library.database.write { db in try WaitingDocuments.undo(db: db, pair, now: Date()) } }) else { return }
+            errorMessage = result.failure?.localizedDescription
+            loadAutoLinked()
+            reloadIndex(select: selectedId)
+        }
+    }
+
+    /// Whether the selected document waits for its payment (read with the index).
+    var selectedWaitingState: WaitingDocuments.State {
+        guard let id = selected?.id else { return .notApplicable }
+        return index.entries.first { $0.id == id }?.waitingState ?? .notApplicable
+    }
+
+    private var suggestionsGeneration = 0
+
     private func refreshSuggestions() {
         guard let document = selected, let catalog else { suggestions = []; return }
         let linkedIds = links.filter { $0.link.entityType == .transaction }.map(\.link.entityId)
@@ -265,6 +309,17 @@ final class DocumentsViewModel: ObservableObject {
         let paid = catalog.matcherIndex.linkedDebits(linkedIds, currency: document.currency)
         suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8, linkedDebits: paid)
             .filter { !linked.contains($0.transactionId) }
+        // A waiting document's candidates leave out the pairs the user undid (and agree with the automatic linking).
+        guard selectedWaitingState == .waiting, let documentId = document.id else { return }
+        suggestionsGeneration += 1
+        let generation = suggestionsGeneration, dbQueue = dbQueue
+        Task {
+            let found = try? await Task.detached(priority: .userInitiated) {
+                try dbQueue.read { db in try WaitingDocuments.suggestions(db: db, documentId: documentId) }
+            }.value
+            guard generation == suggestionsGeneration, selected?.id == documentId, let found else { return }
+            suggestions = found
+        }
     }
 
     /// The selected document's linked transaction ids (the picker marks them).
@@ -466,6 +521,8 @@ extension DocumentsViewModel {
         var total = 0
         var linked = 0
         var unlinked = 0
+        /// Filed before their payment (not counted as not linked): the statement will link them.
+        var waiting = 0
         /// Scans and photos: no text to search or match.
         var imageOnly = 0
         /// Documents per kind (custom kinds by their own name), most first.
@@ -477,17 +534,18 @@ extension DocumentsViewModel {
              unlinkedShown: Int = 8) {
             total = entries.count
             linked = entries.filter { $0.linkCount > 0 }.count
-            unlinked = total - linked
+            waiting = entries.filter { $0.waitingState == .waiting && $0.linkCount == 0 }.count
+            unlinked = total - linked - waiting
             imageOnly = entries.filter { $0.summary.textStatus == .image }.count
             var counts: [DocumentKindRef: Int] = [:]
             for entry in entries { counts[entry.summary.kindRef, default: 0] += 1 }
             byKind = counts.map { (kind: $0.key, name: catalog.displayName($0.key), count: $0.value) }
                 .sorted { ($0.count, $1.name) > ($1.count, $0.name) }
-            recentUnlinked = Array(entries.filter { $0.linkCount == 0 }.prefix(unlinkedShown))
+            recentUnlinked = Array(EvidenceDocumentSearch.notLinkedYet(entries).prefix(unlinkedShown))
         }
 
         static func == (lhs: LibrarySummary, rhs: LibrarySummary) -> Bool {
-            lhs.total == rhs.total && lhs.linked == rhs.linked && lhs.imageOnly == rhs.imageOnly
+            lhs.total == rhs.total && lhs.linked == rhs.linked && lhs.waiting == rhs.waiting && lhs.unlinked == rhs.unlinked && lhs.imageOnly == rhs.imageOnly
                 && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.name) == rhs.byKind.map(\.name)
                 && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
                 && lhs.recentUnlinked == rhs.recentUnlinked

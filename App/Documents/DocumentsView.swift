@@ -387,7 +387,8 @@ private struct DocumentFilterBar: View {
     @ViewBuilder
     private var secondChips: some View {
         FilterPickerChip("Linked or not", name: "Links", all: EvidenceDocumentSearch.LinkState.any, selection: $viewModel.filter.linkState,
-                         options: [(value: .linked, title: "Linked"), (value: .unlinked, title: "Not linked")])
+                         options: [(value: .linked, title: "Linked"), (value: .unlinked, title: "Not linked"),
+                                   (value: .waiting, title: "Waiting for its payment")])
         if !viewModel.sourceFolders.isEmpty {
             FilterPickerChip("Any folder", name: "Folder", all: Int64?.none, selection: $viewModel.filter.sourceFolderId,
                              options: viewModel.sourceFolders.compactMap { folder in folder.id.map { (value: Optional($0), title: folder.name) } })
@@ -431,12 +432,15 @@ private struct DocumentsOverview: View {
                             FigureTile(title: "Documents", value: .text("\(overview.total)")),
                             FigureTile(title: "Linked", value: .text("\(overview.linked)")),
                             FigureTile(title: "Not linked", value: .text("\(overview.unlinked)"),
-                                       caption: overview.unlinked == 0 ? "All linked" : "Waiting for a record",
+                                       caption: overview.unlinked == 0
+                                           ? (overview.waiting == 0 ? "All linked" : "\(overview.waiting) waiting for payment")
+                                           : "Waiting for a record",
                                        captionIsWarning: overview.unlinked > 0),
                             FigureTile(title: "Image only", value: .text("\(overview.imageOnly)"),
                                        caption: overview.imageOnly == 0 ? nil : "Check their details by eye")
                         ])
                     }
+                    autoLinkedPanel
                     TwoUpRow {
                         Panel("By kind", fillsHeight: true) {
                             BreakdownBars(counts: overview.byKind.map { BreakdownItem($0.name, count: $0.count, id: Self.id(of: $0.kind)) },
@@ -457,6 +461,30 @@ private struct DocumentsOverview: View {
                 }
                 .padding(ScreenMetrics.padding)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    /// Links Mango made by itself after a sync, each with Undo (nothing when there are none).
+    @ViewBuilder
+    private var autoLinkedPanel: some View {
+        if !viewModel.autoLinked.isEmpty {
+            Panel("Linked automatically", subtitle: "Documents Mango linked to their payment after a sync") {
+                VStack(spacing: 6) {
+                    ForEach(viewModel.autoLinked) { row in
+                        HStack(spacing: 8) {
+                            Text(row.documentName).lineLimit(1).truncationMode(.middle)
+                            Image(systemName: "arrow.right").font(.caption).foregroundStyle(.secondary)
+                            Text(row.paymentText).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("Undo") { viewModel.undoAutoLink(row.pair) }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Undo the link of \(row.documentName) to \(row.paymentText)")
+                        }
+                        .font(.callout)
+                        .accessibilityElement(children: .contain)
+                    }
+                }
             }
         }
     }

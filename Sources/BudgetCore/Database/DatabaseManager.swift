@@ -155,5 +155,6 @@ public final class DatabaseManager {
         registerSharingMigration(&migrator)
         registerSavedSiteMigration(&migrator)
         registerAutoLinkDeclinedMigration(&migrator)
+        registerAutoLinkRecentMigration(&migrator)
     }
 }

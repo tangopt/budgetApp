@@ -96,15 +96,17 @@ final class RealSync: ObservableObject {
 
     /// One per database in this process: windows on the same database share it (`AppEnvironment.load`), so one engine
     /// syncs it.
-    /// After each pull (step 9, documents first): the waiting documents the pulled transactions paid are linked here,
-    /// as the default writer, and the scheduler's push sends the links as ordinary document links. A failure (no
+    /// After each pull (step 9, documents first): the waiting documents the pulled transactions paid are linked here
+    /// (`WaitingDocuments.runAfterPull`: only to the rows the pull added; nothing runs when it added none; the links
+    /// are kept for Documents' "Linked automatically"), as the default writer, and the scheduler's push sends them as
+    /// ordinary document links. A failure (no
     /// Edit on Documents, a database error) is logged and never fails the sync.
     nonisolated static func linkWaitingDocuments(_ dbQueue: DatabaseQueue) -> @Sendable () async -> Void {
         let log = Logger(subsystem: "com.personal.budget", category: "Sync")
         return {
             do {
                 let outcome = try await dbQueue.write { db in
-                    try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .edit, db: db) { try WaitingDocuments.run(db: db) }
+                    try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .edit, db: db) { try WaitingDocuments.runAfterPull(db: db) }
                 }
                 if !outcome.linked.isEmpty {
                     log.notice("Real sync: \(outcome.linked.count, privacy: .public) waiting documents linked to their payments")

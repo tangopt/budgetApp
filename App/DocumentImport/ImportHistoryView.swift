@@ -10,6 +10,8 @@ struct ImportHistoryView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
     @State private var setAsideFiles: [SetAsideFile]?
+    /// The payment links undone from the finished import's summary, by run (the banner counts them).
+    @State private var undonePaymentLinks: [Int64: Set<WaitingDocuments.Pair.ID>] = [:]
 
     static let tableMinimumWidth: CGFloat = 400
     static let detailWidth: CGFloat = 340
@@ -24,10 +26,13 @@ struct ImportHistoryView: View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             switch center.phase {
             case .finished(let summary):
-                InlineBanner(.success, "Imported: \(summary.text)" + (summary.backupPath == nil ? "" : ". The database was backed up first."),
+                InlineBanner(.success, "Imported: \(summary.text(paymentLinksUndone: undonePaymentLinks[summary.runId]?.count ?? 0))"
+                                 + (summary.backupPath == nil ? "" : ". The database was backed up first."),
                              onDismiss: center.discard)
                 if !summary.paymentLinks.isEmpty {
-                    ImportPaymentLinksList(center: center, pairs: summary.paymentLinks)
+                    ImportPaymentLinksList(center: center, pairs: summary.paymentLinks,
+                                           undone: Binding(get: { undonePaymentLinks[summary.runId] ?? [] },
+                                                           set: { undonePaymentLinks[summary.runId] = $0 }))
                         // Another run's links start with their own names and refusals.
                         .id(summary.runId)
                 }
@@ -102,7 +107,7 @@ struct ImportPaymentLinksList: View {
     let pairs: [WaitingDocuments.Pair]
     @Environment(\.theme) private var theme
     @State private var names: [WaitingDocuments.Pair.ID: (document: String, payment: String)] = [:]
-    @State private var undone: Set<WaitingDocuments.Pair.ID> = []
+    @Binding var undone: Set<WaitingDocuments.Pair.ID>
     @State private var refusals: [WaitingDocuments.Pair.ID: String] = [:]
     @State private var working: WaitingDocuments.Pair.ID?
 

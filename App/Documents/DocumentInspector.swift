@@ -36,6 +36,7 @@ struct DocumentInspector: View {
                     DocumentThumbnail(url: viewModel.fileURL(document))
                 }
                 linksPanel
+                waitingLine
                 suggestionsPanel
                 detailsPanel
             }
@@ -258,8 +259,22 @@ struct DocumentInspector: View {
         }
     }
 
+    /// A quiet note for a document filed before its payment (a lapsed one is an ordinary unlinked document).
+    @ViewBuilder
+    private var waitingLine: some View {
+        if viewModel.selectedWaitingState == .waiting {
+            Label("Waiting for its payment — Mango links it when the statement arrives", systemImage: "clock")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Waiting for its payment. Mango links it when the statement arrives.")
+        }
+    }
+
     private var suggestionsPanel: some View {
-        Panel("Suggested transactions", padding: 12) {
+        Panel(viewModel.selectedWaitingState == .waiting ? "Possible payments" : "Suggested transactions", padding: 12) {
             if viewModel.catalog == nil {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

@@ -473,6 +473,7 @@ extension ImportCenterModel {
     /// Takes one automatic payment link back (the summary's Undo): unlinked as the signed-in user with Edit on
     /// Documents, and never made again. Throws the refusal (a filed return it would change, no permission).
     func undoPaymentLink(_ pair: WaitingDocuments.Pair) async throws {
+        guard SignedInActor.state != .signedOut else { throw SignedOutWrite() }
         let now = AppClock.now
         try await dbQueue.write(.documents, origin: .documentLink) { db in try WaitingDocuments.undo(db: db, pair, now: now) }
     }

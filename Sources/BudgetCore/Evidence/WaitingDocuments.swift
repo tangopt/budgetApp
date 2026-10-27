@@ -8,7 +8,7 @@ import GRDB
 /// is `docDate ?? periodEnd ?? addedAt`; more than `expiryDays` after it, it has lapsed into an ordinary
 /// unlinked document.
 ///
-/// `run` (after a statement import or a sync) links each waiting document to its one confident match
+/// `run` (after a statement import or a sync, given the transactions it added) links each waiting document to its one confident match
 /// (`EvidenceMatcher.confidentMatch`), never a debit another waiting document also claims nor one already
 /// carrying a document of its kind, each link in its own `EvidenceLinkGuard.checked` (a filed return that
 /// would move refuses it: a suggestion instead). Everything else it found is a suggestion, counted, not
@@ -107,22 +107,11 @@ public enum WaitingDocuments {
         }
     }
 
-    /// Transactions dated from where the earliest of `documents` could find a candidate (its window's
-    /// start less the exact amount's grace); every transaction when one is undated (the matcher then
-    /// looks at every transaction of its amount).
-    static func index(db: Database, for documents: [EvidenceDocument]) throws -> EvidenceMatcher.Index {
-        var from: Date? = .distantFuture
-        for document in documents {
-            guard let anchor = matcherAnchor(document) else {
-                from = nil
-                break
-            }
-            let lower = EvidenceMatcher.expectation(for: document.kindRef).window.lowerBound - EvidenceMatcher.amountGraceDays
-            let start = EvidenceText.utcCalendar.date(byAdding: .day, value: min(0, lower) - 1, to: anchor) ?? anchor
-            from = min(from ?? start, start)
-        }
-        let transactions = try from.map { try Transaction.filter(Column("date") >= $0).fetchAll(db) } ?? Transaction.fetchAll(db)
-        return EvidenceMatcher.Index(transactions: transactions, accounts: try Account.fetchAll(db), categories: try Category.fetchAll(db))
+    /// Every transaction: the matcher looks only at a document's window, but a payment reference counts only when
+    /// exactly one transaction of all repeats it, so the index is never narrowed (a narrowed one could make a
+    /// repeated reference look unique).
+    static func index(db: Database) throws -> EvidenceMatcher.Index {
+        EvidenceMatcher.Index(transactions: try Transaction.fetchAll(db), accounts: try Account.fetchAll(db), categories: try Category.fetchAll(db))
     }
 
     /// The transactions linked to `documentId`.
@@ -131,13 +120,34 @@ public enum WaitingDocuments {
                                arguments: [documentId, EvidenceEntityType.transaction.rawValue]))
     }
 
-    /// Whether `transactionId` already carries another document of `document`'s kind (as `BBVADebitAdvice.linkLibraryAdvices`).
+    /// Whether `transactionId` already carries another document of `document`'s kind (as `BBVADebitAdvice.linkLibraryAdvices`),
+    /// or the bills tracker has it paying another invoice than the document's own (`Recharges.paymentsTaken`).
     static func isTaken(db: Database, transactionId: Int64, by document: EvidenceDocument) throws -> Bool {
-        try Bool.fetchOne(db, sql: """
+        let carried = try Bool.fetchOne(db, sql: """
             SELECT EXISTS (SELECT 1 FROM documentLink l JOIN document d ON d.id = l.documentId
                            WHERE l.entityType = ? AND l.entityId = ? AND d.id != ? AND d.kind = ? AND d.customKindId IS ?)
             """, arguments: [EvidenceEntityType.transaction.rawValue, transactionId, document.id, document.kind.rawValue,
                              document.customKindId]) ?? false
+        if carried { return true }
+        let ownInvoices = try Int64.fetchAll(db, sql: "SELECT id FROM utilityInvoice WHERE documentId = ?", arguments: [document.id])
+        // With no invoice of its own, every invoice is another's; with one (or more), each must leave the debit to it.
+        if ownInvoices.isEmpty { return try Recharges.paymentsTaken(db: db, excludingInvoice: nil).contains(transactionId) }
+        for invoice in ownInvoices where try !Recharges.paymentsTaken(db: db, excludingInvoice: invoice).contains(transactionId) {
+            return false
+        }
+        return true
+    }
+
+    /// Whether the debit may be linked automatically for its property: a document linked to properties is only
+    /// auto-linked to a debit of one of their accounts (`propertyAccount`); one linked to none, to any.
+    static func isOfItsProperty(db: Database, transactionId: Int64, document: EvidenceDocument) throws -> Bool {
+        let properties = try Int64.fetchAll(db, sql: "SELECT entityId FROM documentLink WHERE documentId = ? AND entityType = ?",
+                                            arguments: [document.id, EvidenceEntityType.property.rawValue])
+        guard !properties.isEmpty else { return true }
+        return try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (SELECT 1 FROM \(Transaction.databaseTableName) t JOIN propertyAccount pa ON pa.accountId = t.accountId
+                           WHERE t.id = ? AND pa.propertyId IN (\(properties.map { _ in "?" }.joined(separator: ", "))))
+            """, arguments: StatementArguments([transactionId] + properties)) ?? false
     }
 
     /// The matcher's candidates for the document, best first, without the transactions it is linked to
@@ -145,16 +155,21 @@ public enum WaitingDocuments {
     public static func suggestions(db: Database, documentId: Int64, limit: Int = 8) throws -> [EvidenceMatcher.Suggestion] {
         guard let document = try EvidenceDocument.fetchOne(db, key: documentId) else { return [] }
         let excluded = try linkedTransactions(db: db, documentId: documentId).union(AutoLinkDeclined.transactions(db: db, documentId: documentId))
-        let found = EvidenceMatcher.suggestions(document: document, index: try index(db: db, for: [document]), limit: limit + excluded.count)
+        let found = EvidenceMatcher.suggestions(document: document, index: try index(db: db), limit: limit + excluded.count)
         return Array(found.filter { !excluded.contains($0.transactionId) }.prefix(limit))
     }
 
     // MARK: The job
 
-    /// Links the waiting documents to their payments (see the type's comment). Idempotent: a linked
-    /// document no longer waits, and an undone pair is never made again. Runs in the caller's write.
+    /// Links the waiting documents to their payments (see the type's comment), only to the transactions in
+    /// `newTransactions` (the rows this import or pull added: an old pair unlinked by hand, or undone on another
+    /// device, is never made again by a later run); the candidates it counts as suggestions are all of them.
+    /// A confident match is linked only when no other waiting document claims it, no document of its kind nor
+    /// another bills-tracker invoice has it, and, for a document linked to properties, it is a debit of one of
+    /// their accounts. Idempotent: a linked document no longer waits, and an undone pair is never made again.
+    /// Runs in the caller's write.
     @discardableResult
-    public static func run(db: Database, now: Date = Date()) throws -> Outcome {
+    public static func run(db: Database, newTransactions: Set<Int64>, now: Date = Date()) throws -> Outcome {
         var outcome = Outcome()
         let declined = try AutoLinkDeclined.byDocument(db: db)
 
@@ -169,7 +184,8 @@ public enum WaitingDocuments {
             }
         }
 
-        // A utility bill the bills tracker already has paid (its invoice's debit): the document gains
+        guard !newTransactions.isEmpty else { return outcome }
+        // A utility bill the bills tracker has paid with a new debit (its invoice's): the document gains
         // that link, the invoice keeps its debit and stage.
         let trackerPairs = try Row.fetchAll(db, sql: """
             SELECT d.id, u.transactionId FROM document d JOIN utilityInvoice u ON u.documentId = d.id
@@ -180,14 +196,15 @@ public enum WaitingDocuments {
         var trackerDone = Set<Int64>()
         for row in trackerPairs {
             let pair = Pair(documentId: row[0], transactionId: row[1])
-            guard trackerDone.insert(pair.documentId).inserted, !(declined[pair.documentId]?.contains(pair.transactionId) ?? false),
+            guard trackerDone.insert(pair.documentId).inserted, newTransactions.contains(pair.transactionId),
+                  !(declined[pair.documentId]?.contains(pair.transactionId) ?? false),
                   let document = try EvidenceDocument.fetchOne(db, key: pair.documentId), !isLapsed(document, now: now) else { continue }
             if try link(pair) { outcome.linked.append(pair) } else { outcome.suggested[pair.documentId] = 1 }
         }
 
         let waiting = try unpaid(db: db).filter { !isLapsed($0, now: now) }
         guard !waiting.isEmpty else { return outcome }
-        let index = try index(db: db, for: waiting)
+        let index = try index(db: db)
 
         var candidates: [(document: EvidenceDocument, suggestions: [EvidenceMatcher.Suggestion])] = []
         var claims: [Int64: Int] = [:]  // transaction → how many documents' confident match it is
@@ -203,8 +220,9 @@ public enum WaitingDocuments {
 
         for (document, found) in candidates {
             let id = document.id!
-            if let best = EvidenceMatcher.confidentMatch(found), claims[best.transactionId] == 1,
-               try !isTaken(db: db, transactionId: best.transactionId, by: document) {
+            if let best = EvidenceMatcher.confidentMatch(found), newTransactions.contains(best.transactionId), claims[best.transactionId] == 1,
+               try !isTaken(db: db, transactionId: best.transactionId, by: document),
+               try isOfItsProperty(db: db, transactionId: best.transactionId, document: document) {
                 let pair = Pair(documentId: id, transactionId: best.transactionId)
                 if try link(pair) {
                     outcome.linked.append(pair)
@@ -225,5 +243,6 @@ public enum WaitingDocuments {
             _ = try EvidenceLinks.unlink(db: db, documentId: pair.documentId, from: .transaction(pair.transactionId))
         }
         try AutoLinkDeclined.record(db: db, documentId: pair.documentId, transactionId: pair.transactionId, at: now)
+        try AutoLinkRecent.remove(db: db, [pair])
     }
 }

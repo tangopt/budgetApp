@@ -76,7 +76,7 @@ final class WaitingDocumentsTests: XCTestCase {
     }
 
     private func run(_ now: Date) throws -> WaitingDocuments.Outcome {
-        try db.write { db in try WaitingDocuments.run(db: db, now: now) }
+        try db.write { db in try WaitingDocuments.run(db: db, newTransactions: Set(try Int64.fetchAll(db, sql: "SELECT id FROM transaction_")), now: now) }
     }
 
     private func suggestions(_ id: Int64) throws -> [Int64] {
@@ -258,9 +258,10 @@ final class WaitingDocumentsTests: XCTestCase {
         let paid = try debit(Self.day(2026, 1, 25), -6_000, "EXAMPLE POWER DD 0001")
         let doc = try document(date: Self.day(2026, 1, 10), amount: 6_000)
         let invoiceId = try db.write { db -> Int64 in
-            var invoice = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 10), amountMinorUnits: 6_000, documentId: doc,
-                                         transactionId: paid)
+            var invoice = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 10), amountMinorUnits: 6_000, documentId: doc)
             try Recharges.saveInvoice(db: db, &invoice)
+            // The bills tracker's own matching pays it (as `ImportEffects.followOns` does before the job).
+            _ = try Recharges.matchPayments(db: db, propertyId: propertyId)
             return invoice.id!
         }
         func stage() throws -> UtilityBillStage? {
@@ -268,6 +269,7 @@ final class WaitingDocumentsTests: XCTestCase {
                 .bills.first { $0.invoice?.id == invoiceId }?.stage
         }
         let now = Self.day(2026, 2, 1)
+        XCTAssertEqual(try db.read { db in try UtilityInvoice.fetchOne(db, key: invoiceId) }?.transactionId, paid, "paid by the tracker")
         XCTAssertEqual(try state(doc, now), .notApplicable)
         XCTAssertEqual(try stage(), .linkedToPayment)
 
@@ -278,5 +280,83 @@ final class WaitingDocumentsTests: XCTestCase {
         XCTAssertEqual(try stage(), .linkedToPayment)
         XCTAssertEqual(try db.read { db in try UtilityInvoice.fetchOne(db, key: invoiceId) }?.transactionId, paid)
         XCTAssertEqual(try run(now), WaitingDocuments.Outcome())
+    }
+
+    // MARK: Fix round: only new debits, the tracker's and the property's
+
+    private func run(_ now: Date, onlyTo newTransactions: Set<Int64>) throws -> WaitingDocuments.Outcome {
+        try db.write { db in try WaitingDocuments.run(db: db, newTransactions: newTransactions, now: now) }
+    }
+
+    /// A debit already here before the import or pull: suggested, never linked automatically.
+    func testOldDebitIsNotAutoLinked() throws {
+        let id = try document(date: Self.day(2026, 1, 10), amount: 6_000)
+        let old = try debit(Self.day(2026, 1, 25), -6_000)
+        let other = try debit(Self.day(2026, 1, 26), -1_234, "SHOP A")
+        let outcome = try run(Self.day(2026, 2, 1), onlyTo: [other])
+        XCTAssertEqual(outcome.linked, [])
+        XCTAssertEqual(outcome.suggested, [id: 1])
+        XCTAssertEqual(try links(), [])
+        XCTAssertEqual(try run(Self.day(2026, 2, 1), onlyTo: []), WaitingDocuments.Outcome(), "nothing new: nothing runs")
+        XCTAssertEqual(try run(Self.day(2026, 2, 1), onlyTo: [old]).linked, [WaitingDocuments.Pair(documentId: id, transactionId: old)])
+    }
+
+    /// Two €60 bills of one provider, only one with a document; the bills tracker has the debit paying the other:
+    /// the document's bill isn't linked to it automatically (a suggestion).
+    func testDebitTheTrackerGaveAnotherInvoiceIsNotAutoLinked() throws {
+        let provider = try db.write { db -> Int64 in
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            try Properties.setAccount(db: db, propertyId: property.id!, accountId: account, role: .current)
+            var power = UtilityProvider(propertyId: property.id!, name: "Example Power", kind: .electricity, bankDescriptionPattern: "EXAMPLE POWER")
+            try Recharges.saveProvider(db: db, &power)
+            return power.id!
+        }
+        let paid = try debit(Self.day(2026, 1, 25), -6_000, "EXAMPLE POWER DD 0001")
+        let doc = try document(date: Self.day(2026, 1, 10), amount: 6_000)
+        try db.write { db in
+            var withDocument = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 10), amountMinorUnits: 6_000, documentId: doc)
+            try Recharges.saveInvoice(db: db, &withDocument)
+            var other = UtilityInvoice(providerId: provider, issueDate: Self.day(2026, 1, 12), amountMinorUnits: 6_000, transactionId: paid)
+            try Recharges.saveInvoice(db: db, &other)
+        }
+        let outcome = try run(Self.day(2026, 2, 1), onlyTo: [paid])
+        XCTAssertEqual(outcome.linked, [])
+        XCTAssertEqual(outcome.suggested, [doc: 1])
+        XCTAssertEqual(try links(), [])
+    }
+
+    /// A document linked to Property A is linked automatically only to a debit of Property A's accounts: one of
+    /// Property B's account is a suggestion.
+    func testPropertyDocumentNeedsItsPropertysAccount() throws {
+        let (otherAccount, otherBatch) = try db.write { db -> (Int64, Int64) in
+            var a = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &a)
+            try Properties.setAccount(db: db, propertyId: a.id!, accountId: account, role: .current)
+            var b = Property(name: "Property B", country: "PT")
+            try Properties.save(db: db, &b)
+            var bank = Account(name: "Bank B", currency: .eur, kind: .cash, trackingMode: .imported)
+            try bank.insert(db)
+            try Properties.setAccount(db: db, propertyId: b.id!, accountId: bank.id!, role: .current)
+            var batch = ImportBatch(accountId: bank.id!, sourceFileName: "b.csv", importedAt: Date())
+            try batch.insert(db)
+            return (bank.id!, batch.id!)
+        }
+        let propertyA = try db.read { db in try Int64.fetchOne(db, sql: "SELECT id FROM property WHERE name = 'Property A'")! }
+        let doc = try document(date: Self.day(2026, 1, 10), amount: 6_000)
+        try db.write { db in try EvidenceLinks.link(db: db, documentId: doc, to: EvidenceEntity(type: .property, id: propertyA)) }
+        let onB = try db.write { db -> Int64 in
+            var transaction = Transaction(importBatchId: otherBatch, accountId: otherAccount, date: Self.day(2026, 1, 25), rawDescription: "EDP COMERCIAL DD 0001",
+                                          amountMinorUnits: -6_000, categoryId: utilities, status: .confirmed, categorizedBy: .manual,
+                                          fingerprint: UUID().uuidString)
+            try transaction.insert(db)
+            return transaction.id!
+        }
+        let first = try run(Self.day(2026, 2, 1), onlyTo: [onB])
+        XCTAssertEqual(first.linked, [])
+        XCTAssertEqual(first.suggested, [doc: 1])
+        try db.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [onB]) }
+        let onA = try debit(Self.day(2026, 1, 25), -6_000)
+        XCTAssertEqual(try run(Self.day(2026, 2, 1), onlyTo: [onA]).linked, [WaitingDocuments.Pair(documentId: doc, transactionId: onA)])
     }
 }

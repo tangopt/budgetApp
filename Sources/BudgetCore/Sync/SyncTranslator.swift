@@ -886,6 +886,7 @@ public enum SyncTranslator {
                 ? Int64.fromDatabaseValue(values[schema.localIdColumn] ?? .null) ?? db.lastInsertedRowID
                 : db.lastInsertedRowID
             try SyncMerge.recordIdentity(payload, localId: localId, table: schema.name, db: db)
+            try SyncPulledRows.record(table: schema.name, localId: localId, db: db)
             // What this device changed to make room is a local edit of the incoming record, logged and sent.
             let fields = Array(Set(changed)).sorted()
             for field in fields {
