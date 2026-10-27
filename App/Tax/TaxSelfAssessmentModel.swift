@@ -6,7 +6,7 @@ import GRDB
 
 /// The Self Assessment tabs' actions (plan phase 4 Task 4): the person's income records and
 /// HMRC payments (saved with their staged documents), P60 / P45 / P11D import, the evidence
-/// rules, and the Return and Filing tabs' copy and drill-down.
+/// rules, and the Return tab' copy and drill-down.
 extension TaxYearsViewModel {
     // MARK: Records (through the filed-year check, plan Task 14: they feed the year's SA boxes)
 

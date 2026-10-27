@@ -15,6 +15,18 @@ final class ObservationDemandTests: XCTestCase {
         XCTAssertFalse(demand.set("rules", wanted: false), "screen gone and sheet closed: nothing is observed")
     }
 
+    /// Missing evidence ▸ Tax years: the tab (one model with the standalone screen) appears before the standalone
+    /// screen disappears; its observation (the year's tax-figures-only list) must keep running.
+    func testIncomingScreenKeepsObservationWhenOutgoingScreenReleasesAfterIt() {
+        var demand = ObservationDemand()
+        let standalone = ObservationDemand.screenClaim(), tab = ObservationDemand.screenClaim()
+        XCTAssertNotEqual(standalone, tab)
+        demand.set(standalone, wanted: true)
+        demand.set(tab, wanted: true)
+        XCTAssertTrue(demand.set(standalone, wanted: false), "the Tax years tab still needs it")
+        XCTAssertFalse(demand.set(tab, wanted: false))
+    }
+
     func testClaimsAreIdempotent() {
         var demand = ObservationDemand()
         demand.set("screen", wanted: true)

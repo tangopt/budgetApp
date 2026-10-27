@@ -118,6 +118,8 @@ public enum TaxOverview {
         public var selfAssessment: SelfAssessment.Result?
         public var selfAssessmentError: String?
         public var filing: [SelfAssessmentFiling.Step] = []
+        /// The return and calculation against the previous year's (nil without return data for it).
+        public var comparison: TaxReturnComparison.Result?
     }
 
     /// The page of `personId`'s year for `propertyId` (default: the first property they own in
@@ -157,6 +159,15 @@ public enum TaxOverview {
         if includeSelfAssessment {
             (page.selfAssessment, page.selfAssessmentError) = SelfAssessmentOverview.selfAssessment(db: db, startYear: startYear, personId: personId)
             page.filing = page.selfAssessment.map(SelfAssessmentFiling.steps) ?? []
+            if let current = page.selfAssessment, UKTaxRules.forYear(startYear - 1) != nil,
+               let previous = try? SelfAssessment.compute(db: db, startYear: startYear - 1, personId: personId) {
+                var previousAccounts: RentalAccounts.Result?
+                if let propertyId = property?.id {
+                    previousAccounts = try? RentalAccounts.compute(db: db, taxYear: UKTaxYear(startYear: startYear - 1), personId: personId, propertyId: propertyId)
+                }
+                page.comparison = TaxReturnComparison.compare(previous: previous, current: current, previousAccounts: previousAccounts,
+                                                              currentAccounts: accounts)
+            }
         }
         return page
     }

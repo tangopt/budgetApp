@@ -45,6 +45,7 @@ let package = Package(
         .executableTarget(name: "CorrectSimarInvoiceTotals", dependencies: [core, grdb]),
         .executableTarget(name: "ReclassifyMortgageReceipts", dependencies: [core, grdb]),
         .executableTarget(name: "ReclassifyNewKinds", dependencies: [core, grdb]),
-        .executableTarget(name: "ImportTaxArchive", dependencies: [core, grdb])
+        .executableTarget(name: "ImportTaxArchive", dependencies: [core, grdb]),
+        .executableTarget(name: "TaxYear2025Fixes", dependencies: [core, grdb])
     ]
 )

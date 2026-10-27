@@ -2,42 +2,14 @@
 import SwiftUI
 import BudgetCore
 
-/// The Return, Calculation and Filing tabs of a tax year (plan phase 4 Task 4, UI polish §4.2),
+/// The Return and Calculation tabs of a tax year (plan phase 4 Task 4, UI polish §4.2),
 /// laid out from `SelfAssessment.Result` and `SelfAssessmentFiling`.
 ///
-/// Return: a panel per form (SA100, SA102, SA106, SA110) holding one table — box, description,
-/// the value right-aligned (whole pounds as the return takes them; SA110 in pence) — grouped
-/// by section like HMRC online, with one copy icon per row and a chevron to the calculation
-/// step behind the box.
-struct TaxReturnTab: View {
-    @ObservedObject var viewModel: TaxYearsViewModel
-    let page: TaxOverview.YearPage
-
-    var body: some View {
-        if let result = page.selfAssessment {
-            VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-                TaxSelfAssessmentWarnings(result: result, changedAfterFiling: page.row.changedAfterFiling)
-                Text("Box values are whole pounds, as the return takes them: income rounded down; expenses, tax paid, finance costs and losses rounded up. SA110 keeps pence. The copy icon puts a value on the clipboard as HMRC online takes it; the chevron shows how it's worked out.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                ForEach(SelfAssessment.Form.allCases, id: \.self) { form in
-                    let groups = result.boxGroups.filter { $0.form == form }
-                    if !groups.isEmpty {
-                        Panel("\(form.rawValue) · \(TaxReturnFormat.title(form))", subtitle: groups.count == 1 ? groups[0].section : nil) {
-                            DataTable(columns: TaxBoxTable.columns(boxWidth: 56, copy: viewModel.copy, why: { viewModel.showStep($0) }),
-                                      sections: groups.map { group in
-                                          DataTableSection(groups.count == 1 ? nil : group.section, rows: group.boxes.map(TaxBoxRow.init))
-                                      })
-                        }
-                    }
-                }
-            }
-        } else {
-            TaxSelfAssessmentUnavailable(page: page)
-        }
-    }
-}
-
+/// Return (one page, filing included): the status with the year's deadlines; HMRC online step by
+/// step, in the order it asks, each with its values — box, description, the value right-aligned
+/// (whole pounds as the return takes them; SA110 in pence), a copy icon, an "As filed" tag where
+/// the return differs from the computed figure and a chevron to the calculation step behind the
+/// box; the payments with their proofs.
 /// A return value as a table row: a box of the return or a value of a filing step.
 struct TaxBoxRow: Identifiable {
     let id: String
@@ -71,7 +43,8 @@ struct TaxBoxRow: Identifiable {
         self.value = value.value
         isWholePounds = value.isWholePounds
         copyText = value.copyText
-        step = nil
+        step = value.step
+        asFiled = value.asFiled
     }
 
     /// "box 14, Total rents and other receipts", for the copy icon's VoiceOver label.
@@ -258,6 +231,7 @@ struct TaxCalculationTab: View {
                 Panel("Step by step", subtitle: "How HMRC works it out; a Return box's chevron highlights its step") {
                     TaxStepsList(steps: result.steps, focused: viewModel.focusedStep?.title)
                 }
+                TaxComparisonPanel(comparison: page.comparison, previousLabel: UKTaxYear(startYear: page.row.year.startYear - 1).label)
             }
         } else {
             TaxSelfAssessmentUnavailable(page: page)
@@ -334,13 +308,15 @@ struct TaxStepsList: View {
     }
 }
 
-// MARK: - Filing
+// MARK: - Return
 
-/// Filing (UI polish §4.2): the status with the year's deadlines (day, amount, a pill saying
-/// done or how long is left) and the actions; HMRC online step by step, numbered, each with
-/// its deadline and the values to enter (one copy icon per row; the property's values grouped
-/// by section); the payments with their proofs.
-struct TaxFilingTab: View {
+/// The Return page (UI polish §4.2; the former Return and Filing tabs in one): the computation's
+/// warnings; the status with the year's deadlines (day, amount, a pill saying done or how long is
+/// left) and the actions; HMRC online step by step, numbered, each with its deadline, how to fill
+/// it and the values to enter (one copy icon per row; the property's values grouped by section;
+/// an "As filed" tag and a chevron to the calculation step where there is one); the payments with
+/// their proofs.
+struct TaxReturnTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
     @State private var recording: Identified<HMRCPayment>?
@@ -358,6 +334,7 @@ struct TaxFilingTab: View {
     var body: some View {
         if let result = page.selfAssessment {
             VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
+                TaxSelfAssessmentWarnings(result: result, changedAfterFiling: page.row.changedAfterFiling)
                 Panel("Status", subtitle: TaxReturnFormat.statusNote(page.row.status)) {
                     HStack(spacing: 8) {
                         // The one prominent action: Mark as filed until the return is filed,
@@ -385,9 +362,13 @@ struct TaxFilingTab: View {
                 Panel("File online with HMRC",
                       subtitle: "Each step as HMRC online asks for it, with the values to enter: return boxes in whole pounds, SA110 and HMRC's figures in pence") {
                     VStack(alignment: .leading, spacing: 0) {
+                        Text("The copy icon puts a value on the clipboard as HMRC online takes it; the chevron shows how it's worked out (Calculation). A value tagged As filed is the filed return's, not the computed one.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 12)
                         let sections = result.boxGroups.filter { $0.form == .sa106 }.map(\.section)
                         ForEach(page.filing) { step in
-                            TaxFilingStepView(step: step, isLast: step.id == page.filing.last?.id, sections: sections, copy: viewModel.copy)
+                            TaxFilingStepView(step: step, isLast: step.id == page.filing.last?.id, sections: sections, copy: viewModel.copy, why: { viewModel.showStep($0) })
                         }
                     }
                 }
@@ -456,6 +437,8 @@ struct TaxFilingStepView: View {
     /// The SA106 sections, whose name prefixes the property's values ("Land and property abroad · …").
     let sections: [String]
     let copy: (String) -> Void
+    /// Shows the calculation step behind a value.
+    var why: ((String) -> Void)? = nil
     @Environment(\.theme) private var theme
 
     private static let circle: CGFloat = 26
@@ -492,7 +475,7 @@ struct TaxFilingStepView: View {
                 Text(step.detail.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if !step.values.isEmpty {
-                    DataTable(columns: TaxBoxTable.columns(boxWidth: 84, copy: copy), sections: valueSections, showsHeader: false)
+                    DataTable(columns: TaxBoxTable.columns(boxWidth: 84, copy: copy, why: why), sections: valueSections, showsHeader: false)
                         .padding(.top, 2)
                 }
             }
@@ -539,7 +522,7 @@ enum TaxReturnFormat {
     /// What the status means for filing, under the Status title.
     static func statusNote(_ status: TaxYearStatus) -> String {
         switch status {
-        case .preparing: return "Preparing: check the Return tab, then file online with the steps below."
+        case .preparing: return "Preparing: check the figures in the steps below, then file online."
         case .ready: return "Ready to file: follow the steps below, then mark the return as filed."
         case .filed: return "Filed: record each payment with its proof; a balancing payment can mark the year as paid."
         case .paid: return "Filed and paid."

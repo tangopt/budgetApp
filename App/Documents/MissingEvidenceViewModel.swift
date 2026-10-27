@@ -116,12 +116,13 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     // MARK: Lifecycle
 
-    /// Starts observing (on appear): re-reads the choices and the tax years on offer.
-    func start() { claim("screen") }
+    /// Starts observing (on appear) for `screen` (its own `ObservationDemand.screenClaim()`: the standalone screen
+    /// and the Tax years tab share this model): re-reads the choices and the tax years on offer.
+    func start(_ screen: String) { claim(screen) }
 
-    /// Stops observing (on disappear), so imports elsewhere don't recompute the checklist.
-    /// A sheet still holding a claim keeps it running.
-    func stop() { release("screen") }
+    /// Stops observing for `screen` (on disappear), so imports elsewhere don't recompute the checklist.
+    /// Another screen or a sheet still holding a claim keeps it running.
+    func stop(_ screen: String) { release(screen) }
 
     /// `holder` (the screen, or a sheet it presents) needs the live checklist and rules.
     func claim(_ holder: String) {
