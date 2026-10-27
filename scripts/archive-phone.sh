@@ -101,10 +101,15 @@ mkdir -p "$OUT"
 xcodegen generate >"$LOG" 2>&1 || { tail -20 "$LOG"; echo "Archive FAILED (xcodegen)" >&2; exit 1; }
 
 scrub() { sed "s/$TEAM/<team>/g"; }
+# With the App Store Connect key, Xcode can register new identifiers and App Groups (the widget extension) while signing.
+AUTH=()
+if [ -n "${MANGO_ASC_KEY_FILE:-}" ] && [ -f "${MANGO_ASC_KEY_FILE:-}" ]; then
+  AUTH=(-authenticationKeyPath "$MANGO_ASC_KEY_FILE" -authenticationKeyID "$MANGO_ASC_KEY_ID" -authenticationKeyIssuerID "$MANGO_ASC_ISSUER_ID")
+fi
 echo "Archiving (build $BUILD_NUMBER)…"
 if ! xcodebuild archive -project Mango.xcodeproj -scheme MangoPhone -configuration Release \
     -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" \
-    -allowProvisioningUpdates DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
+    -allowProvisioningUpdates "${AUTH[@]}" DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
     CURRENT_PROJECT_VERSION="$BUILD_NUMBER" >>"$LOG" 2>&1; then
   grep -E " error:|ARCHIVE FAILED|Provisioning|No signing|certificate" "$LOG" | sort -u | scrub | head -20
   echo "Archive FAILED (log: $LOG, contains the team id; do not share)" >&2
@@ -115,7 +120,7 @@ EXPORT_PLIST="$OUT/ExportOptions.plist"
 make_export_plist "$EXPORT_PLIST" || { echo "Export FAILED (plist)" >&2; exit 1; }
 echo "Exporting…"
 if ! xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT" \
-    -exportOptionsPlist "$EXPORT_PLIST" -allowProvisioningUpdates >>"$LOG" 2>&1; then
+    -exportOptionsPlist "$EXPORT_PLIST" -allowProvisioningUpdates "${AUTH[@]}" >>"$LOG" 2>&1; then
   grep -E " error:|EXPORT FAILED|Provisioning|No signing|certificate|profile" "$LOG" | sort -u | scrub | head -20
   echo "Export FAILED (log: $LOG, contains the team id; do not share)" >&2
   exit 1
