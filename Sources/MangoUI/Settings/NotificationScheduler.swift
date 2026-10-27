@@ -38,6 +38,26 @@ public struct LedgerStore: @unchecked Sendable {
     }
 }
 
+/// Runs the notification center's operations one after another (each waits for the one before), so a clear is never
+/// overtaken by a refresh that started before it.
+@MainActor
+public final class NotificationOperations {
+    private var last: Task<Void, Never>?
+
+    public init() {}
+
+    @discardableResult
+    public func enqueue(_ operation: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        let previous = last
+        let task = Task {
+            await previous?.value
+            await operation()
+        }
+        last = task
+        return task
+    }
+}
+
 /// Keeps the notification center equal to the plan (step 7b spec §2.4).
 public enum NotificationScheduler {
     /// The key a scheduled notification's `userInfo` carries its tab link under (`WidgetLink`'s URL string).
@@ -56,13 +76,18 @@ public enum NotificationScheduler {
 
     /// Does nothing unless the person has allowed notifications (and never asks). Otherwise removes pending
     /// reminders no longer planned, replaces pending ones whose words changed, and adds the planned ones that are
-    /// neither pending nor already handed over.
-    public static func refresh(plan: [PlannedNotification], client: any NotificationCenterClient, ledger: LedgerStore) async {
+    /// neither pending nor already handed over. Stops as soon as `isCurrent` says a later refresh or a clear has
+    /// replaced this one (checked before every change).
+    public static func refresh(plan: [PlannedNotification], client: any NotificationCenterClient, ledger: LedgerStore,
+                               isCurrent: @escaping @MainActor @Sendable () -> Bool = { true }) async {
         guard await client.authorizationStatus() == .granted else { return }
         let reconciliation = NotificationReconciler.reconcile(planned: plan, pending: await client.pendingContent(), ledger: ledger.ids)
+        guard await isCurrent() else { return }
         if !reconciliation.remove.isEmpty { await client.remove(ids: reconciliation.remove) }
         var added: [String] = []
+        defer { ledger.insert(added) }
         for notification in reconciliation.add {
+            guard await isCurrent() else { return }
             do {
                 try await client.add(notification)
                 added.append(notification.id)
@@ -70,7 +95,6 @@ public enum NotificationScheduler {
                 continue
             }
         }
-        ledger.insert(added)
     }
 
     /// Removes everything pending (no one's figures stay scheduled once no iCloud user is bound to this iPhone).

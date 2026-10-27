@@ -35,6 +35,8 @@ final class PhoneOutputs: ObservableObject {
     @Published var pendingLink: PhoneTabLink?
 
     private let center: any NotificationCenterClient
+    /// Every notification-center change, one after another: a clear runs only once a refresh before it has stopped.
+    private let notificationOperations = NotificationOperations()
     private let ledger: LedgerStore
     private let store: (any WidgetSnapshotStore)?
     private let defaults: UserDefaults
@@ -131,7 +133,10 @@ final class PhoneOutputs: ObservableObject {
                 return
             }
             guard generation == self.generation else { return }
-            await NotificationScheduler.refresh(plan: plan, client: center, ledger: ledger)
+            notificationOperations.enqueue { [weak self] in
+                await NotificationScheduler.refresh(plan: plan, client: center, ledger: ledger,
+                                                    isCurrent: { generation == self?.generation })
+            }
         }
     }
 
@@ -152,7 +157,7 @@ final class PhoneOutputs: ObservableObject {
         generation += 1
         lastViewer = nil
         let center = center
-        Task { await NotificationScheduler.clear(client: center) }
+        notificationOperations.enqueue { await NotificationScheduler.clear(client: center) }
         guard let store else { return }
         do {
             try store.clear()

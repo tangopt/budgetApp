@@ -10,8 +10,19 @@ private actor FakeCenter: NotificationCenterClient {
     var pending: [String: String] = [:]
     private(set) var requests = 0
     private(set) var adds = 0
+    /// When set, reading what is pending waits until `resume()` (a refresh suspended mid-way).
+    var holds = false
+    private var gate: CheckedContinuation<Void, Never>?
 
     init(status: NotificationAuthorization) { self.status = status }
+
+    var isHeld: Bool { gate != nil }
+    func hold() { holds = true }
+    func resume() {
+        holds = false
+        gate?.resume()
+        gate = nil
+    }
 
     func authorizationStatus() async -> NotificationAuthorization { status }
     func requestAuthorization() async -> Bool {
@@ -19,7 +30,10 @@ private actor FakeCenter: NotificationCenterClient {
         status = .granted
         return true
     }
-    func pendingContent() async -> [String: String] { pending }
+    func pendingContent() async -> [String: String] {
+        if holds { await withCheckedContinuation { gate = $0 } }
+        return pending
+    }
     func add(_ notification: PlannedNotification) async throws {
         adds += 1
         pending[notification.id] = notification.content
@@ -113,6 +127,30 @@ final class NotificationsSettingsTests: XCTestCase {
         XCTAssertEqual(pending, ["bill": "T\nGas is due on 12 Nov 2026."])
         let adds = await center.adds
         XCTAssertEqual(adds, 2)
+    }
+
+    func testClearIsNotUndoneByARefreshInFlight() async throws {
+        let (ledger, cleanup) = try ledger()
+        defer { cleanup() }
+        let center = FakeCenter(status: .granted)
+        let operations = NotificationOperations()
+        var generation = 1
+        let current = generation
+        await center.hold()
+        operations.enqueue {
+            await NotificationScheduler.refresh(plan: [self.note("a")], client: center, ledger: ledger,
+                                                isCurrent: { @MainActor in current == generation })
+        }
+        while await !center.isHeld { await Task.yield() }
+        // Signed out while the refresh waits.
+        generation += 1
+        let cleared = operations.enqueue { await NotificationScheduler.clear(client: center) }
+        await center.resume()
+        await cleared.value
+        let pending = await center.pending
+        let adds = await center.adds
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(adds, 0)
     }
 
     func testAdminOnlyToggleHiddenForMember() {
