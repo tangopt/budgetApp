@@ -1319,7 +1319,7 @@ extension SnapshotContext {
     func missingEvidenceModel() async -> MissingEvidenceViewModel {
         let model = MissingEvidenceViewModel(dbQueue: dbQueue, library: library)
         model.periodChoice = .taxYear(2025)
-        model.start()
+        model.start("snapshot")
         await settle(0.8)
         return model
     }

@@ -235,15 +235,15 @@ public enum MissingEvidence {
     /// The items that can change a tax year's figures: those not `isForRecharges`.
     public static func affectingTaxFigures(_ items: [Item]) -> [Item] { items.filter { !$0.isForRecharges } }
 
-    /// The expense categories of any property mapped not deductible or Utilities (stored, else suggested by
-    /// name: `TaxExpenseTypeMap`; both are recharged to the tenant). A category some property claims (any other type) is left out.
+    /// The expense categories of any property mapped not deductible (stored, else suggested by
+    /// name: `TaxExpenseTypeMap`). A category some property claims (any other type) is left out.
     public static func notDeductibleExpenseCategoryIds(db: Database) throws -> Set<Int64> {
         var notDeductible: Set<Int64> = [], claimed: Set<Int64> = []
         for property in try Property.fetchAll(db) {
             guard let propertyId = property.id else { continue }
             for entry in try TaxExpenseTypeMap.entries(db: db, propertyId: propertyId) where entry.category.type == .expense {
                 guard let id = entry.category.id else { continue }
-                if entry.expenseType == .notDeductible || entry.expenseType == .utilities { notDeductible.insert(id) } else { claimed.insert(id) }
+                if entry.expenseType == .notDeductible { notDeductible.insert(id) } else { claimed.insert(id) }
             }
         }
         return notDeductible.subtracting(claimed)

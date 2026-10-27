@@ -32,6 +32,8 @@ struct MissingEvidenceView: View {
     @State private var exportDocument: MarkdownDocument?
     /// Sources whose rows are folded away.
     @State private var collapsed: Set<String> = []
+    /// This screen's claim on the shared model's observation (the standalone screen and the Tax years tab each hold one).
+    @State private var screenClaim = ObservationDemand.screenClaim()
     /// The side panel's library reads (made with the page).
     @StateObject private var panel: MissingEvidencePanelModel
 
@@ -72,11 +74,11 @@ struct MissingEvidenceView: View {
         }
         .checkingFiledYears(viewModel.isCheckingFiledYears)
         .onAppear {
-            viewModel.start()
+            viewModel.start(screenClaim)
             panel.start()
         }
         .onDisappear {
-            viewModel.stop()
+            viewModel.stop(screenClaim)
             panel.stop()
         }
         .screenToolbar {

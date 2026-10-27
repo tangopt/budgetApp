@@ -962,22 +962,4 @@ final class MissingEvidenceTests: XCTestCase {
         try db.write { try TaxExpenseTypeMap.set(db: $0, categoryId: utilities, expenseType: .otherExpense) }
         XCTAssertEqual(try items(year2025.interval).filter(\.isForRecharges).map(\.target), [.transaction(policy)])
     }
-
-    /// A category stored as the Utilities tax type (not "not deductible") is for recharges too, so a gas debit in it
-    /// stays out of a tax year's Missing evidence.
-    func testUtilitiesTypedCategoryIsLeftOutOfTaxYearChecklists() throws {
-        try db.write { db in
-            var property = Property(name: "Property A", country: "PT")
-            try Properties.save(db: db, &property)
-            try Properties.addCategoryGroup(db: db, propertyId: property.id!, categoryGroupId: lisbon)
-        }
-        let gas = try db.write { try self.insertCategory($0, "Gas", .expense, group: self.lisbon) }
-        try db.write { try TaxExpenseTypeMap.set(db: $0, categoryId: gas, expenseType: .utilities) }
-        try requirement("Property costs", .transactionsInCategoryGroup(groupId: lisbon), kinds: [.other])
-        let imiItem = try transaction(Self.date(2025, 5, 2), -31_250, category: imi)
-        let bill = try transaction(Self.date(2025, 5, 3), -4_800, category: gas)
-        let checklist = try db.read { try MissingEvidence.checklist(db: $0, period: self.year2025.interval, taxFiguresOnly: true) }
-        XCTAssertEqual(checklist.map { $0.target }, [MissingEvidence.Target.transaction(imiItem)])
-        XCTAssertTrue(try items(year2025.interval).contains { $0.target == .transaction(bill) && $0.isForRecharges })
-    }
 }
