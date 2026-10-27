@@ -42,6 +42,14 @@ public enum HouseholdCopy {
 
     public static let removeMessage = "Their devices stop syncing and delete the household's data. Your data stays on this Mac."
 
+    // MARK: Letting her make changes (step 8)
+
+    /// The share lets her write: what she changes is still limited by her Edit areas.
+    public static func editsAllowed(_ name: String) -> String { "\(name) can make changes within their permissions." }
+    /// The share is still read-only (a 7a share); followed by `blocker(_:alreadyShared: true)` lines when the upgrade is blocked.
+    public static func editsWaiting(_ name: String) -> String { "\(name) can view only for now:" }
+    public static func allowEditsButton(_ name: String) -> String { "Let \(name) make changes" }
+
     // MARK: The household key (Mac and member device, side by side)
 
     public static func keyRequestTitle(_ name: String) -> String { "\(name)'s device is asking for the household key." }

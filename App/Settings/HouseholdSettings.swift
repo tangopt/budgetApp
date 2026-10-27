@@ -9,6 +9,13 @@ enum HouseholdMemberState: Equatable {
     case notInvited, invited, joined, removed
 }
 
+/// Whether the household's share lets the joined member make changes (`HouseholdInvite.needsEditUpgrade`).
+enum HouseholdEdits: Equatable {
+    /// Read-only (a 7a share): "Let … make changes" upgrades it, behind the invite's gate.
+    case waiting
+    case allowed
+}
+
 /// What the pane shows (values only: the live controller and the snapshot routes both build one).
 struct HouseholdPaneState: Equatable {
     /// The member's name; nil: nobody added yet (the add form).
@@ -24,6 +31,8 @@ struct HouseholdPaneState: Equatable {
     var keyCode: String?
     /// The Mac isn't answering her requests for a while.
     var locked = false
+    /// Joined (step 8): whether the share lets her make changes yet; nil when she hasn't joined.
+    var edits: HouseholdEdits?
     var busy = false
     var error: String?
 
@@ -34,6 +43,7 @@ struct HouseholdPaneState: Equatable {
 struct HouseholdActions {
     var add: (_ unclaimedIndex: Int?, _ name: String) -> Void = { _, _ in }
     var invite: () -> Void = {}
+    var allowEdits: () -> Void = {}
     var remove: () -> Void = {}
     var give: () -> Void = {}
     var notNow: () -> Void = {}
@@ -77,12 +87,12 @@ private struct LiveHouseholdSettings: View {
             }
     }
 
-    /// The system share sheet for the household's share: read-only, specific people only.
+    /// The system share sheet for the household's share: read-write (step 8), specific people only.
     private func present(_ prompt: HouseholdController.SharePrompt) {
         guard let view = anchor.view else { controller.shareFailed(); return }
         let provider = NSItemProvider()
         provider.registerCKShare(prompt.share, container: prompt.container,
-                                 allowedSharingOptions: CKAllowedSharingOptions(allowedParticipantPermissionOptions: .readOnly,
+                                 allowedSharingOptions: CKAllowedSharingOptions(allowedParticipantPermissionOptions: .readWrite,
                                                                                 allowedParticipantAccessOptions: .specifiedRecipientsOnly))
         NSSharingServicePicker(items: [provider]).show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
     }
@@ -176,7 +186,10 @@ struct HouseholdPane: View {
                     Text(ambiguous).foregroundStyle(theme.pending).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if !state.blockers.isEmpty {
+            if let edits = state.edits {
+                editsRow(member, edits)
+            }
+            if !state.blockers.isEmpty && state.edits != .waiting {
                 LabeledContent("Not yet:") {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(state.blockers.enumerated()), id: \.offset) { _, line in
@@ -201,6 +214,27 @@ struct HouseholdPane: View {
         } else if state.locked {
             Section {
                 Text(HouseholdCopy.tooManyAttempts).foregroundStyle(theme.pending).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Joined: whether she can make changes; while the share is read-only, why the upgrade can't go yet (its blockers)
+    /// and the button that upgrades it. Nothing upgrades without that press.
+    @ViewBuilder private func editsRow(_ member: String, _ edits: HouseholdEdits) -> some View {
+        LabeledContent("Changes:") {
+            switch edits {
+            case .allowed:
+                Text(HouseholdCopy.editsAllowed(member)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            case .waiting:
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HouseholdCopy.editsWaiting(member)).fixedSize(horizontal: false, vertical: true)
+                    ForEach(Array(state.blockers.enumerated()), id: \.offset) { _, line in
+                        Text(line.figuresUnbroken).foregroundStyle(theme.pending).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(HouseholdCopy.allowEditsButton(member)) { actions.allowEdits() }
+                        .disabled(state.busy)
+                        .lineLimit(1).truncationMode(.middle)
+                }
             }
         }
     }

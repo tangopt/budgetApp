@@ -121,27 +121,67 @@ public enum HouseholdInvite {
     }
 
     /// The invite: the local gate, then the household's orphan files cleaned (`HouseholdOrphanFiles`), the server audit, then the household's zone-wide share (made once: a second
-    /// invite gets the same share back). Nothing is shared while anything blocks. A passing transport error (offline,
+    /// invite gets the same share back; step 8: read-write, and an existing read-only share is upgraded). Nothing is shared while anything blocks. A passing transport error (offline,
     /// busy) is `.offline`.
     public static func invite(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore, db: any DatabaseWriter,
                               title: String) async throws -> Result {
-        let local = try await db.read { db in try localBlockers(db: db) }
-        guard local.isEmpty else { return .blocked(local) }
         do {
-            // Final review I-1: files left by household document deletes before deletes took them go first.
-            try await HouseholdOrphanFiles.clean(transport: transport, keys: keys, db: db)
-            let violations = try await auditServer(transport: transport, keys: keys, db: db)
-            guard violations.isEmpty else { return .blocked([.householdAudit(violations.count)]) }
-            // Nothing changed here while the server was read.
-            let again = try await db.read { db in try localBlockers(db: db) }
-            guard again.isEmpty else { return .blocked(again) }
-            let share = try await transport.makeZoneShare(SyncZones.household, title: title)
-            // Inviting again: whoever was removed before may be bound once they accept this invitation.
-            try await db.write { db in try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [removedKey]) }
-            return .share(share)
+            let result = try await gated(transport: transport, keys: keys, db: db) {
+                try await transport.makeZoneShare(SyncZones.household, title: title)
+            }
+            if case .share = result {
+                // Inviting again: whoever was removed before may be bound once they accept this invitation.
+                try await db.write { db in try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [removedKey]) }
+            }
+            return result
         } catch let error as SyncTransportError where error.isPassing {
             return .blocked([.offline])
         }
+    }
+
+    // MARK: Letting her make changes (step 8)
+
+    /// Whether someone who has accepted the household's share can only read it (a 7a share, read-only then): the Mac
+    /// offers "Let … make changes" (`allowMemberEdits`) until the share is upgraded.
+    public static func needsEditUpgrade(_ share: SyncZoneShare?) -> Bool {
+        share?.participants.contains { $0.status == .accepted && !$0.canWrite } ?? false
+    }
+
+    /// The admin's press of "Let … make changes": the invite's gate (local blockers, orphan files, the server audit,
+    /// local again), then `makeZoneShare`, which upgrades the existing share in place (no public access, every
+    /// participant read-write). Nothing is changed while anything blocks, and when nobody on the share is read-only it
+    /// returns the share as it is, without a save. Never automatic: only this call upgrades a live share. A passing
+    /// transport error is `.offline`. Unlike `invite`, it leaves the record of who was removed as it is.
+    public static func allowMemberEdits(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore,
+                                        db: any DatabaseWriter, title: String) async throws -> Result {
+        do {
+            if let current = try await transport.zoneShare(SyncZones.household), !current.participants.contains(where: { !$0.canWrite }) {
+                return .share(current)
+            }
+            return try await gated(transport: transport, keys: keys, db: db) {
+                let share = try await transport.makeZoneShare(SyncZones.household, title: title)
+                log.notice("Household: share upgraded, \(share.participants.count, privacy: .public) participant(s) read-write")
+                return share
+            }
+        } catch let error as SyncTransportError where error.isPassing {
+            return .blocked([.offline])
+        }
+    }
+
+    /// The gate both the invite and the upgrade go through: local blockers, the household's orphan files cleaned, the
+    /// server audit, local blockers again, then `share`. Nothing reaches `share` while anything blocks.
+    private static func gated(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore, db: any DatabaseWriter,
+                              share: () async throws -> SyncZoneShare) async throws -> Result {
+        let local = try await db.read { db in try localBlockers(db: db) }
+        guard local.isEmpty else { return .blocked(local) }
+        // Final review I-1: files left by household document deletes before deletes took them go first.
+        try await HouseholdOrphanFiles.clean(transport: transport, keys: keys, db: db)
+        let violations = try await auditServer(transport: transport, keys: keys, db: db)
+        guard violations.isEmpty else { return .blocked([.householdAudit(violations.count)]) }
+        // Nothing changed here while the server was read.
+        let again = try await db.read { db in try localBlockers(db: db) }
+        guard again.isEmpty else { return .blocked(again) }
+        return .share(try await share())
     }
 
     // MARK: After the invite
