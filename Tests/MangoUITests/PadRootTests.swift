@@ -25,7 +25,7 @@ final class PadRootTests: XCTestCase {
         let phone = DemoRoutes.all.filter { !$0.pad }.map(\.name)
         XCTAssertEqual(phone.first, "gallery")
         XCTAssertFalse(phone.contains("pad-root"))
-        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["pad-root", "pad-property-overview", "pad-tenancies", "pad-bills", "pad-documents",
+        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["quick-edit-sheet-pad", "pad-root", "pad-property-overview", "pad-tenancies", "pad-bills", "pad-documents",
                                                                      "pad-recharges", "pad-rent-receipts", "pad-bills-refusal",
                                                                      "pad-missing-evidence", "pad-document-refusal"])
         // The routes before this task, in order.

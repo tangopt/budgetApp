@@ -17,7 +17,7 @@ public struct AccountDetail: Equatable, Sendable {
 /// account's own snapshots and transactions (filtered in SQL); both calculators filter by account themselves, so
 /// the result is the same as over everything. An account the viewer doesn't see in full (step 6) reads through
 /// `SharedActualsSource`: its balance points draw the chart, and only what the household shares of it is listed
-/// (never a summary). Read-only: updating a balance from the phone comes later.
+/// (never a summary). Read-only, but for Update balance on a manual account (step 7b, `QuickEditModel`).
 @MainActor
 public final class AccountDetailModel: ObservableObject {
     public enum State: Equatable, Sendable {
@@ -122,6 +122,8 @@ public final class AccountDetailModel: ObservableObject {
 public struct AccountDetailView: View {
     @ObservedObject var model: AccountDetailModel
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.quickEdit) private var quickEdit
+    @State private var canUpdateBalance = false
 
     public init(model: AccountDetailModel) {
         self.model = model
@@ -144,6 +146,17 @@ public struct AccountDetailView: View {
         .task {
             if case .idle = model.state { await model.load() }
         }
+        .task(id: model.accountId) { canUpdateBalance = await quickEdit?.canUpdateBalance(accountId: model.accountId) ?? false }
+        .toolbar {
+            // Absent (not disabled) unless this is a manual account the user may update.
+            if canUpdateBalance, let quickEdit {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Update balance") { quickEdit.balanceAccountId = model.accountId }
+                        .accessibilityIdentifier("update-balance")
+                }
+            }
+        }
+        .modifier(UpdateBalancePresenter(model: quickEdit, detail: model))
     }
 
     private var title: String {
@@ -256,5 +269,34 @@ enum AccountDetailCopy {
         func money(_ minorUnits: Int) -> String { MoneyPresentation.format(minorUnits, currency: currency) }
         return "From \(money(first.balanceMinorUnits)) on \(PhoneDateFormat.day(first.date)) "
             + "to \(money(last.balanceMinorUnits)) on \(PhoneDateFormat.day(last.date))"
+    }
+}
+
+/// Presents Update balance for the account the detail shows, where editing is on.
+private struct UpdateBalancePresenter: ViewModifier {
+    let model: QuickEditModel?
+    @ObservedObject var detail: AccountDetailModel
+
+    func body(content: Content) -> some View {
+        if let model {
+            content.modifier(Host(model: model, detail: detail))
+        } else {
+            content
+        }
+    }
+
+    private struct Host: ViewModifier {
+        @ObservedObject var model: QuickEditModel
+        @ObservedObject var detail: AccountDetailModel
+
+        func body(content: Content) -> some View {
+            content.sheet(isPresented: Binding(get: { model.balanceAccountId == detail.accountId },
+                                               set: { if !$0 { model.balanceAccountId = nil } })) {
+                if case let .loaded(loaded) = detail.state {
+                    UpdateBalanceSheet(accountId: detail.accountId, accountName: loaded.account.displayName, currency: loaded.account.currency,
+                                       today: model.currentDay, model: model)
+                }
+            }
+        }
     }
 }

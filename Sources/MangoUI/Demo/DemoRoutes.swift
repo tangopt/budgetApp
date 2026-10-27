@@ -81,7 +81,7 @@ public enum DemoRoutes {
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
     ] + HomeRoutes.all + MonthRoutes.all + AccountsRoutes.all + PropertyRoutes.all
-        + SearchRoutes.all + SyncRoutes.all + SharingRoutes.all + JoinRoutes.all + PadRoutes.all
+        + SearchRoutes.all + QuickEditRoutes.all + SyncRoutes.all + SharingRoutes.all + JoinRoutes.all + PadRoutes.all
 }
 
 /// Step 6's routes (Task 11): Settings' read-only Sharing section as the demo's admin (A); Accounts with A's lock

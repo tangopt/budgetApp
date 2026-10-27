@@ -36,6 +36,8 @@ public final class PhoneTabsModel: ObservableObject {
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
     public let padMissingEvidence: PadMissingEvidenceModel
+    /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
+    public let quickEdit: QuickEditModel
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -67,6 +69,10 @@ public final class PhoneTabsModel: ObservableObject {
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)
+        quickEdit.viewer = viewer
+        // After an edit saves, what it moved is read again: the figures, the lists, the queue.
+        quickEdit.onChange = { [weak self] in await self?.reloadAfterEdit() }
     }
 
     /// Whether the database has a property row, read off the main actor; nil when the read fails (the tab then stays
@@ -112,7 +118,16 @@ public final class PhoneTabsModel: ObservableObject {
         home.viewer = viewer
         month.viewer = viewer
         accounts.viewer = viewer
+        quickEdit.viewer = viewer
         return true
+    }
+
+    /// After a quick edit: the screens that show transactions read again, the open lists in place.
+    private func reloadAfterEdit() async {
+        await reloadViewerScreens()
+        await search.load()
+        await month.refreshTransactionLists()
+        await quickEdit.load()
     }
 
     private func reloadViewerScreens() async {
@@ -125,6 +140,7 @@ public final class PhoneTabsModel: ObservableObject {
     /// binding doesn't always see), so nothing re-presents after unlocking and a row opens again.
     public func dismissSheets() {
         search.detail = nil
+        quickEdit.dismissSheets()
     }
 }
 
@@ -177,6 +193,7 @@ public struct PhoneTabs: View {
         }
         // Each screen shows it under its navigation bar (`offlineBannerSlot`, `demoBannerSlot`).
         .environment(\.showsDemoData, isDemo)
+        .environment(\.quickEdit, model.quickEdit)
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }
