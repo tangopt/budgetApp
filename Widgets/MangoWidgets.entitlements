@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The widget extension (step 7b Task 7). Used only when Config/Signing.local.xcconfig names a team. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.ubberninja.mango</string>
+	</array>
+</dict>
+</plist>

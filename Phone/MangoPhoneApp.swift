@@ -130,7 +130,7 @@ struct PhoneRoot: View {
             guard let link = WidgetLink.tab(from: url), case .ready(_, let tabs) = stage else { return }
             showingSettings = false
             tabs.dismissSheets()
-            tabs.selection = link == .home ? .home : .month
+            tabs.open(link)
         }
     }
 

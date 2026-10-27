@@ -51,6 +51,12 @@ public struct PadRootView: View {
         .task(id: SyncReloadTrigger(syncStatus)) {
             await tabs.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }
+        .onChange(of: tabs.pendingLink, initial: true) { _, link in
+            // A widget's link (also one that arrived before this view did).
+            guard let link else { return }
+            selection = PadSection(link: link)
+            tabs.consumePendingLink()
+        }
         .onChange(of: tabs.hasProperty) { _, has in
             if !has, let current = selection, PadSection.propertySections.contains(current) { selection = .home }
         }

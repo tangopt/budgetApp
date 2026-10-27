@@ -76,7 +76,7 @@ final class PhoneOutputs: ObservableObject {
         generation += 1
         let (generation, settings, day) = (self.generation, self.settings, today())
         Task {
-            let snapshot: WidgetSnapshot
+            let snapshot: WidgetSnapshot?
             do {
                 snapshot = try await dbQueue.read { db in try WidgetSnapshot.make(db: db, viewer: viewer, today: day, settings: settings) }
             } catch {
@@ -85,6 +85,8 @@ final class PhoneOutputs: ObservableObject {
             }
             // Checked and written in one step on the main actor, so a clear meanwhile is never undone (a small file).
             guard generation == self.generation else { return }
+            // Nothing synced yet: no snapshot (a stale one goes).
+            guard let snapshot else { return clear() }
             do {
                 try store.write(snapshot)
             } catch {

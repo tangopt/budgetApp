@@ -81,6 +81,9 @@ if ! xcodebuild -project Mango.xcodeproj -scheme MangoPhone -configuration Debug
     exit 1
 fi
 [[ -d "$APP" ]] || { echo "Build failed: no app at $APP." >&2; exit 1; }
+# The override above renames the embedded widget extension too, so it no longer sits under the app's id; the harness
+# doesn't need it.
+rm -rf "$APP/PlugIns"
 
 echo "Rendering on $DEVICE_NAME ($UDID)…"
 xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true

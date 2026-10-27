@@ -14,6 +14,8 @@ public enum PhoneTab: Hashable, Sendable {
 @MainActor
 public final class PhoneTabsModel: ObservableObject {
     @Published public var selection: PhoneTab = .home
+    /// A widget's link not yet shown by the iPad's sidebar (`PadRootView` takes it and clears it).
+    @Published public private(set) var pendingLink: PhoneTabLink?
     /// Property is absent while the database has no property row (spec §3.9, permission None's analogue; ruling for
     /// step 4).
     @Published public private(set) var hasProperty: Bool
@@ -134,6 +136,17 @@ public final class PhoneTabsModel: ObservableObject {
         await home.load()
         await month.load()
         await accounts.load()
+    }
+
+    /// A widget's link: the iPhone's tab, and the iPad's sidebar section through `pendingLink`.
+    public func open(_ link: PhoneTabLink) {
+        selection = link == .home ? .home : .month
+        pendingLink = link
+    }
+
+    /// The iPad's sidebar has shown `pendingLink`.
+    public func consumePendingLink() {
+        pendingLink = nil
     }
 
     /// On a lock: closes the tabs' sheets in their state too (the cover window dismisses them in UIKit, which a

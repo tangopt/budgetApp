@@ -25,11 +25,12 @@ final class WidgetSnapshotTests: XCTestCase {
         let (manager, evidence) = try PhoneDemoFixture.build()
         defer { try? FileManager.default.removeItem(at: evidence) }
         let today = PhoneDemoFixture.today
-        let (snapshot, home) = try manager.dbQueue.read { db in
+        let (made, home) = try manager.dbQueue.read { db in
             let snapshot = try WidgetSnapshot.make(db: db, viewer: .demoAdmin, today: today, settings: PhoneOutputSettings())
             let input = try DashboardInput.load(db: db, today: today, actuals: try PhoneViewer.demoAdmin.actuals(db: db, today: today))
             return (snapshot, try HomeSummary.make(input, db: db))
         }
+        let snapshot = try XCTUnwrap(made)
         XCTAssertNotNil(snapshot.netWorthMinorUnits)
         XCTAssertEqual(snapshot.netWorthMinorUnits, home.netWorth.currentNetWorthMinorUnits)
         XCTAssertEqual(snapshot.leftToSpendMinorUnits, home.leftToSpendMinorUnits)
@@ -51,7 +52,7 @@ final class WidgetSnapshotTests: XCTestCase {
         func both(_ recordName: String) throws -> (WidgetSnapshot, HomeSummary) {
             try queue.read { db in
                 let viewer = PhoneViewer.iCloudUser(recordName: recordName)
-                let snapshot = try WidgetSnapshot.make(db: db, viewer: viewer, today: today, settings: PhoneOutputSettings())
+                let snapshot = try XCTUnwrap(WidgetSnapshot.make(db: db, viewer: viewer, today: today, settings: PhoneOutputSettings()))
                 let input = try DashboardInput.load(db: db, today: today, actuals: try viewer.actuals(db: db, today: today))
                 return (snapshot, try HomeSummary.make(input, db: db))
             }
@@ -79,8 +80,20 @@ final class WidgetSnapshotTests: XCTestCase {
              try WidgetSnapshot.make(db: db, viewer: .demoAdmin, today: PhoneDemoFixture.today,
                                      settings: PhoneOutputSettings(showFiguresOnLockScreen: true)))
         }
-        XCTAssertFalse(off.showFiguresOnLockScreen)
-        XCTAssertTrue(on.showFiguresOnLockScreen)
+        XCTAssertFalse(try XCTUnwrap(off).showFiguresOnLockScreen)
+        XCTAssertTrue(try XCTUnwrap(on).showFiguresOnLockScreen)
+    }
+
+    func testEmptyDatabaseMakesNoSnapshot() throws {
+        let queue = try TestDatabase.migrated()
+        let made = try queue.read { db in
+            try WidgetSnapshot.make(db: db, viewer: .iCloudUser(recordName: Self.admin), today: Self.day(2026, 9, 30), settings: PhoneOutputSettings())
+        }
+        XCTAssertNil(made, "Home's empty state: nothing synced yet")
+        let isEmpty = try queue.read { db in
+            try DashboardInput.load(db: db, today: Self.day(2026, 9, 30), actuals: try PhoneViewer.iCloudUser(recordName: Self.admin).actuals(db: db, today: Self.day(2026, 9, 30))).isEmpty
+        }
+        XCTAssertTrue(isEmpty)
     }
 
     func testSettingsDefaultOffAndAllNotificationsOn() throws {
@@ -124,6 +137,10 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(store.fileURL.lastPathComponent, "widget-snapshot.json")
         try store.write(sample(lockScreen: true))
         XCTAssertEqual(store.read(), sample(lockScreen: true))
+        #if os(iOS)
+        let protection = try FileManager.default.attributesOfItem(atPath: store.fileURL.path)[.protectionKey] as? FileProtectionType
+        XCTAssertEqual(protection, .completeUntilFirstUserAuthentication, "readable by the widget while locked")
+        #endif
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         XCTAssertEqual(leftovers, ["widget-snapshot.json"], "the overwrite leaves no temporary file")
 

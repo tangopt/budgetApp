@@ -37,9 +37,10 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
     }
 
     /// The snapshot on `today` for `viewer`: `DashboardInput.load` with the viewer's actuals, then `HomeSummary.make`,
-    /// as Home reads it.
-    public static func make(db: Database, viewer: PhoneViewer, today: Date, settings: PhoneOutputSettings) throws -> WidgetSnapshot {
+    /// as Home reads it. Nil when Home would show its empty state (nothing synced yet): the writer clears the snapshot.
+    public static func make(db: Database, viewer: PhoneViewer, today: Date, settings: PhoneOutputSettings) throws -> WidgetSnapshot? {
         let input = try DashboardInput.load(db: db, today: today, actuals: try viewer.actuals(db: db, today: today))
+        guard !input.isEmpty else { return nil }
         let home = try HomeSummary.make(input, db: db)
         return WidgetSnapshot(generatedAt: today, netWorthMinorUnits: home.netWorth.currentNetWorthMinorUnits,
                               leftToSpendMinorUnits: home.leftToSpendMinorUnits, paydayDate: home.paydayDate,
@@ -84,7 +85,8 @@ public struct FileWidgetSnapshotStore: WidgetSnapshotStore {
 
     public func write(_ snapshot: WidgetSnapshot) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(snapshot).write(to: fileURL, options: [.atomic])
+        // Readable while the device is locked (a lock-screen widget), once it has been unlocked since boot.
+        try JSONEncoder().encode(snapshot).write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     /// The stored snapshot; nil when there is none, it is unreadable, or of a version this build doesn't know.
