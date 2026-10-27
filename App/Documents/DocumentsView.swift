@@ -470,6 +470,12 @@ private struct DocumentsOverview: View {
     private var autoLinkedPanel: some View {
         if !viewModel.autoLinked.isEmpty {
             Panel("Linked automatically", subtitle: "Documents Mango linked to their payment after a sync") {
+                HStack {
+                    Spacer()
+                    Button("Dismiss all") { viewModel.dismissAutoLinks(viewModel.autoLinked.map(\.pair)) }
+                        .buttonStyle(.borderless).font(.callout)
+                        .accessibilityLabel("Dismiss the automatic links; the documents stay linked")
+                }
                 VStack(spacing: 6) {
                     ForEach(viewModel.autoLinked) { row in
                         HStack(spacing: 8) {
@@ -480,6 +486,9 @@ private struct DocumentsOverview: View {
                             Button("Undo") { viewModel.undoAutoLink(row.pair) }
                                 .buttonStyle(.borderless)
                                 .accessibilityLabel("Undo the link of \(row.documentName) to \(row.paymentText)")
+                            Button { viewModel.dismissAutoLinks([row.pair]) } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Dismiss \(row.documentName)")
                         }
                         .font(.callout)
                         .accessibilityElement(children: .contain)

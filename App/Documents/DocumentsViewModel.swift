@@ -70,9 +70,10 @@ final class DocumentsViewModel: ObservableObject {
         var id: String { pair.id }
     }
     @Published private(set) var autoLinked: [AutoLinkedRow] = []
-    /// The recent automatic links (document, payment), newest first. Not wired yet: the controller sets it to
-    /// `WaitingDocuments.recentAutoLinks` once that exists; nil shows no section.
-    var recentAutoLinkSource: (@Sendable (Database) throws -> [WaitingDocuments.Pair])?
+    /// The recent automatic links (document, payment), newest first (`WaitingDocuments.recentAutoLinks`); nil shows no section.
+    var recentAutoLinkSource: (@Sendable (Database) throws -> [WaitingDocuments.Pair])? = { db in
+        try WaitingDocuments.recentAutoLinks(db: db).map(\.pair)
+    }
 
     private var queryTask: Task<Void, Never>?
     private var indexGeneration = 0
@@ -284,12 +285,24 @@ final class DocumentsViewModel: ObservableObject {
 
     /// Takes an automatic link back (the guarded unlink, remembered so it is not made again).
     func undoAutoLink(_ pair: WaitingDocuments.Pair) {
-        let library = library
+        let dbQueue = dbQueue
         Task {
-            guard let result = await guarded({ try library.database.write { db in try WaitingDocuments.undo(db: db, pair, now: Date()) } }) else { return }
+            guard let result = await guarded({ try dbQueue.write(.documents, origin: .documentLink) { db in try WaitingDocuments.undo(db: db, pair, now: Date()) } }) else { return }
             errorMessage = result.failure?.localizedDescription
             loadAutoLinked()
             reloadIndex(select: selectedId)
+        }
+    }
+
+    /// The person has seen the automatic links: no longer listed (the links stay).
+    func dismissAutoLinks(_ pairs: [WaitingDocuments.Pair]) {
+        let dbQueue = dbQueue
+        Task {
+            guard let result = await guarded({ try dbQueue.write(.documents, origin: .documentLink) { db in
+                try WaitingDocuments.dismissRecentAutoLinks(db: db, pairs)
+            } }) else { return }
+            errorMessage = result.failure?.localizedDescription
+            loadAutoLinked()
         }
     }
 
