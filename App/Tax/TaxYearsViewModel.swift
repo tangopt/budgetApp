@@ -18,7 +18,6 @@ final class TaxYearsViewModel: ObservableObject {
         case accounts = "Rental accounts"
         case taxReturn = "Return"
         case calculation = "Calculation"
-        case filing = "Filing"
         case settings = "Settings"
         case manualItems = "Manual items"
         case missingEvidence = "Missing evidence"
@@ -26,7 +25,7 @@ final class TaxYearsViewModel: ObservableObject {
         var id: String { rawValue }
 
         /// The tabs that show the computed return (computed only while one of them shows).
-        var needsSelfAssessment: Bool { [.taxReturn, .calculation, .filing].contains(self) }
+        var needsSelfAssessment: Bool { [.taxReturn, .calculation].contains(self) }
     }
 
     /// The year on show.

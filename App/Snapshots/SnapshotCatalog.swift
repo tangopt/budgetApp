@@ -866,7 +866,7 @@ enum SnapshotCatalog {
                 models.taxYears.tab = tab
             }
         }
-        let filed = [TaxYearsViewModel.Tab.accounts, .taxReturn, .filing].map { tab in
+        let filed = [TaxYearsViewModel.Tab.accounts, .taxReturn].map { tab in
             screen("tax_years", "filed_" + tab.rawValue.lowercased().replacingOccurrences(of: " ", with: "_"),
                    "Tax years: \(tab.rawValue) (Person A, 2024/25, filed)", .taxYears, settle: 1.5) { models, context in
                 models.taxYears.selection = context.taxYear("Person A", 2024)

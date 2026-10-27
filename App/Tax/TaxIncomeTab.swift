@@ -322,7 +322,7 @@ struct IdentifiedRecord<Record>: Identifiable {
     subscript<Value>(dynamicMember keyPath: KeyPath<Record, Value>) -> Value { record[keyPath: keyPath] }
 }
 
-/// HMRC payments with their proofs (Income and Filing): the day, the payment and the year it's
+/// HMRC payments with their proofs (Income and Return): the day, the payment and the year it's
 /// for (its reference beneath), the amount (a refund negative), the proof — a paperclip, or a
 /// "No proof" pill — and edit and delete icons; by year with a total when they span two.
 struct HMRCPaymentsTable: View {

@@ -158,6 +158,23 @@ public enum SelfAssessmentFiling {
         public var label: String
         public var box: String?
         public var value: SelfAssessment.BoxValue
+        /// The calculation step behind the value ("Why?"), where it is a box of the return.
+        public var step: String? = nil
+        /// Set when the value is the return's, not the computed one.
+        public var asFiled: SelfAssessment.AsFiled? = nil
+
+        init(label: String, box: String?, value: SelfAssessment.BoxValue, step: String? = nil, asFiled: SelfAssessment.AsFiled? = nil) {
+            self.label = label
+            self.box = box
+            self.value = value
+            self.step = step
+            self.asFiled = asFiled
+        }
+
+        /// A box of the return as a value to enter, under `label` (default: the box's own).
+        init(_ box: SelfAssessment.Box, label: String? = nil, number: String? = nil) {
+            self.init(label: label ?? box.label, box: number ?? box.number, value: box.value, step: box.step, asFiled: box.asFiled)
+        }
     }
 
     public struct Step: Equatable, Identifiable, Sendable {
@@ -175,23 +192,25 @@ public enum SelfAssessmentFiling {
         steps.append(("Sign in to HMRC online",
                       "Go to gov.uk/log-in-file-self-assessment-tax-return and open the \(result.taxYear.label) return.", [], nil))
         var tailor: [Value] = []
-        if let box = result.box(.sa100, "Q1") { tailor.append(Value(label: "Employment: number of pages", box: nil, value: box.value)) }
-        if result.box(.sa100, "Q5") != nil { tailor.append(Value(label: "Foreign income (land and property abroad)", box: nil, value: .text("Yes"))) }
+        if let box = result.box(.sa100, "Q1") { tailor.append(Value(box, label: "Employment: number of pages")) }
+        if let box = result.box(.sa100, "Q5") { tailor.append(Value(box, label: "Foreign income (land and property abroad)")) }
         steps.append(("Tailor your return", "Answer the questions about what's in your return; everything else is No.", tailor, nil))
         for group in result.boxGroups where group.form == .sa102 {
-            steps.append((group.section, "Add an employment and enter the P60 / P45 and P11D figures.",
-                          group.boxes.map { Value(label: $0.label, box: $0.number, value: $0.value) }, nil))
+            steps.append((group.section, "Add an employment and enter the P60 / P45 and P11D figures: whole pounds, pay rounded down and tax taken off rounded up.",
+                          group.boxes.map { Value($0) }, nil))
         }
         let property = result.boxGroups.filter { $0.form == .sa106 }
         if !property.isEmpty {
-            steps.append(("Foreign: land and property abroad", "Under Foreign, enter the overseas property figures, then the Foreign Tax Credit Relief rows.",
-                          property.flatMap { group in group.boxes.map { Value(label: "\(group.section) · \($0.label)", box: $0.number, value: $0.value) } }, nil))
+            steps.append(("Foreign: land and property abroad",
+                          "Under Foreign, enter the overseas property figures, then the Foreign Tax Credit Relief rows. Amounts are in pounds sterling (foreign amounts at HMRC's average rate) and are your share of the property only; income is rounded down and expenses, finance costs and tax paid rounded up to whole pounds.",
+                          property.flatMap { group in group.boxes.map { Value($0, label: "\(group.section) · \($0.label)") } }, nil))
         }
-        steps.append(("Check HMRC's calculation", "HMRC's tax calculation should show these figures before you submit.", [
+        let liabilityBox = result.box(.sa110, c.selfAssessmentLiability >= 0 ? "1" : "2")
+        steps.append(("Check HMRC's calculation", "HMRC's tax calculation (SA110) should show these figures, in pounds and pence, before you submit.", [
             Value(label: "Income Tax due after tax reductions", box: nil, value: .amount(c.incomeTaxDue)),
             Value(label: "Tax deducted", box: nil, value: .amount(c.taxDeducted)),
             Value(label: c.selfAssessmentLiability >= 0 ? "Total tax due" : "Total tax overpaid", box: c.selfAssessmentLiability >= 0 ? "SA110 1" : "SA110 2",
-                  value: .amount(abs(c.selfAssessmentLiability)))
+                  value: .amount(abs(c.selfAssessmentLiability)), step: liabilityBox?.step, asFiled: liabilityBox?.asFiled)
         ], nil))
         steps.append(("Submit the return", "Submit online and keep the submission receipt; then mark the year as Filed.", [], deadlines.onlineReturnAndBalancingPayment))
         var pay = [Value(label: c.balancingPayment >= 0 ? "Balancing payment" : "Repayment due to you", box: nil, value: .amount(abs(c.balancingPayment)))]
