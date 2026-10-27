@@ -250,6 +250,14 @@ public struct GRDBSavedSiteStore: SavedSiteStore {
 /// The sites saved on this device before they were the household's (step 10, Task 5): moved into the household's
 /// store once, then forgotten here.
 public enum SavedSiteAdoption {
+    /// The strip while `local`'s sites still wait to move (a View-only member, a device not linked yet): the store's
+    /// sites, then this device's own whose address the store doesn't have, so hers don't vanish meanwhile.
+    public static func pending(_ saved: [SavedSite], local: [SavedSite]) -> [SavedSite] {
+        let known = Set(saved.map(\.url))
+        var seen = Set<URL>()
+        return saved + local.filter { !known.contains($0.url) && seen.insert($0.url).inserted }
+    }
+
     /// Saves each of `local`'s sites into `store` (after the store's own, in their order; an address the store has already
     /// is skipped) and empties `local`. True when nothing is left to adopt. A refused write (no Edit on Property, the
     /// device not linked yet) leaves `local` as it is, to try again later.

@@ -119,7 +119,13 @@ public final class BrowserModel {
             adopting = nil
         }
         do {
-            sites = try await store.all()
+            let saved = try await store.all()
+            // Not moved yet (no Edit on Property, or not linked): this device's own stay on the strip meanwhile.
+            if let local = adopting {
+                sites = SavedSiteAdoption.pending(saved, local: (try? await local.all()) ?? [])
+            } else {
+                sites = saved
+            }
         } catch {
             notice = "The saved sites couldn't be read."
         }

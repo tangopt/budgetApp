@@ -256,6 +256,29 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertFalse(browser.canEditSites, "Add and Remove are hidden")
     }
 
+    /// A View-only member's device can't move its own sites into the household's yet: the strip shows both (the
+    /// household's first, an address already there once) until the move is done.
+    func testPendingAdoptionShowsLocalSitesWithHouseholds() async throws {
+        let suite = "mango.tests.savedSites." + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let local = LocalSavedSiteStore(suiteName: suite)
+        try await local.save(SavedSite(name: "Water", url: try SavedSite.validate("water.example.test"), kind: .utility, sortOrder: 0))
+        try await local.save(SavedSite(name: "My bank", url: try SavedSite.validate("bank.example.test"), kind: .bank, sortOrder: 1))
+        let bank = SavedSite(name: "Bank", url: try SavedSite.validate("bank.example.test"), kind: .bank, sortOrder: 0)
+        let browser = model()
+        await browser.use(ViewOnlySites(sites: [bank]), adopting: local)
+        XCTAssertEqual(browser.sites.map(\.name), ["Bank", "Water"], "hers kept on the strip, the same address once")
+        let kept = try await local.all()
+        XCTAssertEqual(kept.count, 2, "still waiting to move")
+        // Once moved (Edit given back), the household's alone.
+        let household = MemorySites()
+        try await household.save(bank)
+        await browser.use(household, adopting: local)
+        XCTAssertEqual(browser.sites.map(\.name), ["Bank", "Water"])
+        let left = try await local.all()
+        XCTAssertEqual(left, [])
+    }
+
     /// Demo data's sites live in their own suite, never the device's (which the household adopts), and go on each purge
     /// (entering or leaving demo data, sign-out).
     func testDemoSitesKeptApartAndPurged() async throws {
