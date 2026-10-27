@@ -248,6 +248,44 @@ final class PhoneQuickEditsTests: XCTestCase {
         XCTAssertEqual(after.value, 0)
     }
 
+    /// A suggestion waiting for review: saving its own category confirms it, keeping how it was suggested.
+    private func suggested(_ account: String, _ date: Date, _ description: String, category: String) throws -> Int64 {
+        let id = try transaction(account, date, -2_000, description, category: category, categorizedBy: .rule)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE transaction_ SET status = 'pendingReview' WHERE id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM syncPending")
+        }
+        return id
+    }
+
+    func testSheetSavingSuggestedCategoryConfirmsIt() async throws {
+        let plumber = try suggested("flat", Self.day(2026, 10, 2), "PLUMBER", category: "repairs")
+        try await PhoneQuickEdits.categorise(writer: memberWriter, transactionId: plumber, categoryId: id("repairs"), note: nil)
+        let saved = try fetch(plumber)
+        XCTAssertEqual(saved.categoryId, id("repairs"))
+        XCTAssertEqual(saved.status, .confirmed)
+        XCTAssertEqual(saved.categorizedBy, .rule, "how it was suggested")
+        XCTAssertEqual(after.value, 1)
+    }
+
+    func testQuickSortConfirmsSuggestionAndUndoPutsItBackToReview() async throws {
+        let plumber = try suggested("flat", Self.day(2026, 10, 2), "PLUMBER", category: "repairs")
+        let empty = try transaction("flat", Self.day(2026, 10, 1), -1_000, "LOCKSMITH")
+        let queued = try await queueFor(.iCloudUser(recordName: Self.member), memberWriter)
+        XCTAssertEqual(queued.map(\.id), [plumber, empty])
+        XCTAssertEqual(queued.map(\.suggestedCategoryId), [id("repairs"), nil])
+        let before = try fetch(plumber)
+
+        let token = try await PhoneQuickEdits.pick(writer: memberWriter, card: queued[0], categoryId: id("repairs"))
+        XCTAssertEqual(try fetch(plumber).status, .confirmed)
+        let left = try await queueFor(.iCloudUser(recordName: Self.member), memberWriter)
+        XCTAssertEqual(left.map(\.id), [empty])
+
+        try await PhoneQuickEdits.undo(writer: memberWriter, token: token)
+        XCTAssertEqual(try fetch(plumber), before)
+        XCTAssertEqual(try fetch(plumber).status, .pendingReview)
+    }
+
     // MARK: Quick sort
 
     func testQuickSortQueueNewestFirstUncategorisedCurrentPayMonthOnly() async throws {
@@ -372,6 +410,43 @@ final class PhoneQuickEditsTests: XCTestCase {
                                                               asOf: asOf, note: nil)
         }
         XCTAssertEqual(error as? AccessDenied, AccessDenied(area: .budgetAndAccounts))
+    }
+
+    /// Her phone, an account of A's she sees only as category totals (made manual here): no Update balance, and a
+    /// write is refused even though she edits Budget & accounts.
+    func testManualBalanceOnAccountNotSeenInFullRefused() async throws {
+        let db = try TestDatabase.migrated()
+        let totals = try await db.write { db -> Int64 in
+            let f = try SharingFixture.build(db)
+            try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE personId = ?", arguments: [Self.member, f.personB])
+            try db.execute(sql: "UPDATE account SET trackingMode = 'manual' WHERE id = ?", arguments: [f.totals])
+            let memberUser = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [f.personB])!
+            try MemberPermissions.ensureDefaults(appUserId: memberUser, db: db)
+            try db.execute(sql: "UPDATE memberPermission SET level = 'edit' WHERE appUserId = ?", arguments: [memberUser])
+            try db.execute(sql: "DELETE FROM syncPending")
+            return f.totals
+        }
+        let counter = after!
+        let hers = DeviceWriter(db: db, viewer: { .iCloudUser(recordName: Self.member) }, afterWrite: { counter.bump() })
+        let budget = await hers.canEdit(.budgetAndAccounts)
+        XCTAssertTrue(budget)
+        let can = await PhoneQuickEdits.canUpdateBalance(accountId: totals, writer: hers, dbReader: db)
+        XCTAssertFalse(can)
+        func count() throws -> Int { try db.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM transaction_")! } }
+        let transactions = try count()
+        var outcome: BalanceUpdates.Outcome?
+        let error = await thrown {
+            outcome = try await PhoneQuickEdits.updateManualBalance(writer: hers, accountId: totals, enteredMinorUnits: 99_999,
+                                                                    asOf: Self.day(2026, 10, 1), note: nil)
+        }
+        XCTAssertEqual(error as? AccessDenied, AccessDenied(area: .budgetAndAccounts))
+        XCTAssertNil(outcome, "no difference returned")
+        XCTAssertEqual(try count(), transactions)
+        let confirmed = try await db.read { db in try Date.fetchOne(db, sql: "SELECT balanceConfirmedAt FROM account WHERE id = ?", arguments: [totals]) }
+        XCTAssertNil(confirmed)
+        let pending = try await db.read { db in try SyncChangeTracker.pending(db: db) }
+        XCTAssertEqual(pending, [])
+        XCTAssertEqual(after.value, 0)
     }
 
     func testImportedAccountBalanceUpdateRefused() async throws {

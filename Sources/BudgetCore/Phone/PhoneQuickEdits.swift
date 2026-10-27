@@ -38,17 +38,22 @@ public enum PhoneQuickEdits {
     // MARK: Categorise and note
 
     /// The categorise sheet's Save: category and note together (`TransactionEditing.update`), in the transaction's
-    /// area (`area(forTransaction:)`).
+    /// area (`area(forTransaction:)`). Saving a suggestion still waiting for review (`pendingReview`, the same
+    /// category) confirms it, keeping how it was suggested.
     public static func categorise(writer: DeviceWriter, transactionId: Int64, categoryId: Int64?, note: String?) async throws {
         let (area, edit) = try await writer.reader.read { db -> (AccessArea, String) in
             let area = try area(forTransaction: transactionId, db: db)
-            let current = try Transaction.fetchOne(db, key: transactionId)?.categoryId
-            guard let categoryId, categoryId != current else { return (area, "Edited by hand") }
+            let current = try Transaction.fetchOne(db, key: transactionId)
+            guard let categoryId, categoryId != current?.categoryId || current?.status == .pendingReview else { return (area, "Edited by hand") }
             guard let category = try Category.fetchOne(db, key: categoryId) else { throw TransactionEditError.categoryNotFound }
             return (area, DeviceWriteCopy.categorisedToast(category.name))
         }
         try await writer.writeCheckingFiledYears(area, edit: edit, scope: .categorising([transactionId], as: categoryId)) { db in
+            let before = try Transaction.fetchOne(db, key: transactionId)
             try TransactionEditing.update(db: db, id: transactionId, categoryId: categoryId, note: note)
+            if let before, let categoryId, before.categoryId == categoryId, before.status == .pendingReview {
+                try db.execute(sql: "UPDATE transaction_ SET status = ? WHERE id = ?", arguments: [TransactionStatus.confirmed.rawValue, transactionId])
+            }
         }
     }
 
@@ -64,19 +69,23 @@ public enum PhoneQuickEdits {
         /// In the account's currency, signed like `Transaction.amountMinorUnits`.
         public let amountMinorUnits: Int
         public let currency: Currency
+        /// The category suggested for it (waiting for review), offered as the first choice; nil when it has none.
+        public let suggestedCategoryId: Int64?
 
-        public init(id: Int64, description: String, accountName: String, date: Date, amountMinorUnits: Int, currency: Currency) {
+        public init(id: Int64, description: String, accountName: String, date: Date, amountMinorUnits: Int, currency: Currency,
+                    suggestedCategoryId: Int64? = nil) {
             self.id = id
             self.description = description
             self.accountName = accountName
             self.date = date
             self.amountMinorUnits = amountMinorUnits
             self.currency = currency
+            self.suggestedCategoryId = suggestedCategoryId
         }
     }
 
-    /// The quick-sort queue: the pay month's transactions with no category (the Uncategorized screen's, budget-facing),
-    /// newest first; only on accounts the viewer sees in full, and only those whose area the actor can edit
+    /// The quick-sort queue: the pay month's transactions with no category or a suggestion waiting for review (the
+    /// Uncategorized screen's, budget-facing), newest first; only on accounts the viewer sees in full, and only those whose area the actor can edit
     /// (`canEdit`, decided by the caller from `DeviceWriter.canEdit`).
     public static func quickSortQueue(db: Database, viewer: PhoneViewer, payMonth range: PayMonthReview.DayRange,
                                       canEdit: (AccessArea) -> Bool) throws -> [QuickSortCard] {
@@ -84,14 +93,15 @@ public enum PhoneQuickEdits {
         let accounts = Dictionary(try Account.fetchAll(db).filter(sharing.seesInFull).compactMap { account in account.id.map { ($0, account) } },
                                   uniquingKeysWith: { first, _ in first })
         let found = try UncategorizedTransactions.request
-            .filter(Column("categoryId") == nil && Column("date") >= range.start && Column("date") <= range.end)
+            .filter(Column("date") >= range.start && Column("date") <= range.end)
             .order(Column("date").desc, Column("id").desc)
             .fetchAll(db)
         return try found.compactMap { transaction in
             guard let id = transaction.id, let account = accounts[transaction.accountId],
                   canEdit(try area(forTransaction: id, db: db)) else { return nil }
             return QuickSortCard(id: id, description: transaction.rawDescription, accountName: account.displayName, date: transaction.date,
-                                 amountMinorUnits: transaction.amountMinorUnits, currency: account.currency)
+                                 amountMinorUnits: transaction.amountMinorUnits, currency: account.currency,
+                                 suggestedCategoryId: transaction.categoryId)
         }
     }
 
@@ -132,11 +142,14 @@ public enum PhoneQuickEdits {
 
     /// Update balance on a manual account (`BalanceUpdates.save`, in Budget & accounts): the difference becomes a
     /// Balance adjustment (Market movement for an investment) dated `asOf`. An account updated from statements
-    /// throws `QuickEditError.notManual` and writes nothing.
+    /// throws `QuickEditError.notManual`, and one the viewer doesn't see in full `AccessDenied`; neither writes anything.
     public static func updateManualBalance(writer: DeviceWriter, accountId: Int64, enteredMinorUnits: Int, asOf: Date,
                                            note: String?) async throws -> BalanceUpdates.Outcome {
+        let viewer = writer.viewerNow()
         let categoryId = try await writer.reader.read { db -> Int64? in
             guard let account = try Account.fetchOne(db, key: accountId) else { throw AccountEditError.accountNotFound }
+            // The other person's account seen below Everything: not hers to update.
+            guard try viewer.resolve(db: db).seesInFull(account) else { throw AccessDenied(area: .budgetAndAccounts) }
             guard account.trackingMode == .manual else { throw QuickEditError.notManual }
             return try BuiltInCategories.category(db: db, role: CategoryBuiltInRole.forAccount(kind: account.kind)).id
         }
