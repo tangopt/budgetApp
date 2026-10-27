@@ -350,6 +350,8 @@ final class PhoneSyncController: ObservableObject {
                                     keyStore: keyStore, documents: documents, mode: mode, viewer: viewer,
                                     householdIsShared: owner != nil)
         if mode != .readOnly { Self.log.info("Sync: this device writes (\(mode == .device(zones: [SyncZones.household]) ? "household" : "household and own", privacy: .public))") }
+        // This device doesn't run the waiting-documents job (the Mac does), so pulls needn't note their new rows.
+        SyncPulledRows.isRecording = false
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
         self.engine = engine

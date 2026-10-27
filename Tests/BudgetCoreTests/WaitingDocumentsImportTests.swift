@@ -329,6 +329,28 @@ final class WaitingDocumentsImportTests: XCTestCase {
     /// The admin's second Mac imports the debit; the Mac (its scheduler's `afterPull` the job, as `RealSync` sets it)
     /// pulls it and links the waiting bill, kept for "Linked automatically"; its push sends the link, an ordinary
     /// document link, back to the second Mac.
+    func testPulledRowsAreNotNotedOnADeviceThatDoesNotRunTheJob() throws {
+        defer { SyncPulledRows.isRecording = true }
+        let id = try db.write { db -> Int64 in
+            var account = Account(name: "Pulled", currency: .eur, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var batch = ImportBatch(accountId: account.id!, sourceFileName: "p.csv", importedAt: Date())
+            try batch.insert(db)
+            var t = Transaction(importBatchId: batch.id!, accountId: account.id!, date: Date(), rawDescription: "P", amountMinorUnits: -100,
+                                categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: UUID().uuidString)
+            try t.insert(db)
+            return t.id!
+        }
+        SyncPulledRows.isRecording = false
+        try db.write { db in try SyncPulledRows.record(table: Transaction.databaseTableName, localId: id, db: db) }
+        let none = try db.write { db in try SyncPulledRows.takeTransactions(db: db) }
+        XCTAssertEqual(none, [], "a device that doesn't run the job keeps no notes")
+        SyncPulledRows.isRecording = true
+        try db.write { db in try SyncPulledRows.record(table: Transaction.databaseTableName, localId: id, db: db) }
+        let some = try db.write { db in try SyncPulledRows.takeTransactions(db: db) }
+        XCTAssertEqual(some, [id])
+    }
+
     func testSyncMergeLinksWaitingBill() async throws {
         let setup = try await syncSetup()
         let h = setup.h

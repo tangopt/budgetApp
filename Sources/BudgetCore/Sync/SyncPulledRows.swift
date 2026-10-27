@@ -1,13 +1,23 @@
 import Foundation
 import GRDB
+import os
 
 /// The transactions a sync pull inserted on this device (step 9: the waiting documents are matched only against
 /// rows new here). Each insert of an incoming transaction (`SyncTranslator`) is noted in a connection-local TEMP
 /// table, so it is never synced nor stored, and a simulated apply that rolls back (`FiledYearSyncCheck`) takes its
 /// notes back with it; `takeTransactions` reads and clears them.
 public enum SyncPulledRows {
+    private static let recordingFlag = OSAllocatedUnfairLock(initialState: true)
+
+    /// Whether pulls note the transactions they add. On unless a device that doesn't run the linking job (the
+    /// iPhone and iPad) turns it off at launch, so its notes don't pile up for the session.
+    public static var isRecording: Bool {
+        get { recordingFlag.withLock { $0 } }
+        set { recordingFlag.withLock { $0 = newValue } }
+    }
+
     static func record(table: String, localId: Int64, db: Database) throws {
-        guard table == Transaction.databaseTableName else { return }
+        guard table == Transaction.databaseTableName, isRecording else { return }
         try db.execute(sql: "CREATE TEMP TABLE IF NOT EXISTS syncPulledTransaction (id INTEGER PRIMARY KEY)")
         try db.execute(sql: "INSERT OR IGNORE INTO temp.syncPulledTransaction (id) VALUES (?)", arguments: [localId])
     }
