@@ -36,6 +36,8 @@ struct HouseholdPaneState: Equatable {
     /// Joined: what she can do, area by area, as saved (`PermissionGrid`); nil: no grid shown.
     var grid: PermissionGrid?
     var busy = false
+    /// What's running, in plain words ("Checking the household…"), while the buttons wait.
+    var progress: String?
     var error: String?
 
     static let empty = HouseholdPaneState()
@@ -71,11 +73,16 @@ struct HouseholdSettings: View {
 
 private struct LiveHouseholdSettings: View {
     @ObservedObject var controller: HouseholdController
-    @State private var anchor = ShareAnchor()
+    @State private var presenter = HouseholdSharePresenter()
 
     var body: some View {
-        HouseholdPane(state: controller.state, actions: controller.actions)
-            .background(ShareAnchorView(anchor: anchor))
+        HouseholdPane(state: controller.state, actions: controller.actions, shareAnchor: presenter.anchor)
+            .onAppear {
+                // The controller shows the sheet itself once the share is ready (no state round trip through the view).
+                let presenter = presenter
+                controller.presenter = { prompt in presenter.present(prompt) }
+            }
+            .onDisappear { controller.presenter = nil }
             .task {
                 // Reads at once, then every few seconds while the pane is open (a request from her device appears).
                 while !Task.isCancelled {
@@ -83,21 +90,36 @@ private struct LiveHouseholdSettings: View {
                     try? await Task.sleep(for: .seconds(5))
                 }
             }
-            .onChange(of: controller.sharePrompt) { _, prompt in
-                guard let prompt else { return }
-                controller.sharePrompt = nil
-                present(prompt)
-            }
     }
+}
 
-    /// The system share sheet for the household's share: read-write (step 8), specific people only.
-    private func present(_ prompt: HouseholdController.SharePrompt) {
-        guard let view = anchor.view else { controller.shareFailed(); return }
+/// Shows the system share sheet for the household's share (read-write, specific people only), pointing at the
+/// "Invite…" button. The picker is kept while it shows.
+@MainActor
+final class HouseholdSharePresenter {
+    let anchor = ShareAnchor()
+    private var picker: NSSharingServicePicker?
+
+    /// False when there's no window to show it in (the pane says so).
+    func present(_ prompt: HouseholdController.SharePrompt) -> Bool {
+        guard let view = Self.target(anchor: anchor.view, fallback: NSApp.keyWindow ?? NSApp.mainWindow),
+              let window = view.window else { return false }
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
         let provider = NSItemProvider()
         provider.registerCKShare(prompt.share, container: prompt.container,
                                  allowedSharingOptions: CKAllowedSharingOptions(allowedParticipantPermissionOptions: .readWrite,
                                                                                 allowedParticipantAccessOptions: .specifiedRecipientsOnly))
-        NSSharingServicePicker(items: [provider]).show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        let picker = NSSharingServicePicker(items: [provider])
+        self.picker = picker
+        picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        return true
+    }
+
+    /// The view the sheet points at: the anchor when it's on screen with a size, else the window's content view.
+    static func target(anchor: NSView?, fallback: NSWindow?) -> NSView? {
+        if let anchor, anchor.window != nil, !anchor.bounds.isEmpty { return anchor }
+        return (anchor?.window ?? fallback)?.contentView
     }
 }
 
@@ -118,11 +140,15 @@ private struct ShareAnchorView: NSViewRepresentable {
 struct HouseholdPane: View {
     let state: HouseholdPaneState
     var actions = HouseholdActions()
+    /// Where the share sheet points (the live pane's "Invite…"); snapshot routes pass none.
+    var shareAnchor: ShareAnchor?
 
     /// Snapshot routes pass a draft already edited; otherwise it starts as the saved grid.
-    init(state: HouseholdPaneState, actions: HouseholdActions = HouseholdActions(), draft: PermissionGrid? = nil) {
+    init(state: HouseholdPaneState, actions: HouseholdActions = HouseholdActions(), draft: PermissionGrid? = nil,
+         shareAnchor: ShareAnchor? = nil) {
         self.state = state
         self.actions = actions
+        self.shareAnchor = shareAnchor
         _draft = State(initialValue: draft ?? state.grid)
     }
 
@@ -215,10 +241,20 @@ struct HouseholdPane: View {
             LabeledContent("") {
                 HStack {
                     if state.status != .joined {
-                        Button(HouseholdCopy.inviteButton) { actions.invite() }.disabled(state.busy)
+                        Button(HouseholdCopy.inviteButton) { actions.invite() }
+                            .disabled(state.busy)
+                            .background { if let shareAnchor { ShareAnchorView(anchor: shareAnchor) } }
                     }
                     if state.status == .invited || state.status == .joined {
                         Button(HouseholdCopy.removeButton) { confirmsRemove = true }.disabled(state.busy)
+                    }
+                }
+            }
+            if let progress = state.progress {
+                LabeledContent("") {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(progress).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

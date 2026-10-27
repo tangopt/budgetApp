@@ -34,6 +34,8 @@ public enum HouseholdCopy {
     public static let newPerson = "Someone new"
     public static let doTheseMatch = "Do these match?"
     public static let shareFailed = "Couldn't open the sharing sheet. Try again."
+    /// While "Invite…" runs the gate (the server audit can take a while).
+    public static let inviteChecking = "Checking the household with iCloud before inviting…"
     public static func syncingNotice(_ name: String) -> String { "Mango checks for \(name)'s acceptance each time it syncs." }
 
     public static let removeButton = "Remove from household…"
