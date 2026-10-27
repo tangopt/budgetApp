@@ -317,7 +317,16 @@ final class PhoneSyncController: ObservableObject {
             transport = CloudKitTransport()
         }
         // The decided mode on both idioms; documents on demand on the iPad only.
-        let mode = await decidedMode(owner: owner)
+        var mode = await decidedMode(owner: owner)
+        guard mine == engineGeneration, !isDemo else { return }
+        // The iPhone only read before step 7b: what it queued then is no one's edit and is not pushed (once per device).
+        do {
+            let discarded = try await SyncFirstWriter.prepare(mode: mode, wasReadOnly: !isPad, defaults: .standard, db: dbQueue)
+            if discarded > 0 { Self.log.notice("Sync: first run as a writer; \(discarded, privacy: .public) changes queued while read-only dropped") }
+        } catch {
+            Self.log.error("Sync: the read-only queue couldn't be dropped (\(String(describing: type(of: error)), privacy: .public)); read-only until the next start")
+            mode = .readOnly
+        }
         guard mine == engineGeneration, !isDemo else { return }
         let documents = isPad ? libraryRoot.map { SyncDocumentFiles(root: $0, policy: .lazy) } : nil
         let engine = SyncEngineCore(db: dbQueue, transport: transport,
