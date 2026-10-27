@@ -125,6 +125,7 @@ struct PhoneRoot: View {
             guard case .loading = stage else { return }
             await load()
         }
+        .onChange(of: outputs.pendingLink) { _, _ in openTappedReminder() }
         .onOpenURL { url in
             // The widget's link: Home or Month, over whatever was open.
             guard let link = WidgetLink.tab(from: url), case .ready(_, let tabs) = stage else { return }
@@ -132,6 +133,15 @@ struct PhoneRoot: View {
             tabs.dismissSheets()
             tabs.open(link)
         }
+    }
+
+    /// A tapped reminder's tab, over whatever was open (waits until the tabs exist, on a cold start).
+    private func openTappedReminder() {
+        guard let link = outputs.pendingLink, case .ready(_, let tabs) = stage else { return }
+        outputs.pendingLink = nil
+        showingSettings = false
+        tabs.dismissSheets()
+        tabs.open(link)
     }
 
     /// The widget's snapshot written again for this device's viewer (nothing in demo data, which clears it).
@@ -169,6 +179,7 @@ struct PhoneRoot: View {
             stage = .ready(environment, tabs)
             outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
             refreshOutputs()
+            openTappedReminder()
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
             stage = .failed(error.localizedDescription)
@@ -253,7 +264,9 @@ struct PhoneRoot: View {
         return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
-                             outputs: $outputs.settings)
+                             outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
+                             onAllowNotifications: { Task { await outputs.allowNotifications() } })
+            .task { await outputs.refreshNotificationAccess() }
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))

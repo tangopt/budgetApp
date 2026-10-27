@@ -1,4 +1,5 @@
 import CloudKit
+import UserNotifications
 import SwiftUI
 import UIKit
 import Combine
@@ -6,6 +7,12 @@ import MangoUI
 
 /// Gives the app's scene `PhoneSceneDelegate`, which owns the cover window.
 final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // Taps on reminders (the delegate must be set before launch ends); nothing is asked of the person here.
+        UNUserNotificationCenter.current().delegate = NotificationTapDelegate.shared
+        return true
+    }
+
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
