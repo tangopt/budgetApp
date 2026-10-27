@@ -9,6 +9,8 @@ struct PadMissingEvidenceView: View {
     @ObservedObject var write: PadWriteModel
     let syncStatus: SyncStatus
     @Environment(\.phoneTheme) private var theme
+    /// The document shown in the shared panel (a suggestion or attached document the user opened).
+    @State private var openDocumentId: Int64?
 
     var body: some View {
         NavigationStack {
@@ -24,6 +26,7 @@ struct PadMissingEvidenceView: View {
             await model.reload()
             await write.refresh()
         }
+        .onChange(of: model.selectedItemId) { _, _ in openDocumentId = nil }
     }
 
     private var list: some View {
@@ -83,9 +86,41 @@ struct PadMissingEvidenceView: View {
     @ViewBuilder
     private var detail: some View {
         if let item = model.selectedItem {
-            PadMissingEvidencePanel(item: item, model: model, write: write)
+            PadMissingEvidencePanel(item: item, model: model, write: write, openDocumentId: $openDocumentId)
+                .documentPanel(selection: $openDocumentId) { documentId in documentBlock(documentId, item: item) }
         } else {
             ContentUnavailableView("Select an item", systemImage: "checklist")
+        }
+    }
+}
+
+extension PadMissingEvidenceView {
+    /// Under an opened document's details: what it is to this item. A suggestion offers "Link to this item" (Edit on
+    /// Documents); a refusal shows under the item; an attached one says why it doesn't count, when it doesn't.
+    @ViewBuilder
+    fileprivate func documentBlock(_ documentId: Int64, item: MissingEvidence.Item) -> some View {
+        let attached = model.panel?.itemId == item.id ? model.panel?.attached.first { $0.id == documentId } : nil
+        let suggested = model.panel?.itemId == item.id ? model.panel?.suggestions.first { $0.id == documentId } : nil
+        VStack(alignment: .leading, spacing: 12) {
+            if let attached {
+                InlineBanner(tone: attached.counts ? .neutral : .amber,
+                             text: attached.explanation ?? "Attached to “\(item.title)”")
+            }
+            if let suggested {
+                Card(title: "Link this document") {
+                    if !suggested.reasons.isEmpty {
+                        Text(suggested.reasons.joined(separator: " · ").figuresUnbroken)
+                            .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.canLink {
+                        Button { Task { await model.link(documentId: documentId, to: item) } } label: {
+                            Text("Link to this item").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    PadRefusalBanner(message: write.message(for: PadMissingEvidenceModel.itemRow(item.id)))
+                }
+            }
         }
     }
 }

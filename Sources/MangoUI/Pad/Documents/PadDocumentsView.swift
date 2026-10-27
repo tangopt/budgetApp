@@ -1,28 +1,27 @@
 import SwiftUI
 import BudgetCore
 
-/// Documents on the iPad: the library on the left (search, All / Unlinked, grouped by kind), the selected document's
-/// detail on the right with a Quick Look preview. With Edit on Documents the detail offers Change kind…, Link to… and
-/// each link's Unlink (`PadDocumentActions`); a refusal shows under what it was made on. Nothing changes until an
-/// explicit button is pressed.
+/// Documents on the iPad: the library (search, All / Unlinked, grouped by kind) with the selected document in the shared
+/// document panel on the right (`DocumentPanel`: thumbnail, full view, details). With Edit on Documents the panel's own
+/// block offers Change kind…, Link to… and each link's Unlink (`PadDocumentActions`); a refusal shows under what it was
+/// made on. Nothing changes until an explicit button is pressed.
 struct PadDocumentsView: View {
     @ObservedObject var model: PadDocumentsModel
     @ObservedObject var actions: PadDocumentActions
     @ObservedObject var write: PadWriteModel
     let syncStatus: SyncStatus
     @Environment(\.phoneTheme) private var theme
-    @State private var showsPreview = false
     @State private var choice: PadChoiceRequest?
     @State private var kindEditor: KindEditor?
 
     var body: some View {
         NavigationStack {
-            HStack(alignment: .top, spacing: 0) {
-                list.frame(minWidth: 280, idealWidth: 360, maxWidth: 420)
-                Divider()
-                detail.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
-            .background(theme.background)
+            list
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.background)
+                .documentPanel(selection: $model.selectedId) { documentId in
+                    if let document = model.all.first(where: { $0.id == documentId }) { panelBlock(document) }
+                }
             .navigationTitle("Documents")
             .searchable(text: $model.query, prompt: "Search documents")
         }
@@ -35,14 +34,6 @@ struct PadDocumentsView: View {
             PadKindSheet(editor: editor, catalog: model.catalog, warning: actions.kindWarning) { kind in
                 await actions.changeKind(documentId: editor.documentId, to: kind)
             }
-        }
-        .sheet(isPresented: $showsPreview, onDismiss: { model.closePreview() }) {
-            #if canImport(UIKit)
-            if case .ready(let url) = model.preview { PadDocumentPreview(url: url).ignoresSafeArea() }
-            #endif
-        }
-        .onChange(of: model.preview) { _, preview in
-            if case .ready = preview { showsPreview = true }
         }
     }
 
@@ -65,7 +56,7 @@ struct PadDocumentsView: View {
                         Section(group.title) {
                             ForEach(group.documents) { document in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(document.displayName).lineLimit(2)
+                                    Text(document.displayName).lineLimit(2).truncationMode(.middle)
                                     Text(PhoneDateFormat.day(document.docDate)).font(.footnote).foregroundStyle(.secondary)
                                 }
                                 .tag(document.id)
@@ -78,59 +69,35 @@ struct PadDocumentsView: View {
         }
     }
 
+    /// Documents' own block under the panel's details: the view-only note, the edits (Change kind…, Link to…), a
+    /// refusal under the document, and each link with its Unlink (a refusal under the link).
     @ViewBuilder
-    private var detail: some View {
-        if let document = model.selected {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    PadWriteNotices(write: write)
-                    Text(document.displayName).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    Card {
-                        row("Kind", Text(model.catalog.displayName(of: document)))
-                        if actions.canEdit {
-                            HStack(spacing: 8) {
-                                Button("Change kind…") { kindEditor = KindEditor(documentId: document.id, name: document.displayName, kind: document.kindRef) }
-                                Button("Link to…") { linkTo(document) }
+    private func panelBlock(_ document: EvidenceDocumentSummary) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PadWriteNotices(write: write)
+            if actions.canEdit {
+                Card(title: "Edit") {
+                    HStack(spacing: 8) {
+                        Button("Change kind…") { kindEditor = KindEditor(documentId: document.id, name: document.displayName, kind: document.kindRef) }
+                        Button("Link to…") { linkTo(document) }
+                    }
+                    .buttonStyle(.bordered)
+                    PadRefusalBanner(message: write.message(for: PadDocumentActions.documentRow(document.id)))
+                    ForEach(model.links) { line in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(line.title.figuresUnbroken)
+                                    .lineLimit(2).truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("Unlink") { Task { await actions.unlink(documentId: document.id, line) } }
+                                    .buttonStyle(.bordered)
+                                    .accessibilityLabel("Unlink \(line.title)")
                             }
-                            .buttonStyle(.bordered)
-                        }
-                        PadRefusalBanner(message: write.message(for: PadDocumentActions.documentRow(document.id)))
-                        Divider()
-                        row("Date", DateText(document.docDate))
-                        if document.periodStart != nil || document.periodEnd != nil {
-                            Divider()
-                            row("Period", Text("\(PhoneDateFormat.day(document.periodStart)) – \(PhoneDateFormat.day(document.periodEnd))".figuresUnbroken))
+                            PadRefusalBanner(message: write.message(for: PadDocumentActions.linkRow(line.id)))
                         }
                     }
-                    Card(title: "Linked to") {
-                        if model.links.isEmpty {
-                            Text("Not linked to anything").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(model.links) { line in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(line.title.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
-                                            if let subtitle = line.subtitle { Text(subtitle).font(.footnote).foregroundStyle(.secondary) }
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        if actions.canEdit {
-                                            Button("Unlink") { Task { await actions.unlink(documentId: document.id, line) } }
-                                                .buttonStyle(.bordered)
-                                                .accessibilityLabel("Unlink \(line.title)")
-                                        }
-                                    }
-                                    PadRefusalBanner(message: write.message(for: PadDocumentActions.linkRow(line.id)))
-                                }
-                            }
-                        }
-                    }
-                    previewControl
                 }
-                .padding(20)
             }
-        } else {
-            ContentUnavailableView("Select a document", systemImage: "doc")
         }
     }
 
@@ -141,30 +108,6 @@ struct PadDocumentsView: View {
                                       currency: document.currency ?? .eur, choices: choices) { transactionId in
                 await actions.link(documentId: document.id, transactionId: transactionId)
             }
-        }
-    }
-
-    private func row<Value: View>(_ label: String, _ value: Value) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            value.multilineTextAlignment(.trailing)
-        }
-    }
-
-    @ViewBuilder
-    private var previewControl: some View {
-        switch model.preview {
-        case .downloading:
-            HStack { ProgressView(); Text(PadDocumentsModel.downloadingCopy) }
-        case .failed(let copy):
-            VStack(alignment: .leading, spacing: 8) {
-                InlineBanner(tone: .amber, text: copy)
-                Button("Try again") { Task { await model.openPreview() } }.buttonStyle(.bordered)
-            }
-        case .idle, .ready:
-            Button { Task { await model.openPreview() } } label: { Label("Preview", systemImage: "eye") }
-                .buttonStyle(.borderedProminent)
         }
     }
 }

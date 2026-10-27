@@ -9,6 +9,8 @@ struct PadMissingEvidencePanel: View {
     let item: MissingEvidence.Item
     @ObservedObject var model: PadMissingEvidenceModel
     @ObservedObject var write: PadWriteModel
+    /// Set to a document's id to show it in the document panel.
+    @Binding var openDocumentId: Int64?
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
@@ -75,7 +77,7 @@ struct PadMissingEvidencePanel: View {
                     .foregroundStyle(document.counts ? Color.secondary : Color.orange)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(document.document.displayName).fixedSize(horizontal: false, vertical: true)
+                    Text(document.document.displayName).lineLimit(2).truncationMode(.middle)
                     PadFlowRow {
                         Text(document.kindName).fixedSize(horizontal: false, vertical: true)
                         DateText(document.document.docDate, font: .footnote)
@@ -85,6 +87,8 @@ struct PadMissingEvidencePanel: View {
                         Text(explanation).font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                viewButton(document.id, name: document.document.displayName)
             }
         }
     }
@@ -99,7 +103,7 @@ struct PadMissingEvidencePanel: View {
             ForEach(panel.suggestions) { suggestion in
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(suggestion.document.displayName).fixedSize(horizontal: false, vertical: true)
+                        Text(suggestion.document.displayName).lineLimit(2).truncationMode(.middle)
                         PadFlowRow {
                             Text(suggestion.kindName).fixedSize(horizontal: false, vertical: true)
                             DateText(suggestion.document.docDate, font: .footnote)
@@ -114,10 +118,13 @@ struct PadMissingEvidencePanel: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    if model.canLink {
-                        Button("Link") { Task { await model.link(documentId: suggestion.id, to: item) } }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityLabel("Link \(suggestion.document.displayName)")
+                    HStack(spacing: 8) {
+                        viewButton(suggestion.id, name: suggestion.document.displayName)
+                        if model.canLink {
+                            Button("Link") { Task { await model.link(documentId: suggestion.id, to: item) } }
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityLabel("Link \(suggestion.document.displayName)")
+                        }
                     }
                 }
             }
@@ -127,6 +134,12 @@ struct PadMissingEvidencePanel: View {
                 Text("Looking in the library…").foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func viewButton(_ documentId: Int64, name: String) -> some View {
+        Button("View") { openDocumentId = documentId }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("View \(name)")
     }
 
     private func figureRow<Value: View>(_ label: String, _ value: Value) -> some View {

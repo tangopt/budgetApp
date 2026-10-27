@@ -47,6 +47,7 @@ public struct PadRootView: View {
         } detail: {
             detail(selection ?? .home)
                 .environment(\.showsDemoData, isDemo)
+                .environment(\.documentPanelSource, tabs.padDocuments.panelSource)
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await tabs.reload(for: PhoneTabsModel.reloadKey(syncStatus))

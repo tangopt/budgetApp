@@ -65,6 +65,19 @@ public final class PadDocumentsModel: ObservableObject {
         self.open = open
     }
 
+    /// What the document panel and full view read a document from: this library's database and `open` (read when a
+    /// document's file is asked for, so the hook the app sets later is the one used).
+    public var panelSource: DocumentPanelSource {
+        DocumentPanelSource(dbQueue: dbQueue, open: { [weak self] path in
+            guard let self else { throw PadDocumentNotOnDevice() }
+            let open = await self.open
+            return try await open(path)
+        }, localFile: panelLocalFile)
+    }
+
+    /// Files known to be on this iPad already, found without waiting (set by the snapshot routes only).
+    public var panelLocalFile: (@Sendable (String) -> URL?)?
+
     public var selected: EvidenceDocumentSummary? { all.first { $0.id == selectedId } }
 
     /// The documents the filter and search keep, grouped by kind title (titles A–Z; newest first inside).

@@ -74,6 +74,25 @@ public enum PadRoutes {
             }
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .missingEvidence, columns: .doubleColumn))
         },
+        // Step 10, Task 2: the shared document panel (thumbnail, buttons, details, Documents' edits) over the library, a
+        // linked document selected, and the full-view modal with its details open.
+        DemoRoute(name: "pad-document-panel", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            let tabs = editingTabs(context)
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            tabs.padDocuments.preload(snapshot)
+            if let document = linkedDocument(snapshot, context) {
+                tabs.padDocuments.selectedId = document.id
+                tabs.padDocuments.preload(links: PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-document-fullview", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            let tabs = editingTabs(context)
+            let snapshot = PadDocumentsModel.readNow(context.dbQueue)
+            let id = linkedDocument(snapshot, context)?.id ?? snapshot.all.first?.id ?? 0
+            return AnyView(DocumentFullView(documentId: id, showsDetails: true)
+                .environment(\.documentPanelSource, tabs.padDocuments.panelSource))
+        },
         // A filed-year refusal under a document's transaction link (Unlink refused), the edits offered.
         DemoRoute(name: "pad-document-refusal", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = editingTabs(context)
@@ -95,6 +114,14 @@ public enum PadRoutes {
         },
     ]
 
+    /// The newest document with a link and a date, an amount or a period to show.
+    @MainActor
+    static func linkedDocument(_ snapshot: PadDocumentsModel.Snapshot, _ context: PhoneDemoContext) -> EvidenceDocumentSummary? {
+        snapshot.all.first { document in
+            document.amountMinorUnits != nil && !PadDocumentsModel.linksNow(context.dbQueue, documentId: document.id).isEmpty
+        } ?? snapshot.all.first { !PadDocumentsModel.linksNow(context.dbQueue, documentId: $0.id).isEmpty }
+    }
+
     /// `tabs`, writing as the demo's admin (nothing is written by a render).
     @MainActor
     static func editingTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
@@ -110,7 +137,35 @@ public enum PadRoutes {
         let today = context.today
         let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: writer)
         tabs.padProperty.preload(PadPropertyModel.readNow(context.dbQueue, today: today))
+        #if canImport(UIKit)
+        // The demo's documents have no files: every one opens the same synthetic three-page PDF.
+        tabs.padDocuments.open = { _ in try SampleDocumentFile.url() }
+        tabs.padDocuments.panelLocalFile = { _ in try? SampleDocumentFile.url() }
+        #endif
         tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
         return tabs
     }
 }
+
+#if canImport(UIKit)
+/// A synthetic three-page PDF in the temporary folder, for the snapshot routes' document panel and full view.
+enum SampleDocumentFile {
+    static func url() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mango-sample-document.pdf")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let bounds = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
+            for page in 1...3 {
+                context.beginPage()
+                let title: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 28)]
+                "Sample document".draw(at: CGPoint(x: 48, y: 64), withAttributes: title)
+                "Page \(page) of 3".draw(at: CGPoint(x: 48, y: 110), withAttributes: [.font: UIFont.systemFont(ofSize: 16)])
+                UIColor.systemGray5.setFill()
+                for line in 0..<14 { UIBezierPath(rect: CGRect(x: 48, y: 170 + line * 40, width: line % 3 == 2 ? 300 : 499, height: 12)).fill() }
+            }
+        }
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+}
+#endif
