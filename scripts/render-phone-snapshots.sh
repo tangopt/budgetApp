@@ -11,7 +11,11 @@
 # This script copies them to <outDir>, prints the report's first two lines and uninstalls the snapshot build.
 # Never the phone's real data, the Keychain or iCloud: the snapshot build is unsigned and has no entitlements.
 #
-#   scripts/render-phone-snapshots.sh <outDir> [--only gallery,home]
+#   scripts/render-phone-snapshots.sh <outDir> [--device ipad] [--only gallery,home]
+#
+# --device ipad (step 8): boots IOS_SIM_DEVICE (default "iPad Pro 13-inch (M5)") and renders the iPad routes
+# (DemoRoute.pad) at 834×1194, 1194×834, 1032×1376 and 1376×1032, light and dark, at .large and .xxxLarge, as
+# <route>-<w>x<h>-<appearance>-<size>.png; the iPhone run skips them.
 #
 # <outDir> (relative to where you run it) must be new, empty, or an earlier output of this script (it holds a
 # .mango-phone-snapshots marker); its PNGs are replaced. IOS_SIM_DEVICE picks the simulator (default "iPhone 17"; a
@@ -20,7 +24,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -* ]]; then
-    echo "usage: $0 <outDir> [--only a,b]" >&2
+    echo "usage: $0 <outDir> [--device ipad] [--only a,b]" >&2
     exit 2
 fi
 OUT_ARG="$1"
@@ -45,6 +49,9 @@ DERIVED="$SCRATCH/dd-phone.noindex"
 BUNDLE_ID="ubberninja.mango.ios.snapshots"
 APP="$DERIVED/Build/Products/Debug-iphonesimulator/Mango.app"
 DEVICE_NAME="${IOS_SIM_DEVICE:-iPhone 17}"
+if [[ " $* " == *" --device ipad "* ]]; then
+    DEVICE_NAME="${IOS_SIM_DEVICE:-iPad Pro 13-inch (M5)}"
+fi
 
 # The simulator: a booted one with that name, else the first available one, booted now.
 UDID="$(xcrun simctl list devices available | grep -F "    $DEVICE_NAME (" | grep "(Booted)" | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)"

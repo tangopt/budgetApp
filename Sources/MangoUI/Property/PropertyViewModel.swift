@@ -77,6 +77,9 @@ public final class PropertyViewModel: ObservableObject {
         self.state = state
     }
 
+    /// Shows an already read state (the iPad snapshot routes' first frame).
+    public func preload(_ state: State) { self.state = state }
+
     /// Reads off the main actor. A failed read keeps what was shown (and says so).
     public func load() async {
         generation += 1

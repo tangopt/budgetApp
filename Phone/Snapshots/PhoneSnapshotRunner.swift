@@ -48,6 +48,13 @@ enum PhoneSnapshotRunner {
         exit(1)
     }
 
+    /// `--device ipad`: the iPad routes at the iPad window sizes (`PadRoutes.windowSizes`) instead of the iPhone's.
+    static var isPad: Bool {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--device"), index + 1 < arguments.count else { return false }
+        return arguments[index + 1] == "ipad"
+    }
+
     /// `--only a,b`: just those routes (by name).
     static var only: Set<String> {
         let arguments = CommandLine.arguments
@@ -91,10 +98,12 @@ enum PhoneSnapshotRunner {
         window.isHidden = false
 
         let only = only
-        let routes = DemoRoutes.all.filter { only.isEmpty || only.contains($0.name) }
+        let isPad = isPad
+        let candidates = DemoRoutes.all.filter { $0.pad == isPad }
+        let routes = candidates.filter { only.isEmpty || only.contains($0.name) }
         if !only.isEmpty, routes.count != only.count {
-            let known = Set(DemoRoutes.all.map(\.name))
-            fail("no route named \(only.subtracting(known).sorted().joined(separator: ", ")) (routes: \(DemoRoutes.all.map(\.name).joined(separator: ", ")))")
+            let known = Set(candidates.map(\.name))
+            fail("no route named \(only.subtracting(known).sorted().joined(separator: ", ")) (routes: \(candidates.map(\.name).joined(separator: ", ")))")
         }
 
         // Each route's assertion about its figures, before anything renders: a failure ends the run.
@@ -116,17 +125,23 @@ enum PhoneSnapshotRunner {
         // Two passes: the first screen as the person sees it (393×852), then the same width at full height
         // (393×4000) so everything below the fold is laid out and measured too; its PNGs, light only, are cropped
         // to the content.
-        for full in [false, true] {
+        // iPad: one pass per window size, no full-height pass (the sidebar's detail scrolls inside its column).
+        let passes: [(full: Bool, size: CGSize)] = isPad
+            ? PadRoutes.windowSizes.map { (false, $0) } : [(false, windowSize), (true, windowSize)]
+        for pass in passes {
+            let full = pass.full
+            let frameSize = full ? fullSize : pass.size
             for route in routes {
                 for appearance in appearances {
                     for size in route.sizes {
-                        let name = "\(route.name)-\(appearance.name)-\(String(describing: size))" + (full ? "-full" : "")
+                        let name = "\(route.name)-" + (isPad ? "\(Int(pass.size.width))x\(Int(pass.size.height))-" : "")
+                            + "\(appearance.name)-\(String(describing: size))" + (full ? "-full" : "")
                         probe.reset()
                         window.overrideUserInterfaceStyle = appearance.style
                         let root = route.make(context)
                             .environment(\.dynamicTypeSize, size)
                             .environment(\.phoneTheme, .classic)
-                        window.frame = CGRect(origin: .zero, size: full ? fullSize : windowSize)
+                        window.frame = CGRect(origin: .zero, size: frameSize)
                         window.rootViewController = UIHostingController(rootView: root)
                         window.layoutIfNeeded()
                         await settle(probe)
@@ -140,12 +155,12 @@ enum PhoneSnapshotRunner {
                         }
                         violations += probe.violations(route: name, window: window.bounds.size)
                         let render = WrapProbeRegistry.Render(name: name, checked: probe.checkedCount,
-                                                              belowFold: probe.checkedCount(below: windowSize.height))
+                                                              belowFold: probe.checkedCount(below: pass.size.height))
                         renders.append(render)
                         if let problem = route.coverageProblem(render: render, full: full) { problems.append(problem) }
                         if !full || appearance.style == .light {
-                            let height = full ? contentHeight(window, lowestFigure: probe.lowestFigure) : windowSize.height
-                            write(window, height: height, offScreen: full, to: "\(name).png")
+                            let height = full ? contentHeight(window, lowestFigure: probe.lowestFigure) : pass.size.height
+                            write(window, size: CGSize(width: pass.size.width, height: height), offScreen: full, to: "\(name).png")
                         }
                         window.rootViewController = nil
                     }
@@ -154,7 +169,7 @@ enum PhoneSnapshotRunner {
         }
         probe.isActive = false
         if renders.reduce(0, { $0 + $1.checked }) == 0 { problems.append("the run measured no figures at all") }
-        let report = WrapProbeRegistry.report(violations, renders: renders, problems: problems, window: windowSize, checks: checks)
+        let report = WrapProbeRegistry.report(violations, renders: renders, problems: problems, window: isPad ? PadRoutes.windowSizes[0] : windowSize, checks: checks)
         do {
             try report.write(to: outDir.appendingPathComponent("wrap-report.txt"), atomically: true, encoding: .utf8)
         } catch {
@@ -187,8 +202,8 @@ enum PhoneSnapshotRunner {
 
     /// The top `height` points of the window as `<outDir>/<file>`. A window taller than the screen (`offScreen`)
     /// is drawn from its layers: the screen-capture path (`drawHierarchy`) draws nothing past the display.
-    private static func write(_ window: UIWindow, height: CGFloat, offScreen: Bool, to file: String) {
-        let image = UIGraphicsImageRenderer(size: CGSize(width: window.bounds.width, height: height)).image { context in
+    private static func write(_ window: UIWindow, size: CGSize, offScreen: Bool, to file: String) {
+        let image = UIGraphicsImageRenderer(size: size).image { context in
             if offScreen {
                 window.layer.render(in: context.cgContext)
             } else {

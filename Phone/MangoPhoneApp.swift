@@ -171,7 +171,11 @@ struct PhoneRoot: View {
     @ViewBuilder
     private func content(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         if environment.isDemo {
-            PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            } else {
+                PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            }
         } else if let joining = sync.joinState {
             // Joining the household (a member's device), or just removed from it.
             HouseholdJoinView(state: joining, onRetry: { sync.retryJoin() }, onStartAgain: { sync.startKeyExchangeAgain() },
@@ -184,8 +188,13 @@ struct PhoneRoot: View {
             // Nothing of the household's here yet: the Mac hasn't shared the zone, or sync is off in this build.
             FirstDownloadView(received: 0, waiting: true, actions: waitingActions)
         } else {
-            PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
-                      onSettings: { showingSettings = true })
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
+                            onSettings: { showingSettings = true })
+            } else {
+                PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
+                          onSettings: { showingSettings = true })
+            }
         }
     }
 
