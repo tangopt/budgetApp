@@ -10,6 +10,12 @@ public struct PlannedNotification: Equatable, Identifiable, Sendable {
     public var title: String
     public var body: String
     public var link: PhoneTabLink
+
+    /// The words as the notification center holds them (`NotificationCenterClient.pendingContent`): a pending
+    /// reminder whose words differ from the plan's is replaced.
+    public var content: String { Self.content(title: title, body: body) }
+
+    public static func content(title: String, body: String) -> String { title + "\n" + body }
 }
 
 /// The reminders for the device's viewer (step 7b spec §2.4), read from Home's and Property's own models, none
@@ -102,10 +108,14 @@ public struct NotificationReconciliation: Equatable, Sendable {
 public enum NotificationReconciler {
     /// `remove`: pending ids no longer planned (the rent arrived, the bill was paid, the setting went off). `add`:
     /// planned reminders neither pending nor in the `ledger` (every id the app has ever handed to the notification
-    /// center), so a reminder that already fired is never sent again.
-    public static func reconcile(planned: [PlannedNotification], pending: Set<String>, ledger: Set<String>) -> NotificationReconciliation {
+    /// center), so a reminder that already fired is never sent again. A pending reminder whose words (`pending`, id →
+    /// `PlannedNotification.content`) differ from the plan's (the lock-screen figures went off) is in both: it never
+    /// fired, so the ledger does not hold it back.
+    public static func reconcile(planned: [PlannedNotification], pending: [String: String], ledger: Set<String>) -> NotificationReconciliation {
         let plannedIds = Set(planned.map(\.id))
-        return NotificationReconciliation(add: planned.filter { !pending.contains($0.id) && !ledger.contains($0.id) },
-                                          remove: pending.subtracting(plannedIds).sorted())
+        let changed = planned.filter { note in pending[note.id].map { $0 != note.content } ?? false }
+        let changedIds = Set(changed.map(\.id))
+        return NotificationReconciliation(add: planned.filter { changedIds.contains($0.id) || (pending[$0.id] == nil && !ledger.contains($0.id)) },
+                                          remove: Set(pending.keys).subtracting(plannedIds).union(changedIds).sorted())
     }
 }

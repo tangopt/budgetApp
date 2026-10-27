@@ -6,7 +6,8 @@ import SwiftUI
 /// In-memory notification center: counts what the app asks of it, schedules nothing for real.
 private actor FakeCenter: NotificationCenterClient {
     var status: NotificationAuthorization
-    var pending: Set<String> = []
+    /// id → words (`PlannedNotification.content`).
+    var pending: [String: String] = [:]
     private(set) var requests = 0
     private(set) var adds = 0
 
@@ -18,12 +19,12 @@ private actor FakeCenter: NotificationCenterClient {
         status = .granted
         return true
     }
-    func pendingIds() async -> Set<String> { pending }
+    func pendingContent() async -> [String: String] { pending }
     func add(_ notification: PlannedNotification) async throws {
         adds += 1
-        pending.insert(notification.id)
+        pending[notification.id] = notification.content
     }
-    func remove(ids: [String]) async { pending.subtract(ids) }
+    func remove(ids: [String]) async { for id in ids { pending[id] = nil } }
 }
 
 /// Step 7b Task 9: reminders scheduled from the plan, asked for only in Settings ▸ Notifications.
@@ -35,8 +36,8 @@ final class NotificationsSettingsTests: XCTestCase {
         return (LedgerStore(defaults: defaults), { defaults.removePersistentDomain(forName: suite) })
     }
 
-    private func note(_ id: String, kind: NotificationKind = .billDue, link: PhoneTabLink = .home) -> PlannedNotification {
-        PlannedNotification(id: id, kind: kind, fireDate: Date(timeIntervalSince1970: 1_800_000_000), title: "T", body: "B", link: link)
+    private func note(_ id: String, kind: NotificationKind = .billDue, link: PhoneTabLink = .home, body: String = "B") -> PlannedNotification {
+        PlannedNotification(id: id, kind: kind, fireDate: Date(timeIntervalSince1970: 1_800_000_000), title: "T", body: body, link: link)
     }
 
     func testNoPermissionPromptAtLaunchOrRefresh() async throws {
@@ -67,7 +68,7 @@ final class NotificationsSettingsTests: XCTestCase {
         await center.add(ids: ["stale"])
         await NotificationScheduler.refresh(plan: [note("a"), note("b")], client: center, ledger: ledger)
         let pending = await center.pending
-        XCTAssertEqual(pending, ["a", "b"])
+        XCTAssertEqual(Set(pending.keys), ["a", "b"])
         XCTAssertEqual(ledger.ids, ["a", "b"])
     }
 
@@ -98,7 +99,20 @@ final class NotificationsSettingsTests: XCTestCase {
         // The planner leaves the kind out once its setting is off; the scheduler then removes what was pending.
         await NotificationScheduler.refresh(plan: plan.filter { settings.notifications.contains($0.kind) }, client: center, ledger: ledger)
         let pending = await center.pending
-        XCTAssertEqual(pending, ["tax"])
+        XCTAssertEqual(Set(pending.keys), ["tax"])
+    }
+
+    func testFiguresTurnedOffReplacesPendingWithWordsWithoutTheAmount() async throws {
+        let (ledger, cleanup) = try ledger()
+        defer { cleanup() }
+        let center = FakeCenter(status: .granted)
+        await NotificationScheduler.refresh(plan: [note("bill", body: "Gas is due on 12 Nov 2026. £5.00")], client: center, ledger: ledger)
+        // "Show figures on the lock screen" off: the planner's words drop the amount; the pending one is replaced.
+        await NotificationScheduler.refresh(plan: [note("bill", body: "Gas is due on 12 Nov 2026.")], client: center, ledger: ledger)
+        let pending = await center.pending
+        XCTAssertEqual(pending, ["bill": "T\nGas is due on 12 Nov 2026."])
+        let adds = await center.adds
+        XCTAssertEqual(adds, 2)
     }
 
     func testAdminOnlyToggleHiddenForMember() {
@@ -130,5 +144,5 @@ final class NotificationsSettingsTests: XCTestCase {
 }
 
 private extension FakeCenter {
-    func add(ids: [String]) { pending.formUnion(ids) }
+    func add(ids: [String]) { for id in ids { pending[id] = "T\nB" } }
 }

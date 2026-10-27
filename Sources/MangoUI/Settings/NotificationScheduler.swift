@@ -12,7 +12,8 @@ public protocol NotificationCenterClient: Sendable {
     func authorizationStatus() async -> NotificationAuthorization
     /// Asks the system for permission (the prompt appears only the first time). Called only from Settings.
     func requestAuthorization() async -> Bool
-    func pendingIds() async -> Set<String>
+    /// Every pending request: id → its words (`PlannedNotification.content`).
+    func pendingContent() async -> [String: String]
     func add(_ notification: PlannedNotification) async throws
     func remove(ids: [String]) async
 }
@@ -54,10 +55,11 @@ public enum NotificationScheduler {
     }
 
     /// Does nothing unless the person has allowed notifications (and never asks). Otherwise removes pending
-    /// reminders no longer planned and adds the planned ones that are neither pending nor already handed over.
+    /// reminders no longer planned, replaces pending ones whose words changed, and adds the planned ones that are
+    /// neither pending nor already handed over.
     public static func refresh(plan: [PlannedNotification], client: any NotificationCenterClient, ledger: LedgerStore) async {
         guard await client.authorizationStatus() == .granted else { return }
-        let reconciliation = NotificationReconciler.reconcile(planned: plan, pending: await client.pendingIds(), ledger: ledger.ids)
+        let reconciliation = NotificationReconciler.reconcile(planned: plan, pending: await client.pendingContent(), ledger: ledger.ids)
         if !reconciliation.remove.isEmpty { await client.remove(ids: reconciliation.remove) }
         var added: [String] = []
         for notification in reconciliation.add {
@@ -73,7 +75,7 @@ public enum NotificationScheduler {
 
     /// Removes everything pending (no one's figures stay scheduled once no iCloud user is bound to this iPhone).
     public static func clear(client: any NotificationCenterClient) async {
-        let pending = await client.pendingIds()
-        if !pending.isEmpty { await client.remove(ids: pending.sorted()) }
+        let pending = await client.pendingContent()
+        if !pending.isEmpty { await client.remove(ids: pending.keys.sorted()) }
     }
 }

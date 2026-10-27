@@ -18,8 +18,10 @@ struct SystemNotificationCenter: NotificationCenterClient {
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
-    func pendingIds() async -> Set<String> {
-        Set(await UNUserNotificationCenter.current().pendingNotificationRequests().map(\.identifier))
+    func pendingContent() async -> [String: String] {
+        let requests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        return Dictionary(requests.map { ($0.identifier, PlannedNotification.content(title: $0.content.title, body: $0.content.body)) },
+                          uniquingKeysWith: { first, _ in first })
     }
 
     func add(_ notification: PlannedNotification) async throws {

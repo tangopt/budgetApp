@@ -288,6 +288,18 @@ final class NotificationPlannerTests: XCTestCase {
         XCTAssertFalse(billOff.body.contains("£"))
     }
 
+    func testFiguresTurnedOffReplacesThePendingReminder() throws {
+        let today = Self.day(2026, 11, 30)
+        let on = try plan(today: today, settings: PhoneOutputSettings(showFiguresOnLockScreen: true))
+        let pending = Dictionary(uniqueKeysWithValues: on.map { ($0.id, $0.content) })
+        let off = try plan(today: today)
+        let result = NotificationReconciler.reconcile(planned: off, pending: pending, ledger: Set(pending.keys))
+        let rent = try XCTUnwrap(off.first { $0.kind == .rentLate })
+        XCTAssertTrue(result.remove.contains(rent.id))
+        let replaced = try XCTUnwrap(result.add.first { $0.id == rent.id })
+        XCTAssertFalse(replaced.body.contains("expected"), replaced.body)
+    }
+
     func testCopyWordsAreExact() {
         XCTAssertEqual(NotificationCopy.rentLate(property: "Flat", showFigures: false, amount: "€1.00").body,
                        "Rent for Flat hasn't arrived 10 days after it was due.")
@@ -341,19 +353,28 @@ final class NotificationPlannerTests: XCTestCase {
     }
 
     func testReconcileRemovesPendingNoLongerPlanned() {
-        let result = NotificationReconciler.reconcile(planned: [note("a")], pending: ["a", "b", "c"], ledger: ["a", "b", "c"])
+        let result = NotificationReconciler.reconcile(planned: [note("a")], pending: ["a": "t\nb", "b": "t\nb", "c": "t\nb"], ledger: ["a", "b", "c"])
         XCTAssertEqual(result.remove, ["b", "c"])
         XCTAssertTrue(result.add.isEmpty)
     }
 
     func testReconcileNeverReschedulesALedgeredId() {
-        let result = NotificationReconciler.reconcile(planned: [note("fired"), note("new")], pending: [], ledger: ["fired"])
+        let result = NotificationReconciler.reconcile(planned: [note("fired"), note("new")], pending: [:], ledger: ["fired"])
         XCTAssertEqual(result.add.map(\.id), ["new"])
         XCTAssertTrue(result.remove.isEmpty)
     }
 
     func testReconcileKeepsPendingStillPlanned() {
-        let result = NotificationReconciler.reconcile(planned: [note("a")], pending: ["a"], ledger: [])
+        let result = NotificationReconciler.reconcile(planned: [note("a")], pending: ["a": "t\nb"], ledger: [])
         XCTAssertEqual(result, NotificationReconciliation(add: [], remove: []))
+    }
+
+    func testReconcileReplacesPendingWhoseWordsChanged() {
+        // Pending with an amount; the lock-screen figures went off, so the plan's words have none. Already in the
+        // ledger (it was handed over), yet it never fired: replaced.
+        let result = NotificationReconciler.reconcile(planned: [note("a"), note("b")], pending: ["a": "t\nb £5.00", "b": "t\nb"],
+                                                      ledger: ["a", "b"])
+        XCTAssertEqual(result.remove, ["a"])
+        XCTAssertEqual(result.add.map(\.id), ["a"])
     }
 }
