@@ -58,6 +58,8 @@ targets:
       # harness (Phone/Snapshots/PhoneSnapshotRunner.swift, SNAPSHOTS only).
       - package: BudgetCore
         product: BudgetDemo
+      # The widgets (step 7b Task 7), embedded in the app.
+      - target: MangoWidgets
     # Includes the same uncommitted Signing.local.xcconfig, then the phone's entitlements (Phone/Mango.entitlements).
     configFiles:
       Debug: Config/SigningPhone.xcconfig
@@ -74,6 +76,10 @@ targets:
         UILaunchScreen: {}
         # The household invitation (a CKShare link) opens this app and reaches the scene delegate (step 7a).
         CKSharingSupported: true
+        # The widget's link (step 7b): mango://home, mango://month (WidgetLink).
+        CFBundleURLTypes:
+          - CFBundleURLName: ubberninja.mango.ios.widget
+            CFBundleURLSchemes: [mango]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         # Export compliance: only Apple's own encryption (CryptoKit), so TestFlight doesn't ask on every build.
@@ -95,3 +101,34 @@ targets:
           CLOUDKIT_ENVIRONMENT: Development
         Release:
           CLOUDKIT_ENVIRONMENT: Production
+  # The widgets (step 7b Task 7): net worth, left this pay month, payday on the lock screen. Read the App Group's snapshot.
+  MangoWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources: [Widgets]
+    dependencies:
+      - package: BudgetCore
+        product: BudgetCore
+      - package: BudgetCore
+        product: MangoUI
+    configFiles:
+      Debug: Config/SigningWidgets.xcconfig
+      Release: Config/SigningWidgets.xcconfig
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Mango
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango.ios.widgets
+        PRODUCT_NAME: MangoWidgets
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES

@@ -14,6 +14,8 @@ public enum PhoneTab: Hashable, Sendable {
 @MainActor
 public final class PhoneTabsModel: ObservableObject {
     @Published public var selection: PhoneTab = .home
+    /// A widget's link not yet shown by the iPad's sidebar (`PadRootView` takes it and clears it).
+    @Published public private(set) var pendingLink: PhoneTabLink?
     /// Property is absent while the database has no property row (spec §3.9, permission None's analogue; ruling for
     /// step 4).
     @Published public private(set) var hasProperty: Bool
@@ -36,6 +38,8 @@ public final class PhoneTabsModel: ObservableObject {
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
     public let padMissingEvidence: PadMissingEvidenceModel
+    /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
+    public let quickEdit: QuickEditModel
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -67,6 +71,10 @@ public final class PhoneTabsModel: ObservableObject {
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)
+        quickEdit.viewer = viewer
+        // After an edit saves, what it moved is read again: the figures, the lists, the queue.
+        quickEdit.onChange = { [weak self] in await self?.reloadAfterEdit() }
     }
 
     /// Whether the database has a property row, read off the main actor; nil when the read fails (the tab then stays
@@ -112,7 +120,20 @@ public final class PhoneTabsModel: ObservableObject {
         home.viewer = viewer
         month.viewer = viewer
         accounts.viewer = viewer
+        quickEdit.viewer = viewer
         return true
+    }
+
+    /// After a quick edit saved, once the screens have read again: the app's outputs (widget snapshot, reminders).
+    public var afterEdit: (@MainActor () -> Void)?
+
+    /// After a quick edit: the screens that show transactions read again, the open lists in place, then `afterEdit`.
+    private func reloadAfterEdit() async {
+        await reloadViewerScreens()
+        await search.load()
+        await month.refreshTransactionLists()
+        await quickEdit.load()
+        afterEdit?()
     }
 
     private func reloadViewerScreens() async {
@@ -121,10 +142,22 @@ public final class PhoneTabsModel: ObservableObject {
         await accounts.load()
     }
 
+    /// A widget's link: the iPhone's tab, and the iPad's sidebar section through `pendingLink`.
+    public func open(_ link: PhoneTabLink) {
+        selection = link == .home ? .home : .month
+        pendingLink = link
+    }
+
+    /// The iPad's sidebar has shown `pendingLink`.
+    public func consumePendingLink() {
+        pendingLink = nil
+    }
+
     /// On a lock: closes the tabs' sheets in their state too (the cover window dismisses them in UIKit, which a
     /// binding doesn't always see), so nothing re-presents after unlocking and a row opens again.
     public func dismissSheets() {
         search.detail = nil
+        quickEdit.dismissSheets()
     }
 }
 
@@ -177,6 +210,7 @@ public struct PhoneTabs: View {
         }
         // Each screen shows it under its navigation bar (`offlineBannerSlot`, `demoBannerSlot`).
         .environment(\.showsDemoData, isDemo)
+        .environment(\.quickEdit, model.quickEdit)
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }

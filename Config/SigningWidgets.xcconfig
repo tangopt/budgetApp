@@ -1,0 +1,6 @@
+// Signing for the widget extension (step 7b Task 7). Same uncommitted Signing.local.xcconfig as the Mac and the
+// phone (it names the team), then the extension's own entitlements (the App Group). Without the local file the
+// extension builds unsigned for the simulator.
+#include? "Signing.local.xcconfig"
+CODE_SIGN_ENTITLEMENTS = Widgets/MangoWidgets.entitlements
+ENABLE_HARDENED_RUNTIME = NO

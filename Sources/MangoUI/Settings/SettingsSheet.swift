@@ -68,7 +68,7 @@ public enum SettingsDemoRow {
 }
 
 /// Settings (plan step 4 Task 12), opened from Home's avatar, presented inside the lock: Lock now; Appearance and the
-/// theme (`ThemeCatalog`'s, as `PhoneTheme.all`); Sharing (read-only, `SharingSection`); Security (the iCloud account, whether records are sealed with the
+/// theme (`ThemeCatalog`'s, as `PhoneTheme.all`); Sharing (read-only, `SharingSection`); Widgets (`WidgetsSection`); Notifications (`NotificationsSection`); Security (the iCloud account, whether records are sealed with the
 /// household key or it is still awaited); About (version, build, the sync status line, "Sync now" while sync runs).
 /// Read-only phone: nothing here changes the household's data.
 public struct SettingsSheet: View {
@@ -87,14 +87,24 @@ public struct SettingsSheet: View {
     let demo: SettingsDemoRow?
     /// The read-only Sharing section (step 6); nil while it hasn't been read (left out).
     let sharing: SharingSectionState?
+    /// This iPhone's output settings (step 7b, Widgets); nil leaves the section out.
+    let outputs: Binding<PhoneOutputSettings>?
+    /// Settings ▸ Notifications (step 7b): what the system allows, and "Allow notifications" (nil: no such row).
+    let notificationAccess: NotificationAuthorization
+    let onAllowNotifications: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var syncing = false
 
     public init(appearance: Binding<PhoneAppearance>, themeId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
-                onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil) {
+                onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil,
+                outputs: Binding<PhoneOutputSettings>? = nil, notificationAccess: NotificationAuthorization = .notDetermined,
+                onAllowNotifications: (() -> Void)? = nil) {
+        self.notificationAccess = notificationAccess
+        self.onAllowNotifications = onAllowNotifications
         self.demo = demo
         self.sharing = sharing
+        self.outputs = outputs
         _appearance = appearance
         _themeId = themeId
         self.iCloud = iCloud
@@ -134,6 +144,11 @@ public struct SettingsSheet: View {
                 }
                 if let sharing {
                     SharingSection(state: sharing)
+                }
+                if let outputs {
+                    WidgetsSection(settings: outputs)
+                    NotificationsSection(settings: outputs, authorization: notificationAccess, isAdmin: sharing?.isAdmin ?? false,
+                                         onAllow: { onAllowNotifications?() })
                 }
                 Section("Security") {
                     LabeledContent("iCloud", value: SettingsCopy.iCloudAccount(iCloud))

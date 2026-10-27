@@ -9,6 +9,12 @@ public enum SharingSectionState: Equatable, Sendable {
     /// The viewer's own accounts and levels (`SharingOverview.load(viewer:db:)`).
     case loaded(SharingOverview)
 
+    /// Whether this iPhone's viewer is the household's admin (the Mac's grid is theirs; some reminders too).
+    public var isAdmin: Bool {
+        if case .loaded(let overview) = self { return overview.isAdmin }
+        return false
+    }
+
     public static func read(_ db: Database, viewer: PhoneViewer) throws -> SharingSectionState {
         guard let overview = try SharingOverview.load(viewer: try viewer.resolve(db: db), db: db) else { return .notNamed }
         return .loaded(overview)

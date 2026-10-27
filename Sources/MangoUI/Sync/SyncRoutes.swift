@@ -56,6 +56,22 @@ public enum SyncRoutes {
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
                                          onLockNow: {}, onSyncNow: {}))
         },
+        // Settings with the Widgets section (step 7b): the lock screen toggle, off.
+        DemoRoute(name: "settings-widgets", minimumFigures: 0) { context in
+            let today = context.today
+            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+                                         iCloud: .available, keyHeld: true,
+                                         status: .idle(lastSync: today.addingTimeInterval(-300)),
+                                         version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
+                                         onLockNow: {}, onSyncNow: {}, outputs: .constant(PhoneOutputSettings())))
+        },
+        // The three widgets' tiles from a demo snapshot (step 7b Task 7).
+        DemoRoute(name: "widgets-preview", minimumFigures: 3) { context in
+            let today = context.today
+            let snapshot = WidgetSnapshot(generatedAt: today, netWorthMinorUnits: 1_234_500, leftToSpendMinorUnits: 45_600,
+                                          paydayDate: today.addingTimeInterval(12 * 86_400), showFiguresOnLockScreen: false)
+            return AnyView(WidgetsPreview(snapshot: snapshot, today: today))
+        },
     ]
 
     /// A migrated database with nothing in it, in memory: never the phone's own.

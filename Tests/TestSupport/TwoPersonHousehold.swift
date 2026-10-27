@@ -3,7 +3,7 @@ import GRDB
 import BudgetCore
 
 /// Two simulated people over one `FakeCloud` (step 6): the admin A on a Mac (`adminMac`, the writer, holding the
-/// `SharingFixture`) and an iPhone (`adminPhone`, read-only), and the member B on a device of her own
+/// `SharingFixture`) and an iPhone (`adminPhone`), and the member B on a device of her own
 /// (`memberDevice`). The admin's devices share `adminKeys` (their iCloud Keychain: the household key and A's
 /// private key); the member's `memberKeys` share only the household key. Every save goes through `audit`, so a
 /// test can check that nothing placed privately reached the household. Synthetic data only.
@@ -14,6 +14,10 @@ import BudgetCore
 ///
 /// Step 8: the admin's iPad (`adminTablet`) writes in device mode, to the household and A's private zone; the member's
 /// device can run as her iPad (`memberMode: memberTabletMode`), writing the household only.
+///
+/// Step 7b: the iPhones write too. The admin's (`adminPhone`) is `.device(zones: [household, A's private zone])`, the
+/// member's (`memberPhone`, over her transport and keys) `.device(zones: [household])`; neither keeps document files
+/// unless a test hands the admin's some (`phoneDocuments`). `syncAll` doesn't pull her phone: a test does.
 public final class TwoPersonHousehold {
     public typealias Device = (db: DatabaseQueue, engine: SyncEngineCore)
 
@@ -21,6 +25,8 @@ public final class TwoPersonHousehold {
     public static let memberICloudUser = "fake-member"
     /// The member's iPad (step 8): she writes the household only.
     public static let memberTabletMode = SyncWriteMode.device(zones: [SyncZones.household])
+    /// The member's iPhone (step 7b): as her iPad, the household only.
+    public static let memberPhoneMode = SyncWriteMode.device(zones: [SyncZones.household])
 
     public let cloud: FakeCloud
     /// The admin's devices' transport: every household save they make is judged, as it is made, by the Mac's router.
@@ -37,10 +43,13 @@ public final class TwoPersonHousehold {
     /// The Macs' transports (over `audit`): a test can lose a save's reply or fail a record's saves on either.
     public let macTransport: LossyTransport
     public let mac2Transport: LossyTransport
+    /// The admin's iPhone (step 7b): `.device(zones: [household, A's private zone])` over `audit`, sharing `adminKeys`.
     public let adminPhone: Device
     /// The admin's iPad (step 8): `.device(zones: [household, A's private zone])` over `audit`, sharing `adminKeys`.
     public let adminTablet: Device
     public let memberDevice: Device
+    /// The member's iPhone (step 7b): `memberPhoneMode` over `memberAudit`, sharing `memberKeys`, no document files.
+    public let memberPhone: Device
     public let fixture: SharingFixture
     /// Person B's `person` UUID and private zone.
     public let personBUuid: String
@@ -48,7 +57,7 @@ public final class TwoPersonHousehold {
 
     private init(cloud: FakeCloud, audit: ZoneAuditingTransport, memberAudit: ZoneAuditingTransport, audit2: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
                  adminMac: Device, adminMac2: Device, macTransport: LossyTransport, mac2Transport: LossyTransport,
-                 adminPhone: Device, adminTablet: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
+                 adminPhone: Device, adminTablet: Device, memberDevice: Device, memberPhone: Device, fixture: SharingFixture, personBUuid: String) {
         self.cloud = cloud
         self.audit = audit
         self.memberAudit = memberAudit
@@ -62,6 +71,7 @@ public final class TwoPersonHousehold {
         self.adminPhone = adminPhone
         self.adminTablet = adminTablet
         self.memberDevice = memberDevice
+        self.memberPhone = memberPhone
         self.fixture = fixture
         self.personBUuid = personBUuid
         memberZone = SyncZones.privateZone(personUuid: personBUuid)
@@ -123,6 +133,8 @@ public final class TwoPersonHousehold {
         try tablet.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
         let member = try TestDatabase.migrated()
         try member.write { db in try SyncChangeTracker.setWriter(memberUser, db: db) }
+        let memberPhone = try TestDatabase.migrated()
+        try memberPhone.write { db in try SyncChangeTracker.setWriter(memberUser, db: db) }
 
         let admin = SyncViewer(personUuid: fixture.personAUuid)
         let macTransport = LossyTransport(audit)
@@ -133,18 +145,23 @@ public final class TwoPersonHousehold {
         let macEngine = SyncEngineCore(db: mac, transport: macTransport, device: SyncDevice(id: "admin-mac", name: "Mac"), keyStore: adminKeys,
                                        documents: macDocuments, viewer: admin, revalidatesAccess: revalidatesAccess)
         let phoneEngine = SyncEngineCore(db: phone, transport: audit, device: SyncDevice(id: "admin-phone", name: "iPhone"), keyStore: adminKeys,
-                                         documents: phoneDocuments, readOnly: true, viewer: admin)
+                                         documents: phoneDocuments, mode: .device(zones: [SyncZones.household, fixture.privateZone]),
+                                         viewer: admin)
         let tabletEngine = SyncEngineCore(db: tablet, transport: audit, device: SyncDevice(id: "admin-tablet", name: "Admin iPad"), keyStore: adminKeys,
                                           mode: .device(zones: [SyncZones.household, fixture.privateZone]), viewer: admin)
         let memberEngine = SyncEngineCore(db: member, transport: memberAudit, device: SyncDevice(id: "member-device", name: "iPad"), keyStore: memberKeys,
                                           documents: memberDocuments, mode: memberMode, viewer: SyncViewer(personUuid: personB))
+        let memberPhoneEngine = SyncEngineCore(db: memberPhone, transport: memberAudit, device: SyncDevice(id: "member-phone", name: "iPhone"),
+                                               keyStore: memberKeys, mode: memberPhoneMode, viewer: SyncViewer(personUuid: personB))
         audit.judge(with: router(mac))
-        memberAudit.judge(with: router(member))
+        // Her two devices hold the same records; whichever holds one places it.
+        let memberRouter = router(member), memberPhoneRouter = router(memberPhone)
+        memberAudit.judge(with: { memberRouter($0) ?? memberPhoneRouter($0) })
         audit2.judge(with: router(mac2))
         return TwoPersonHousehold(cloud: cloud, audit: audit, memberAudit: memberAudit, audit2: audit2, adminKeys: adminKeys, memberKeys: memberKeys,
                                   adminMac: (mac, macEngine), adminMac2: (mac2, mac2Engine), macTransport: macTransport,
                                   mac2Transport: mac2Transport, adminPhone: (phone, phoneEngine), adminTablet: (tablet, tabletEngine), memberDevice: (member, memberEngine),
-                                  fixture: fixture, personBUuid: personB)
+                                  memberPhone: (memberPhone, memberPhoneEngine), fixture: fixture, personBUuid: personB)
     }
 
     /// The admin's Mac pushes, then the admin's phone and the member's device pull.

@@ -32,6 +32,12 @@ public struct DeviceWriter: Sendable {
         self.afterWrite = afterWrite
     }
 
+    /// The database it writes, for reads a write needs first (`PhoneQuickEdits`).
+    var reader: any DatabaseReader { db }
+
+    /// Whose device this is, as of now.
+    func viewerNow() -> PhoneViewer { viewer() }
+
     /// Who writes: nil before an app user is bound to this device's iCloud user.
     public func actor() async throws -> AccessActor? {
         let viewer = viewer()
@@ -119,14 +125,15 @@ public struct DeviceWriter: Sendable {
     }
 }
 
-/// The sync engine's write mode on a phone or tablet (step 8). Read-only unless this is an iPad and the app user
-/// bound to its iCloud user has Edit on some area. Then a member's iPad (`isMember`: it follows the admin's household
-/// through her shared database) pushes the household only; the admin's iPad pushes the household and his own
-/// private zone. Anything else (no bound user, a member's user on the admin's own database, an admin with no
-/// person identity yet) is read-only: never a default writer.
+/// The sync engine's write mode on a phone or tablet (step 8; the iPhone too since step 7b). Read-only unless the
+/// device may write (`canWrite`: an iPhone or iPad running sync, not demo data) and the app user bound to its iCloud
+/// user has Edit on some area. Then a member's device (`isMember`: it follows the admin's household through her
+/// shared database) pushes the household only; the admin's pushes the household and his own private zone. Anything
+/// else (no bound user, a member's user on the admin's own database, an admin with no person identity yet) is
+/// read-only: never a default writer.
 public enum DeviceWriteMode {
-    public static func decide(recordName: String?, isMember: Bool, isPad: Bool, db: Database) throws -> SyncWriteMode {
-        guard isPad, let actor = try DeviceWriter.actor(.iCloudUser(recordName: recordName), db: db) else { return .readOnly }
+    public static func decide(recordName: String?, isMember: Bool, canWrite: Bool, db: Database) throws -> SyncWriteMode {
+        guard canWrite, let actor = try DeviceWriter.actor(.iCloudUser(recordName: recordName), db: db) else { return .readOnly }
         var areas = AccessArea.fixedAreas
         for personId in try Int64.fetchAll(db, sql: "SELECT id FROM person ORDER BY id") {
             guard let uuid = try SyncRecordStore.existingUUID(table: "person", localId: personId, db: db) else { continue }
@@ -141,11 +148,11 @@ public enum DeviceWriteMode {
 
     /// The mode decided now, when it isn't `current`; nil when it is. After a sync (a pull may have brought a
     /// changed permission or membership), a non-nil answer makes the engine again with it: a user who lost Edit
-    /// stops pushing, one who gained it starts. An iPhone is always read-only, so it never changes (and reads
-    /// nothing).
-    public static func changed(from current: SyncWriteMode, recordName: String?, isMember: Bool, isPad: Bool,
+    /// stops pushing, one who gained it starts. A device that may not write (`canWrite` false) is always
+    /// read-only, so it never changes (and reads nothing).
+    public static func changed(from current: SyncWriteMode, recordName: String?, isMember: Bool, canWrite: Bool,
                                db: Database) throws -> SyncWriteMode? {
-        let decided = isPad ? try decide(recordName: recordName, isMember: isMember, isPad: true, db: db) : .readOnly
+        let decided = canWrite ? try decide(recordName: recordName, isMember: isMember, canWrite: true, db: db) : .readOnly
         return decided == current ? nil : decided
     }
 }

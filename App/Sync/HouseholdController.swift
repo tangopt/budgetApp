@@ -52,7 +52,8 @@ final class HouseholdController: ObservableObject {
             allowEdits: { [weak self] in Task { await self?.allowEdits() } },
             remove: { [weak self] in Task { await self?.remove() } },
             give: { [weak self] in Task { await self?.give() } },
-            notNow: { [weak self] in Task { await self?.notNow() } })
+            notNow: { [weak self] in Task { await self?.notNow() } },
+            saveGrid: { [weak self] grid in Task { await self?.saveGrid(grid) } })
     }
 
     private var isAdmin: Bool { session.currentUser?.isAdmin == true }
@@ -137,10 +138,12 @@ final class HouseholdController: ObservableObject {
     private func publish() async {
         let share = share
         let request = request
-        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool) in
-            (try HouseholdInvite.member(db: db), try AppUserStore.unclaimedPeople(db).map(\.name), try HouseholdInvite.wasRemoved(db: db))
+        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool, PermissionGrid?) in
+            let member = try HouseholdInvite.member(db: db)
+            let grid = try member?.id.flatMap { try? PermissionGrid.load(db: db, appUserId: $0) }
+            return (member, try AppUserStore.unclaimedPeople(db).map(\.name), try HouseholdInvite.wasRemoved(db: db), grid)
         }
-        guard let (member, unclaimed, removed) = read else { return }
+        guard let (member, unclaimed, removed, grid) = read else { return }
         var next = HouseholdPaneState()
         next.unclaimed = unclaimed
         next.busy = busy
@@ -159,6 +162,7 @@ final class HouseholdController: ObservableObject {
             next.blockers = blockers
             next.ambiguous = ambiguous
             if next.status == .joined {
+                next.grid = grid
                 next.edits = HouseholdInvite.needsEditUpgrade(share) ? .waiting : .allowed
                 next.keyCode = request?.code
                 if let granter = granter?.granter, request == nil {
@@ -251,6 +255,17 @@ final class HouseholdController: ObservableObject {
         await run {
             try await granter.grant(request, keys: keys, now: Date())
             self.request = nil
+        }
+    }
+
+    /// Save on the grid: writes the changed areas as the admin (`PermissionGrid.save`), then reloads. A refusal shows in the pane.
+    func saveGrid(_ grid: PermissionGrid) async {
+        guard let adminId = session.currentAppUserId else { return }
+        await run {
+            try await dbQueue.write { db in
+                let actor = try AccessActor.load(appUserId: adminId, db: db)
+                try PermissionGrid.save(grid, actor: actor, db: db)
+            }
         }
     }
 

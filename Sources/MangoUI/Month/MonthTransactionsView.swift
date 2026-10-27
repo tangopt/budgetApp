@@ -14,7 +14,8 @@ public struct MonthTransactionDay: Equatable, Sendable, Identifiable {
 /// A category row's transactions in its pay month (iPhone spec §3.3, "tapping a row opens its transactions"):
 /// exactly the ones its figure sums (`PayMonthReview.transactions`: confirmed, budget-facing, in GBP), newest
 /// first, grouped by day, then one line per account of the other person's that the viewer reads only as category
-/// totals (`SharedActuals.privateLines`, step 6). Read-only.
+/// totals (`SharedActuals.privateLines`, step 6). Read-only, except where quick edits are on (step 7b): a row then
+/// opens its transaction.
 @MainActor
 public final class MonthTransactionsModel: ObservableObject {
     public enum State: Equatable, Sendable {
@@ -140,11 +141,12 @@ public final class MonthTransactionsModel: ObservableObject {
     }
 }
 
-/// The list a category row opens: its transactions in the pay month, by day, newest first. Read-only: a row
-/// shows the description, the account and the amount, and opens nothing.
+/// The list a category row opens: its transactions in the pay month, by day, newest first. A row shows the
+/// description, the account and the amount; with quick edits on it opens its transaction.
 public struct MonthTransactionsView: View {
     @ObservedObject var model: MonthTransactionsModel
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.quickEdit) private var quickEdit
 
     public init(model: MonthTransactionsModel) {
         self.model = model
@@ -167,6 +169,7 @@ public struct MonthTransactionsView: View {
         .task {
             if case .idle = model.state { await model.load() }
         }
+        .modifier(MonthDetailSheet(model: quickEdit))
     }
 
     @ViewBuilder
@@ -188,8 +191,20 @@ public struct MonthTransactionsView: View {
                         .accessibilityAddTraits(.isHeader)
                     ForEach(day.rows) { row in
                         let amount = MonthTransactionsModel.amount(row.gbpMinorUnits, type: model.row.category.type)
-                        AmountRow(label: row.description, secondary: MonthTransactionsModel.secondary(row),
-                                  amount: MoneyText(minorUnits: amount.minorUnits, currency: .gbp, role: amount.role))
+                        let line = AmountRow(label: row.description, secondary: MonthTransactionsModel.secondary(row),
+                                             amount: MoneyText(minorUnits: amount.minorUnits, currency: .gbp, role: amount.role))
+                        if let quickEdit, quickEdit.isAvailable {
+                            // Where editing is on, a row opens its transaction (and from there Edit).
+                            Button {
+                                Task { quickEdit.monthDetail = await quickEdit.row(transactionId: row.id) }
+                            } label: {
+                                line.contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Shows the transaction")
+                        } else {
+                            line
+                        }
                     }
                 }
             }

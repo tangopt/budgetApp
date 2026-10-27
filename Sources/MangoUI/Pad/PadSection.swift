@@ -1,8 +1,17 @@
 import Foundation
+import BudgetCore
 
 /// The iPad sidebar's destinations (step 8, Task 6), in sidebar order.
 public enum PadSection: Hashable, CaseIterable, Sendable {
     case home, month, accounts, propertyOverview, bills, recharges, rentReceipts, tenancies, documents, missingEvidence, search
+
+    /// The section a widget's link opens.
+    public init(link: PhoneTabLink) {
+        switch link {
+        case .home: self = .home
+        case .month: self = .month
+        }
+    }
 
     public var title: String {
         switch self {

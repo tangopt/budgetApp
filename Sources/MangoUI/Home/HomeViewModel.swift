@@ -112,7 +112,7 @@ public final class HomeViewModel: ObservableObject {
 
     /// Nothing synced yet: no account and no transaction.
     nonisolated static func isEmpty(_ input: DashboardInput) -> Bool {
-        input.accounts.isEmpty && input.transactions.isEmpty
+        input.isEmpty
     }
 
     /// The snapshot route's assertion (plan Task 7 step 2): Home's net worth is the Accounts screen's

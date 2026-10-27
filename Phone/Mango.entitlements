@@ -14,6 +14,11 @@
 	<!-- Development for Debug builds, Production for Release. -->
 	<key>com.apple.developer.icloud-container-environment</key>
 	<string>$(CLOUDKIT_ENVIRONMENT)</string>
+	<!-- The widget's snapshot and the output settings (step 7b); shared with the widget extension. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.ubberninja.mango</string>
+	</array>
 	<!-- The Mac's group: without it the synchronizable household key items are invisible here (sync spec §9). -->
 	<key>keychain-access-groups</key>
 	<array>

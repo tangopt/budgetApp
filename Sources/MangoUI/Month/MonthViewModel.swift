@@ -149,7 +149,11 @@ public final class MonthViewModel: ObservableObject {
         }
         loadedKey = key
         await load()
-        // Lists already made (one may be on screen) read again in place, with their row's new figures.
+        await refreshTransactionLists()
+    }
+
+    /// Lists already made (one may be on screen) read again in place, with their row's new figures.
+    public func refreshTransactionLists() async {
         let rows = page?.review.rows ?? []
         for (destination, model) in transactionModels {
             await model.refresh(row: rows.first { $0.id == destination.row.id && page?.review.range == destination.range })

@@ -55,6 +55,8 @@ struct PhoneRoot: View {
 
     @ObservedObject var lock: PhoneLockModel
     @ObservedObject var sync: PhoneSyncController
+    /// The widget's snapshot and Settings ▸ Widgets (step 7b).
+    @ObservedObject private var outputs = PhoneOutputs.shared
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
     /// "Show what's here" on the iCloud explanation, for this run of the app.
@@ -99,13 +101,18 @@ struct PhoneRoot: View {
         .onChange(of: lock.state) { _, state in
             // The cover window dismisses open sheets in UIKit on a lock; their SwiftUI state is cleared here too, so
             // nothing re-presents after unlocking and the avatar opens Settings again.
-            guard case .locked = state else { return }
+            guard case .locked = state else {
+                refreshOutputs()
+                return
+            }
             showingSettings = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: sync.sceneBecameActive()
+            case .active:
+                sync.sceneBecameActive()
+                refreshOutputs()
             case .background: sync.sceneEnteredBackground()
             default: break
             }
@@ -118,12 +125,36 @@ struct PhoneRoot: View {
             guard case .loading = stage else { return }
             await load()
         }
+        .onChange(of: outputs.pendingLink) { _, _ in openTappedReminder() }
+        .onOpenURL { url in
+            // The widget's link: Home or Month, over whatever was open.
+            guard let link = WidgetLink.tab(from: url), case .ready(_, let tabs) = stage else { return }
+            showingSettings = false
+            tabs.dismissSheets()
+            tabs.open(link)
+        }
+    }
+
+    /// A tapped reminder's tab, over whatever was open (waits until the tabs exist, on a cold start).
+    private func openTappedReminder() {
+        guard let link = outputs.pendingLink, case .ready(_, let tabs) = stage else { return }
+        outputs.pendingLink = nil
+        showingSettings = false
+        tabs.dismissSheets()
+        tabs.open(link)
+    }
+
+    /// The widget's snapshot written again for this device's viewer (nothing in demo data, which clears it).
+    private func refreshOutputs() {
+        guard case .ready(let environment, _) = stage, !environment.isDemo else { return }
+        outputs.refresh(viewer: sync.deviceViewer)
     }
 
     /// Opens demo data while it is on, else the phone's own database (and attaches sync to it).
     private func load() async {
         do {
-            // The iPad's writer (step 8): as this device's iCloud user, each committed write asking sync for a push.
+            // The device's writer (step 8; the iPhone too, step 7b): as this device's iCloud user, each committed write
+            // asking sync for a push.
             let sync = self.sync
             let environment = PhoneDemoData.isOn
                 ? try await PhoneEnvironment.loadDemo()
@@ -133,19 +164,24 @@ struct PhoneRoot: View {
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
             // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
             let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
-            // The iPad's Property edits write through the device writer; demo data's database is read-only: no writer.
+            // Edits write through the device writer; demo data's database is read-only: no writer.
             let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer,
                                       writer: environment.isDemo ? nil : environment.writer)
             // This iPhone's iCloud user, as sync reads it: followed by the model, not by a view, because the content
             // is out of the view tree while locked and the name is usually read before the first unlock.
             if !environment.isDemo {
                 tabs.follow(recordNames: sync.$viewerRecordName)
+                // A quick edit moved figures: the widget and the reminders follow at once.
+                tabs.afterEdit = { [outputs] in outputs.refresh(viewer: sync.deviceViewer) }
                 // The iPad's Documents open a file by downloading it on demand (the iPhone has no such screen).
                 if UIDevice.current.userInterfaceIdiom == .pad {
                     tabs.padDocuments.open = { path in try await sync.openDocument(storedRelativePath: path) }
                 }
             }
             stage = .ready(environment, tabs)
+            outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
+            refreshOutputs()
+            openTappedReminder()
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
             stage = .failed(error.localizedDescription)
@@ -229,7 +265,10 @@ struct PhoneRoot: View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
         return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
-                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing)
+                             onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
+                             outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
+                             onAllowNotifications: { Task { await outputs.allowNotifications() } })
+            .task { await outputs.refreshNotificationAccess() }
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))

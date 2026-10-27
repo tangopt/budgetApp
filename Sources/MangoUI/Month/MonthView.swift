@@ -14,6 +14,7 @@ public struct MonthView: View {
     let onRefresh: () async -> Void
     @Environment(\.phoneTheme) private var theme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.quickEdit) private var quickEdit
 
     public init(model: MonthViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void = {}) {
         self.model = model
@@ -44,7 +45,9 @@ public struct MonthView: View {
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: MonthViewModel.reloadKey(syncStatus))
+            await quickEdit?.load()
         }
+        .modifier(QuickSortSheet(model: quickEdit))
     }
 
     @ViewBuilder
@@ -65,6 +68,10 @@ public struct MonthView: View {
                         onPrevious: { Task { await model.showPrevious() } },
                         onNext: { Task { await model.showNext() } })
             MonthSummaryGrid(review: page.review)
+            // The queue is the current pay month's.
+            if let quickEdit, !model.canShowNext {
+                QuickSortEntryRow(model: quickEdit)
+            }
             if page.isEmpty {
                 EmptyState(symbol: "calendar", title: MonthCopy.emptyTitle, message: MonthCopy.emptyMessage)
             } else {

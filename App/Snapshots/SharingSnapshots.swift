@@ -82,9 +82,10 @@ enum SharingSnapshots {
 
     /// Settings ▸ Household in each state (step 7a Task 9), from given values; nothing here touches iCloud. Synthetic names.
     static var householdRoutes: [SnapshotRoute] {
-        func route(_ name: String, _ title: String, _ state: HouseholdPaneState) -> SnapshotRoute {
+        func route(_ name: String, _ title: String, _ state: HouseholdPaneState, draft: PermissionGrid? = nil) -> SnapshotRoute {
             SnapshotRoute(name: "settings-household" + name, title: "Settings ▸ Household: " + title) { _ in
-                AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .household, householdState: state).scenePadding().frame(width: 640)))
+                AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .household, householdState: state, householdDraft: draft)
+                    .scenePadding().frame(width: 640)))
             }
         }
         let member = "Person B"
@@ -107,7 +108,22 @@ enum SharingSnapshots {
         editsAllowed.edits = .allowed
         var ambiguous = added(.notInvited)
         ambiguous.ambiguous = HouseholdCopy.ambiguousParticipants(member)
+        // The permissions grid: synthetic people, every area at its default; the edited route has Property at View.
+        let gridRows = (AccessArea.fixedAreas.map { ($0, $0.title) }
+            + [(AccessArea.tax(personUuid: "00000000-0000-0000-0000-00000000000A"), "Tax — Person A"),
+               (AccessArea.tax(personUuid: "00000000-0000-0000-0000-00000000000B"), "Tax — Person B")]).map { area, title in
+            PermissionGridRow(area: area, title: title, level: MemberPermissions.defaultLevel(area, isAdmin: false),
+                              choices: PermissionGrid.choices(for: area))
+        }
+        let defaults = PermissionGrid(appUserId: 2, memberName: member, rows: gridRows)
+        var edited = defaults
+        edited.rows[edited.rows.firstIndex { $0.area == .property }!].level = .view
+        var withGrid = added(.joined)
+        withGrid.edits = .allowed
+        withGrid.grid = defaults
         return [
+            route("-grid", "permissions grid, defaults", withGrid),
+            route("-grid-edited", "permissions grid, Property changed to View, Save enabled", withGrid, draft: edited),
             route("", "nobody added, a pick or a new name", HouseholdPaneState(unclaimed: ["Person C", "Person D"])),
             route("-added", "member added, not invited", added(.notInvited)),
             route("-blocked", "the invite is blocked, with the reasons", blocked),

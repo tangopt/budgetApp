@@ -33,6 +33,8 @@ struct HouseholdPaneState: Equatable {
     var locked = false
     /// Joined (step 8): whether the share lets her make changes yet; nil when she hasn't joined.
     var edits: HouseholdEdits?
+    /// Joined: what she can do, area by area, as saved (`PermissionGrid`); nil: no grid shown.
+    var grid: PermissionGrid?
     var busy = false
     var error: String?
 
@@ -47,6 +49,7 @@ struct HouseholdActions {
     var remove: () -> Void = {}
     var give: () -> Void = {}
     var notNow: () -> Void = {}
+    var saveGrid: (PermissionGrid) -> Void = { _ in }
 }
 
 /// Settings ▸ Household (admin only): add the person, invite her to the household's share, give her device the key,
@@ -116,7 +119,16 @@ struct HouseholdPane: View {
     let state: HouseholdPaneState
     var actions = HouseholdActions()
 
+    /// Snapshot routes pass a draft already edited; otherwise it starts as the saved grid.
+    init(state: HouseholdPaneState, actions: HouseholdActions = HouseholdActions(), draft: PermissionGrid? = nil) {
+        self.state = state
+        self.actions = actions
+        _draft = State(initialValue: draft ?? state.grid)
+    }
+
     @Environment(\.theme) private var theme
+    /// The grid being edited; nothing is saved until Save.
+    @State private var draft: PermissionGrid?
     @State private var name = ""
     @State private var pick: Int?
     @State private var confirmsRemove = false
@@ -135,6 +147,8 @@ struct HouseholdPane: View {
             }
         }
         .formStyle(.grouped)
+        // The saved grid changed (loaded, saved, another member): the draft starts again from it.
+        .onChange(of: state.grid) { _, grid in draft = grid }
         .confirmationDialog(HouseholdCopy.removeTitle(state.member ?? ""), isPresented: $confirmsRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { actions.remove() }
             Button("Cancel", role: .cancel) {}
@@ -208,6 +222,18 @@ struct HouseholdPane: View {
                     }
                 }
             }
+        }
+        if state.status == .joined, let saved = state.grid, let draft {
+            PermissionGridView(
+                grid: draft, original: saved,
+                onChange: { area, level in
+                    guard let index = draft.rows.firstIndex(where: { $0.area == area }) else { return }
+                    self.draft?.rows[index].level = level
+                },
+                onReset: { self.draft = draft.resetToDefaults() },
+                onSave: { actions.saveGrid(draft) },
+                onCancel: { self.draft = saved },
+                busy: state.busy)
         }
         if let code = state.keyCode {
             keyRequest(member, code)

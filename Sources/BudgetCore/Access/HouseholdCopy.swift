@@ -50,6 +50,24 @@ public enum HouseholdCopy {
     public static func editsWaiting(_ name: String) -> String { "\(name) can view only for now:" }
     public static func allowEditsButton(_ name: String) -> String { "Let \(name) make changes" }
 
+    // MARK: What a member can do (step 7b, `PermissionGrid`)
+
+    public static func gridTitle(_ name: String) -> String { "What \(name) can do" }
+
+    public static func gridLevel(_ level: PermissionLevel) -> String {
+        switch level {
+        case .none: return "None"
+        case .view: return "View"
+        case .edit: return "Edit"
+        }
+    }
+
+    public static let gridResetButton = "Reset to defaults"
+
+    public static func gridLowerNote(_ name: String) -> String {
+        "Lowering a level never removes anything. It limits what \(name) can change and see from then on."
+    }
+
     // MARK: The household key (Mac and member device, side by side)
 
     public static func keyRequestTitle(_ name: String) -> String { "\(name)'s device is asking for the household key." }

@@ -246,7 +246,8 @@ public enum AccessAreaMap {
     // MARK: Transactions
 
     /// Property money: a transaction of a property-linked account at Everything, or one in a property's category.
-    private static func isPropertyMoney(_ row: [String: SyncValue], db: Database) throws -> Bool {
+    /// The phone's quick edits pick their area with it too (`PhoneQuickEdits.area`).
+    static func isPropertyMoney(_ row: [String: SyncValue], db: Database) throws -> Bool {
         if let accountId = try localId(row["accountId"], table: "account", db: db),
            try Bool.fetchOne(db, sql: """
                SELECT EXISTS (SELECT 1 FROM account JOIN propertyAccount ON propertyAccount.accountId = account.id

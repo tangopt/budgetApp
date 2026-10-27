@@ -29,13 +29,16 @@ public struct TransactionDetailPresentation {
     }
 }
 
-/// A transaction, read-only: the amount large, the description, then account, date, category and note, and the
-/// footer "Edit on iPad or Mac". No edit control exists here (plan step 4: absent, not hidden). Large detent; Done
-/// closes it.
+/// A transaction: the amount large, the description, then account, date, category and note. Where the user may edit it
+/// (`QuickEditModel.canEdit`) an Edit button opens the edit sheet; otherwise there is no edit control at all (absent,
+/// not disabled) and the footer reads "Edit on iPad or Mac". Large detent; Done closes it.
 public struct TransactionDetailSheet: View {
     let row: TransactionSearch.Row
     @Environment(\.dismiss) private var dismiss
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.quickEdit) private var quickEdit
+    @State private var canEdit = false
+    @State private var editing = false
 
     public init(row: TransactionSearch.Row) {
         self.row = row
@@ -43,11 +46,17 @@ public struct TransactionDetailSheet: View {
 
     public var body: some View {
         NavigationStack {
-            TransactionDetailContent(row: row)
+            TransactionDetailContent(row: row, showsFooter: !canEdit)
                 .background(theme.background)
                 .navigationTitle("Transaction")
                 .navigationBarTitleDisplayModeInline()
                 .toolbar {
+                    if canEdit {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Edit") { editing = true }
+                                .accessibilityIdentifier("edit-transaction")
+                        }
+                    }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
                     }
@@ -55,12 +64,18 @@ public struct TransactionDetailSheet: View {
                 .demoBannerSlot()
         }
         .presentationDetents([.large])
+        .task(id: row.id) { canEdit = await quickEdit?.canEdit(transactionId: row.id) ?? false }
+        .sheet(isPresented: $editing) {
+            if let quickEdit { TransactionEditSheet(row: row, model: quickEdit) }
+        }
     }
 }
 
 /// The sheet's scrolling body (also what the snapshot route renders).
 struct TransactionDetailContent: View {
     let row: TransactionSearch.Row
+    /// "Edit on iPad or Mac", where the user can't edit here.
+    var showsFooter = true
 
     var body: some View {
         let shown = TransactionDetailPresentation(row)
@@ -104,10 +119,12 @@ struct TransactionDetailContent: View {
                         }
                     }
                 }
-                Label(SearchCopy.detailFooter, systemImage: "ipad.and.iphone")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if showsFooter {
+                    Label(SearchCopy.detailFooter, systemImage: "ipad.and.iphone")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(16)
         }

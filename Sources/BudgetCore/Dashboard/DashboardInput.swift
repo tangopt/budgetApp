@@ -140,3 +140,8 @@ public struct UpcomingBill: Equatable, Identifiable, Sendable {
     public let amountMinorUnits: Int
     public var id: String { "\(categoryName)-\(date.timeIntervalSince1970)-\(amountMinorUnits)" }
 }
+
+extension DashboardInput {
+    /// Nothing synced yet: no account and no transaction. Home shows its empty state then, and the widget gets no snapshot.
+    public var isEmpty: Bool { accounts.isEmpty && transactions.isEmpty }
+}
