@@ -75,8 +75,12 @@ struct PadBillsView: View {
                         if !offered.isEmpty {
                             HStack(spacing: 8) {
                                 ForEach(offered, id: \.self) { action in
-                                    Button(action.title) { Task { await run(action, bill) } }
-                                        .buttonStyle(.bordered)
+                                    if action == .linkInvoice {
+                                        RowIconButton(.linkDocument, item: bill.providerName) { Task { await run(action, bill) } }
+                                    } else {
+                                        Button(action.title) { Task { await run(action, bill) } }
+                                            .buttonStyle(.pad(.secondary, size: .small))
+                                    }
                                 }
                             }
                         }

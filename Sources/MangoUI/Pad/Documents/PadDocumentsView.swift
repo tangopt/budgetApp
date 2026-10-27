@@ -81,7 +81,7 @@ struct PadDocumentsView: View {
                         Button("Change kind…") { kindEditor = KindEditor(documentId: document.id, name: document.displayName, kind: document.kindRef) }
                         Button("Link to…") { linkTo(document) }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.pad(.secondary))
                     PadRefusalBanner(message: write.message(for: PadDocumentActions.documentRow(document.id)))
                     ForEach(model.links) { line in
                         VStack(alignment: .leading, spacing: 6) {
@@ -90,7 +90,7 @@ struct PadDocumentsView: View {
                                     .lineLimit(2).truncationMode(.middle)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Button("Unlink") { Task { await actions.unlink(documentId: document.id, line) } }
-                                    .buttonStyle(.bordered)
+                                    .buttonStyle(.pad(.destructive, size: .small))
                                     .accessibilityLabel("Unlink \(line.title)")
                             }
                             PadRefusalBanner(message: write.message(for: PadDocumentActions.linkRow(line.id)))

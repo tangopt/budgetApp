@@ -122,7 +122,7 @@ struct PadMissingEvidencePanel: View {
                         viewButton(suggestion.id, name: suggestion.document.displayName)
                         if model.canLink {
                             Button("Link") { Task { await model.link(documentId: suggestion.id, to: item) } }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(.pad(.primary, size: .small))
                                 .accessibilityLabel("Link \(suggestion.document.displayName)")
                         }
                     }
@@ -138,7 +138,7 @@ struct PadMissingEvidencePanel: View {
 
     private func viewButton(_ documentId: Int64, name: String) -> some View {
         Button("View") { openDocumentId = documentId }
-            .buttonStyle(.bordered)
+            .buttonStyle(.pad(.secondary, size: .small))
             .accessibilityLabel("View \(name)")
     }
 

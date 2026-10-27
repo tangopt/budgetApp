@@ -153,7 +153,7 @@ struct PadRentReceiptsView: View {
                 }
                 if model.canLink(receipt) {
                     Button("Link payment…") { Task { await choose(receipt) } }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.pad(.secondary, size: .small))
                 }
                 PadRefusalBanner(message: write.message(for: receipt.rowId))
             }

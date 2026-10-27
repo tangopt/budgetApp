@@ -81,18 +81,18 @@ public struct DocumentPanel<Extra: View>: View {
             Button { showsFullView = true } label: {
                 Label("Open full view", systemImage: "arrow.up.left.and.arrow.down.right").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.pad(.secondary))
             .disabled(!model.file.isReady)
             if case .ready(let url) = model.file {
                 ShareLink(item: url) {
                     Label("Download/Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.pad(.secondary))
             } else {
                 Button {} label: {
                     Label("Download/Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.pad(.secondary))
                 .disabled(true)
             }
         }
@@ -182,7 +182,7 @@ struct DocumentThumbnailView: View {
         case .failed(let copy):
             VStack(alignment: .leading, spacing: 8) {
                 InlineBanner(tone: .amber, text: copy)
-                Button("Try again", action: onRetry).buttonStyle(.bordered)
+                Button("Try again", action: onRetry).buttonStyle(.pad(.secondary))
             }
         case .ready(let url):
             Button(action: onOpen) {

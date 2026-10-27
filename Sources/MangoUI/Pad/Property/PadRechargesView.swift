@@ -90,7 +90,7 @@ struct PadRechargesView: View {
                 }
                 if let action = model.action(for: statement) {
                     Button(action.title) { Task { await run(action, statement) } }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.pad(.secondary, size: .small))
                 }
                 PadRefusalBanner(message: write.message(for: statement.rowId))
             }

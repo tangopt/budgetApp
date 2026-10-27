@@ -116,7 +116,7 @@ extension PadMissingEvidenceView {
                         Button { Task { await model.link(documentId: documentId, to: item) } } label: {
                             Text("Link to this item").frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.pad(.primary))
                     }
                     PadRefusalBanner(message: write.message(for: PadMissingEvidenceModel.itemRow(item.id)))
                 }

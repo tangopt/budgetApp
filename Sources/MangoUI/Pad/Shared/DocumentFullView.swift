@@ -74,7 +74,7 @@ public struct DocumentFullView: View {
         case .failed(let copy)?:
             VStack(alignment: .leading, spacing: 8) {
                 InlineBanner(tone: .amber, text: copy)
-                Button("Try again") { Task { await model?.retry() } }.buttonStyle(.bordered)
+                Button("Try again") { Task { await model?.retry() } }.buttonStyle(.pad(.secondary))
             }
             .padding(24)
         case .ready(let url)?:
