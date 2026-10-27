@@ -81,7 +81,7 @@ public struct DocumentPanel<Extra: View>: View {
             Button { showsFullView = true } label: {
                 Label("Open full view", systemImage: "arrow.up.left.and.arrow.down.right").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .disabled(!model.file.isReady)
             if case .ready(let url) = model.file {
                 ShareLink(item: url) {
