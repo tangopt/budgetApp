@@ -102,23 +102,25 @@ public final class PadEvidenceModel: ObservableObject {
     public func reload() async {
         await write.refresh()
         await propertyWrite.refresh()
-        let viewer = try? await write.writer?.actor()
-        guard let snapshot = await Self.read(dbQueue, year: year, viewer: viewer) else { return }
+        // Her own view; nothing while she isn't known (or can't be read), everything only for demo data.
+        let scope = await write.readScope()
+        guard let snapshot = await Self.read(dbQueue, year: year, scope: scope) else { return }
         apply(snapshot)
         await loadPanel()
     }
 
     /// The areas for `year` as `viewer` sees them (nil: everything).
     public nonisolated static func readNow(_ dbQueue: any DatabaseReader, year: UKTaxYear, viewer: AccessActor? = nil) -> Snapshot? {
-        try? dbQueue.read { db in try snapshot(db, year: year, viewer: viewer) }
+        let scope: DeviceReadScope = viewer.map(DeviceReadScope.actor) ?? .everything
+        return try? dbQueue.read { db in try snapshot(db, year: year, scope: scope) }
     }
 
-    nonisolated static func read(_ dbQueue: any DatabaseReader, year: UKTaxYear, viewer: AccessActor?) async -> Snapshot? {
-        try? await dbQueue.read { db in try snapshot(db, year: year, viewer: viewer) }
+    nonisolated static func read(_ dbQueue: any DatabaseReader, year: UKTaxYear, scope: DeviceReadScope) async -> Snapshot? {
+        try? await dbQueue.read { db in try snapshot(db, year: year, scope: scope) }
     }
 
-    nonisolated static func snapshot(_ db: Database, year: UKTaxYear, viewer: AccessActor?) throws -> Snapshot {
-        Snapshot(areas: try TaxYearEvidence.areas(db: db, taxYear: year, viewer: viewer), catalog: try DocumentKindCatalog.load(db: db))
+    nonisolated static func snapshot(_ db: Database, year: UKTaxYear, scope: DeviceReadScope) throws -> Snapshot {
+        Snapshot(areas: try TaxYearEvidence.areas(db: db, taxYear: year, scope: scope), catalog: try DocumentKindCatalog.load(db: db))
     }
 
     /// Shows an already read snapshot (the snapshot routes' first frame).

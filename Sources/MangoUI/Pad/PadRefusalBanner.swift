@@ -72,6 +72,12 @@ public final class PadWriteModel: ObservableObject {
         unsent = canEdit ? 0 : await writer.unsentChanges()
     }
 
+    /// What the screens read with (`DeviceWriter.readScope`): with no writer (demo data) everything.
+    public func readScope() async -> DeviceReadScope {
+        guard let writer else { return .everything }
+        return await writer.readScope()
+    }
+
     /// Shown in place of the actions: the user views the area only.
     public var viewOnlyMessage: String? {
         writer != nil && !canEdit ? DeviceWriteCopy.viewOnly(area) : nil

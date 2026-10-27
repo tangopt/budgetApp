@@ -120,6 +120,19 @@ extension ThisMonthChecklist {
     /// evidence count needs Documents. Reads only.
     public static func build(db: Database, tenancyId: Int64, today: Date, trayCount: Int, trayItems: [TrayItem] = [],
                              viewer: AccessActor? = nil) throws -> ThisMonthChecklist {
+        try build(db: db, tenancyId: tenancyId, today: today, trayCount: trayCount, trayItems: trayItems, viewer: viewer, seesNothing: false)
+    }
+
+    /// `build` as a device's screen reads it (`DeviceWriter.readScope`): `.nothing` (her user not known yet, or not
+    /// readable) gives a hidden checklist.
+    public static func build(db: Database, tenancyId: Int64, today: Date, trayCount: Int, trayItems: [TrayItem] = [],
+                             scope: DeviceReadScope) throws -> ThisMonthChecklist {
+        try build(db: db, tenancyId: tenancyId, today: today, trayCount: trayCount, trayItems: trayItems, viewer: scope.viewer,
+                  seesNothing: scope == .nothing)
+    }
+
+    private static func build(db: Database, tenancyId: Int64, today: Date, trayCount: Int, trayItems: [TrayItem],
+                              viewer: AccessActor?, seesNothing: Bool) throws -> ThisMonthChecklist {
         guard let tenancy = try Tenancy.fetchOne(db, key: tenancyId) else { throw RechargeError.tenancyNotFound }
         let calendar = MonthRange.calendar
         let day = PropertyDates.day(today)
@@ -130,6 +143,7 @@ extension ThisMonthChecklist {
         var checklist = ThisMonthChecklist(tenancyId: tenancyId, tenancyName: tenancy.referenceLabel, month: month, steps: [], side: [],
                                            evidenceCount: 0, downloadsWaiting: 0)
         func canView(_ area: AccessArea) throws -> Bool {
+            guard !seesNothing else { return false }
             guard let viewer else { return true }
             return try AccessPolicy.level(viewer, area, db: db) >= .view
         }

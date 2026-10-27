@@ -67,6 +67,13 @@ public enum TaxYearEvidence {
     /// The one line Evidence keeps about utility bills.
     public static let utilityPointer = "Utility bills are tracked in Bills & recharges."
 
+    /// `areas` as a device's screen reads them (`DeviceWriter.readScope`): `.nothing` (her user not known yet, or not
+    /// readable) shows no area.
+    public static func areas(db: Database, taxYear: UKTaxYear, scope: DeviceReadScope) throws -> [EvidenceArea] {
+        guard scope != .nothing else { return [] }
+        return try areas(db: db, taxYear: taxYear, viewer: scope.viewer)
+    }
+
     /// The areas of `taxYear` that `viewer` may see (nil: everything, the Mac and demo data), in `EvidenceAreaKind` order,
     /// each with its items (missing first, then the checklist's order). An area shows even when empty, while the viewer
     /// may see it: the personal areas with View on some person's Tax, the property's while there is one and she has

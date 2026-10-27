@@ -69,10 +69,11 @@ public final class PadThisMonthModel: ObservableObject {
         }
         let day = today()
         let tray = trayItems()
-        let viewer = try? await write.writer?.actor()
+        // Her own view; nothing while she isn't known (or can't be read), everything only for demo data.
+        let scope = await write.readScope()
         let reader = dbQueue
         guard let read = try? await reader.read({ db in
-            try Self.read(db, tenancyId: tenancyId, today: day, tray: tray, viewer: viewer)
+            try Self.read(db, tenancyId: tenancyId, today: day, tray: tray, scope: scope)
         }), mine == generation else { return }
         snapshot = read
     }
@@ -86,11 +87,12 @@ public final class PadThisMonthModel: ObservableObject {
     public nonisolated static func readNow(_ dbQueue: any DatabaseReader, tenancyId: Int64?, today: Date, tray: [TrayItem] = [],
                                            viewer: AccessActor? = nil) -> Snapshot? {
         guard let tenancyId else { return nil }
-        return try? dbQueue.read { db in try read(db, tenancyId: tenancyId, today: today, tray: tray, viewer: viewer) }
+        let scope: DeviceReadScope = viewer.map(DeviceReadScope.actor) ?? .everything
+        return try? dbQueue.read { db in try read(db, tenancyId: tenancyId, today: today, tray: tray, scope: scope) }
     }
 
-    nonisolated static func read(_ db: Database, tenancyId: Int64, today: Date, tray: [TrayItem], viewer: AccessActor?) throws -> Snapshot {
-        let checklist = try ThisMonthChecklist.build(db: db, tenancyId: tenancyId, today: today, trayCount: tray.count, trayItems: tray, viewer: viewer)
+    nonisolated static func read(_ db: Database, tenancyId: Int64, today: Date, tray: [TrayItem], scope: DeviceReadScope) throws -> Snapshot {
+        let checklist = try ThisMonthChecklist.build(db: db, tenancyId: tenancyId, today: today, trayCount: tray.count, trayItems: tray, scope: scope)
         guard let tenancy = try Tenancy.fetchOne(db, key: tenancyId) else { throw RechargeError.tenancyNotFound }
         let currency = try Property.fetchOne(db, key: tenancy.propertyId)?.currency ?? .eur
         var amounts: [String: Int] = [:]

@@ -187,6 +187,25 @@ final class PadEvidenceModelTests: XCTestCase {
         XCTAssertEqual(shown.areas.first { $0.area == .lisbonFlat }?.items, admin.areas.first { $0.area == .lisbonFlat }?.items)
     }
 
+    /// Before this device's iCloud user is bound to an app user (or a stranger's), and when who she is can't be read,
+    /// nothing is shown: never everything.
+    func testUnknownViewerSeesNothing() async throws {
+        for viewer in [PhoneViewer.iCloudUser(recordName: nil), .iCloudUser(recordName: "_stranger")] {
+            let model = await model(viewer)
+            XCTAssertTrue(model.areas.isEmpty, "\(viewer)")
+            XCTAssertTrue(model.items.isEmpty)
+        }
+        let member = try addMember(documentsLevel: .edit)
+        let today = today, db = db!
+        let broken = DeviceWriter(db: try DatabaseQueue(), viewer: { .iCloudUser(recordName: member) }, afterWrite: {})
+        let tabs = PhoneTabsModel(dbQueue: db, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: broken)
+        await tabs.padEvidence.reload()
+        XCTAssertTrue(tabs.padEvidence.areas.isEmpty, "a read error shows nothing")
+        // Bound, she sees her own.
+        let bound = await model(.iCloudUser(recordName: member))
+        XCTAssertFalse(bound.items.isEmpty)
+    }
+
     // MARK: Helpers
 
     private nonisolated static func day(_ y: Int, _ m: Int, _ d: Int) -> Date {

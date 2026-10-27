@@ -187,6 +187,30 @@ final class DeviceWriterTests: XCTestCase {
         }
     }
 
+    /// What the device's screens read with: everything only for demo data and tests; an iCloud user's own view once she
+    /// is bound; nothing while she isn't known, or when it can't be read.
+    func testReadScope() async throws {
+        _ = try uuid("appUser", id("adminUser"))
+        _ = try uuid("appUser", id("memberUser"))
+        for viewer in [PhoneViewer.demoAdmin, .everyone] {
+            let scope = await writer(viewer).readScope()
+            XCTAssertEqual(scope, .everything)
+        }
+        let member = await memberWriter.readScope()
+        let actor = try await memberWriter.actor()
+        XCTAssertEqual(member, .actor(try XCTUnwrap(actor)))
+        for viewer in [PhoneViewer.iCloudUser(recordName: nil), .iCloudUser(recordName: "_stranger")] {
+            let scope = await writer(viewer).readScope()
+            XCTAssertEqual(scope, .nothing)
+        }
+        // A database it can't read (no tables): nothing, even for demo data.
+        let broken = try DatabaseQueue()
+        for viewer in [PhoneViewer.iCloudUser(recordName: Self.member), .demoAdmin] {
+            let scope = await DeviceWriter(db: broken, viewer: { viewer }, afterWrite: {}).readScope()
+            XCTAssertEqual(scope, .nothing)
+        }
+    }
+
     func testThrowingBodyDoesNotCallAfterWrite() async throws {
         struct Boom: Error {}
         let error = await thrown { _ = try await self.memberWriter.write(.property) { _ in throw Boom() } }

@@ -117,6 +117,24 @@ final class PadThisMonthModelTests: XCTestCase {
         XCTAssertTrue(viewing.offers(.fetchStatement(.bank)))
     }
 
+    /// Before this device's iCloud user is bound to an app user, and when who she is can't be read, the checklist is
+    /// hidden: never everything.
+    func testUnknownViewerSeesHiddenChecklist() async throws {
+        let shown = await tabs().padThisMonth
+        XCTAssertEqual(shown.checklist?.isHidden, false)
+        for viewer in [PhoneViewer.iCloudUser(recordName: nil), .iCloudUser(recordName: "_stranger")] {
+            let model = await tabs(viewer).padThisMonth
+            XCTAssertEqual(model.checklist?.isHidden, true, "\(viewer)")
+            XCTAssertEqual(model.checklist?.evidenceCount, 0)
+        }
+        let today = today, db = db!
+        let broken = DeviceWriter(db: try DatabaseQueue(), viewer: { .demoAdmin }, afterWrite: {})
+        let tabs = PhoneTabsModel(dbQueue: db, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: broken)
+        await tabs.padProperty.reload()
+        await tabs.padThisMonth.reload()
+        XCTAssertEqual(tabs.padThisMonth.checklist?.isHidden, true, "a read error shows nothing")
+    }
+
     func testTenancyPickerChangesChecklist() async throws {
         let tabs = await tabs()
         let model = tabs.padThisMonth
