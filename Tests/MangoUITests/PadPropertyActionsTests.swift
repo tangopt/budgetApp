@@ -5,7 +5,7 @@ import BudgetDemo
 import struct BudgetCore.Transaction
 @testable import MangoUI
 
-/// Step 8 Task 8: the iPad's Bills, Recharges and Rent receipts actions, each one of the Mac's BudgetCore writes
+/// Step 8 Task 8 (Bills and Recharges merged in step 10 Task 11): the iPad's Bills & recharges and Rent receipts actions, each one of the Mac's BudgetCore writes
 /// through the device writer (filed years checked), a refusal shown under the row it was made on. Demo data (the admin,
 /// `.demoAdmin`), plus a member bound to an iCloud user.
 @MainActor
@@ -42,7 +42,7 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = PhoneTabsModel(dbQueue: db, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: writer(viewer))
         await tabs.padProperty.reload()
         await tabs.padWrite.refresh()
-        await tabs.padRecharges.reload()
+        await tabs.padBills.reload()
         await tabs.padRentReceipts.reload()
         return tabs
     }
@@ -72,8 +72,8 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = await tabs()
         let bill = try bill("invoice54", tabs)
         XCTAssertEqual(bill.stage, .inRecharge)
-        XCTAssertEqual(tabs.padBillActions.actions(for: bill), [.linkInvoice, .markSent])
-        let saved = await tabs.padBillActions.markSent(bill)
+        XCTAssertEqual(tabs.padBills.actions(for: bill), [.linkDocument, .markSent, .correctTotal, .openStatement])
+        let saved = await tabs.padBills.markSent(bill)
         XCTAssertTrue(saved)
         XCTAssertEqual(try self.bill("invoice54", tabs).stage, .sentToTenant)
         let statement = try await db.read { db in try RechargeStatement.fetchOne(db, key: bill.statement!.id!) }
@@ -86,10 +86,10 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = await tabs()
         let bill = try bill("invoice52", tabs)
         XCTAssertEqual(bill.stage, .sentToTenant)
-        XCTAssertEqual(tabs.padBillActions.actions(for: bill), [.recordPayment])
-        let suggestionChoices = await tabs.padBillActions.paymentSuggestions(for: bill)
+        XCTAssertEqual(tabs.padBills.actions(for: bill), [.recordPayment, .openStatement])
+        let suggestionChoices = await tabs.padBills.paymentSuggestions(for: bill)
         let suggestion = try XCTUnwrap(suggestionChoices.first)
-        let saved = await tabs.padBillActions.recordPayment(bill, suggestion)
+        let saved = await tabs.padBills.recordPayment(bill, suggestion)
         XCTAssertTrue(saved)
         XCTAssertEqual(try self.bill("invoice52", tabs).stage, .paidByTenant)
         XCTAssertEqual(try self.bill("invoice53", tabs).stage, .paidByTenant, "the statement's other bill too")
@@ -105,8 +105,8 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = await tabs()
         let bill = try bill("invoice54", tabs)
         XCTAssertEqual(bill.stage, .linkedToPayment)
-        XCTAssertEqual(tabs.padBillActions.actions(for: bill), [.linkInvoice, .addToRecharge])
-        let saved = await tabs.padBillActions.addToRecharge(bill)
+        XCTAssertEqual(tabs.padBills.actions(for: bill), [.linkDocument, .addToRecharge, .correctTotal])
+        let saved = await tabs.padBills.addToRecharge(bill)
         XCTAssertTrue(saved)
         let now = try self.bill("invoice54", tabs)
         XCTAssertEqual(now.stage, .inRecharge)
@@ -119,10 +119,10 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = await tabs()
         let bill = try bill("invoice54", tabs)
         XCTAssertEqual(bill.stage, .invoiceIn)
-        XCTAssertEqual(tabs.padBillActions.actions(for: bill), [.linkInvoice, .linkPayment])
-        let candidateChoices = await tabs.padBillActions.paymentCandidates(for: bill)
+        XCTAssertEqual(tabs.padBills.actions(for: bill), [.linkDocument, .linkPayment, .correctTotal])
+        let candidateChoices = await tabs.padBills.paymentCandidates(for: bill)
         let candidate = try XCTUnwrap(candidateChoices.first)
-        let saved = await tabs.padBillActions.linkPayment(bill, transactionId: candidate.id!)
+        let saved = await tabs.padBills.linkPayment(bill, transactionId: candidate.id!)
         XCTAssertTrue(saved)
         XCTAssertEqual(try self.bill("invoice54", tabs).stage, .linkedToPayment)
         let origin = try await self.origin("utilityInvoice", 54)
@@ -132,9 +132,9 @@ final class PadPropertyActionsTests: XCTestCase {
     func testLinkInvoiceAttachesTheLibraryDocument() async throws {
         let tabs = await tabs()
         let bill = try bill("invoice54", tabs)
-        let documentChoices = await tabs.padBillActions.invoiceDocuments()
+        let documentChoices = await tabs.padBills.invoiceDocuments()
         let document = try XCTUnwrap(documentChoices.first)
-        let saved = await tabs.padBillActions.linkInvoice(bill, documentId: document.id!)
+        let saved = await tabs.padBills.linkInvoice(bill, documentId: document.id!)
         XCTAssertTrue(saved)
         XCTAssertEqual(try self.bill("invoice54", tabs).invoice?.documentId, document.id)
         let origin = try await self.origin("utilityInvoice", 54)
@@ -143,12 +143,13 @@ final class PadPropertyActionsTests: XCTestCase {
 
     func testRechargesScreenMarksSentAndRecordsPayment() async throws {
         let tabs = await tabs()
-        let recharges = tabs.padRecharges
+        let recharges = tabs.padBills
         let draft = try XCTUnwrap(recharges.statements.first { $0.statement.status == .draft })
-        XCTAssertEqual(recharges.action(for: draft), .markSent)
+        XCTAssertEqual(recharges.listAction(for: draft), .prepareEmail)
+        XCTAssertTrue(recharges.actions(for: draft).contains(.markSent))
         let sent = try XCTUnwrap(recharges.statements.first { $0.statement.status == .sent })
-        XCTAssertEqual(recharges.action(for: sent), .recordPayment)
-        XCTAssertNil(recharges.action(for: try XCTUnwrap(recharges.statements.first { $0.statement.status == .paid })))
+        XCTAssertEqual(recharges.listAction(for: sent), .recordPayment)
+        XCTAssertNil(recharges.listAction(for: try XCTUnwrap(recharges.statements.first { $0.statement.status == .paid })))
         let suggestion = try XCTUnwrap(sent.suggestions.first)
         let paid = await recharges.recordPayment(sent, suggestion)
         XCTAssertTrue(paid)
@@ -190,11 +191,14 @@ final class PadPropertyActionsTests: XCTestCase {
         XCTAssertFalse(tabs.padWrite.canEdit)
         XCTAssertEqual(tabs.padWrite.viewOnlyMessage, DeviceWriteCopy.viewOnly(.property))
         XCTAssertEqual(tabs.padWrite.viewOnlyMessage, "View only: you don't have Edit on Property.")
-        for bill in tabs.padProperty.bills?.bills ?? [] { XCTAssertEqual(tabs.padBillActions.actions(for: bill), []) }
-        for statement in tabs.padRecharges.statements { XCTAssertNil(tabs.padRecharges.action(for: statement)) }
+        for bill in tabs.padProperty.bills?.bills ?? [] { XCTAssertEqual(tabs.padBills.actions(for: bill), []) }
+        for statement in tabs.padBills.statements {
+            XCTAssertNil(tabs.padBills.listAction(for: statement))
+            XCTAssertEqual(tabs.padBills.actions(for: statement), [])
+        }
         for receipt in tabs.padRentReceipts.receipts { XCTAssertFalse(tabs.padRentReceipts.canLink(receipt)) }
         // Nothing is written even if asked.
-        let saved = await tabs.padBillActions.markSent(try bill("invoice54", tabs))
+        let saved = await tabs.padBills.markSent(try bill("invoice54", tabs))
         XCTAssertFalse(saved)
         XCTAssertEqual(try self.bill("invoice54", tabs).stage, .inRecharge)
         XCTAssertNil(tabs.padWrite.unsentMessage, "nothing waits to go up")
@@ -205,8 +209,8 @@ final class PadPropertyActionsTests: XCTestCase {
         XCTAssertTrue(editing.padWrite.canEdit)
         XCTAssertNil(editing.padWrite.viewOnlyMessage)
         let bill = try self.bill("invoice54", editing)
-        XCTAssertEqual(editing.padBillActions.actions(for: bill), [.linkInvoice, .markSent])
-        let marked = await editing.padBillActions.markSent(bill)
+        XCTAssertEqual(editing.padBills.actions(for: bill), [.linkDocument, .markSent, .correctTotal, .openStatement])
+        let marked = await editing.padBills.markSent(bill)
         XCTAssertTrue(marked)
         XCTAssertEqual(try self.bill("invoice54", editing).stage, .sentToTenant)
     }
@@ -216,7 +220,7 @@ final class PadPropertyActionsTests: XCTestCase {
         let member = try addMember(propertyLevel: .edit)
         let tabs = await tabs(.iCloudUser(recordName: member))
         let bill = try bill("invoice54", tabs)
-        let marked = await tabs.padBillActions.markSent(bill)
+        let marked = await tabs.padBills.markSent(bill)
         XCTAssertTrue(marked)
         try await db.write { db in
             try db.execute(sql: "UPDATE memberPermission SET level = ? WHERE area = ? AND appUserId = (SELECT id FROM appUser WHERE cloudKitUserRecordName = ?)",
@@ -228,7 +232,7 @@ final class PadPropertyActionsTests: XCTestCase {
         XCTAssertEqual(tabs.padWrite.unsentMessage, DeviceWriteCopy.notSent(1))
         XCTAssertEqual(DeviceWriteCopy.notSent(1), "1 change not sent — you can no longer change this")
         XCTAssertEqual(DeviceWriteCopy.notSent(3), "3 changes not sent — you can no longer change this")
-        XCTAssertEqual(tabs.padBillActions.actions(for: try self.bill("invoice54", tabs)), [])
+        XCTAssertEqual(tabs.padBills.actions(for: try self.bill("invoice54", tabs)), [])
     }
 
     func testFiledYearRefusalShownInline() async throws {
@@ -245,14 +249,14 @@ final class PadPropertyActionsTests: XCTestCase {
         let tabs = await tabs()
         let bill = try bill("invoice2", tabs)
         XCTAssertEqual(bill.stage, .sentToTenant)
-        XCTAssertEqual(tabs.padBillActions.actions(for: bill), [.recordPayment])
+        XCTAssertEqual(tabs.padBills.actions(for: bill), [.recordPayment, .openStatement])
         let suggestion = try await db.read { db in
             Recharges.PaymentSuggestion(statement: try XCTUnwrap(RechargeStatement.fetchOne(db, key: statementId)),
                                         transaction: try XCTUnwrap(Transaction.fetchOne(db, key: taken.transactionId)),
                                         amountMinorUnits: taken.amountMinorUnits, differenceMinorUnits: 0)
         }
         let before = try await db.read { db in try Row.fetchAll(db, sql: "SELECT * FROM rechargePayment ORDER BY id") }
-        let saved = await tabs.padBillActions.recordPayment(bill, suggestion)
+        let saved = await tabs.padBills.recordPayment(bill, suggestion)
         XCTAssertFalse(saved)
         XCTAssertEqual(tabs.padWrite.message(for: bill.id), DeviceWriteCopy.filedYear(years: ["2024/25"]))
         XCTAssertNil(tabs.padWrite.message(for: "invoice3"), "only under the acted-on row")
@@ -265,7 +269,7 @@ final class PadPropertyActionsTests: XCTestCase {
     func testEachActionCallsAfterWriteOnce() async throws {
         try takeBack(to: .invoiceIn)
         let tabs = await tabs()
-        let actions = tabs.padBillActions
+        let actions = tabs.padBills
         var expected = 0
         func check(_ saved: Bool, _ name: String) {
             expected += 1

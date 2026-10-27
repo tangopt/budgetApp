@@ -76,12 +76,6 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
     }
 }
 
-/// Until Task 11 replaces them, Bills & recharges shows the step 8 screens one at a time.
-public enum PadLegacyTab: String, CaseIterable, Identifiable, Sendable {
-    case bills = "Bills", recharges = "Recharges", rentReceipts = "Rent receipts"
-    public var id: String { rawValue }
-}
-
 /// The sidebar's collapsed state (kept per scene by `PadRootView`'s `@SceneStorage`): the full list, or a narrow icon rail.
 public struct PadSidebarState: Equatable, Sendable {
     public var isCollapsed: Bool

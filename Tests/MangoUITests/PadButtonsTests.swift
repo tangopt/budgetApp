@@ -13,7 +13,17 @@ final class PadButtonsTests: XCTestCase {
             ["bell.slash", "Not expected any more"],
             ["arrow.down.tray", "Download"],
             ["trash", "Discard"],
+            ["link", "Link payment"],
+            ["doc.badge.plus", "Add to recharge"],
+            ["paperplane", "Mark sent"],
+            ["checkmark.circle", "Record payment"],
+            ["eye", "View"],
+            ["link.slash", "Unlink"],
         ])
+    }
+
+    func testUnlinkAndDiscardAreDestructive() {
+        XCTAssertEqual(RowAction.allCases.filter(\.isDestructive), [.discard, .unlink])
     }
 
     func testEveryActionHasAnAccessibilityLabel() {

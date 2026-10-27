@@ -7,9 +7,9 @@ import BudgetCore
 /// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
 ///
-/// Sections whose screens later tasks build: Bills & recharges shows the step 8 Bills / Recharges / Rent receipts
-/// screens behind a picker (`PadLegacyTab`), Evidence the step 8 Missing evidence screen; Money, Calendar, Checks and
-/// Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's through
+/// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) with the document panel; Rent receipts
+/// stay reachable from Tenancies until Task 13 rebuilds it. Evidence is the step 8 Missing evidence screen; Money,
+/// Calendar, Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's through
 /// `padDocumentWrite`.
 ///
 /// The built-in browser (step 10, Task 5; `browser`, nil with demo data) is presented over everything when a screen
@@ -26,7 +26,6 @@ public struct PadRootView: View {
     let onRefresh: () async -> Void
     let onSettings: () -> Void
     @State private var selection: PadSection
-    @State private var legacyTab: PadLegacyTab
     @State private var userName = "You"
     @SceneStorage("padSidebarCollapsed") private var sidebarCollapsed = false
 
@@ -34,7 +33,7 @@ public struct PadRootView: View {
     /// `waitingChanges`: this iPad's changes the server hasn't taken yet, in the zones it pushes to
     /// (`SyncWaitingChanges`). `browser`: the built-in browser; ignored with demo data, where it is hidden.
     public init(tabs: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
-                initialSelection: PadSection = .home, legacyTab: PadLegacyTab = .bills, sidebarCollapsed: Bool = false,
+                initialSelection: PadSection = .home, sidebarCollapsed: Bool = false,
                 waitingChanges: Int = 0, browser: BrowserModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
         self.tabs = tabs
@@ -50,7 +49,6 @@ public struct PadRootView: View {
         self.onRefresh = onRefresh
         self.onSettings = onSettings
         _selection = State(initialValue: initialSelection)
-        _legacyTab = State(initialValue: legacyTab)
         _sidebarCollapsed = SceneStorage(wrappedValue: sidebarCollapsed, "padSidebarCollapsed")
     }
 
@@ -58,7 +56,7 @@ public struct PadRootView: View {
         GeometryReader { proxy in
             let state = PadSidebarState(isCollapsed: sidebarCollapsed).effective(
                 width: proxy.size.width, height: proxy.size.height,
-                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .evidence && evidence.selectedItemId != nil))
+                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .evidence && evidence.selectedItemId != nil))
             HStack(spacing: 0) {
                 PadSidebar(state: state, selection: $selection, hasProperty: tabs.hasProperty, userName: userName, avatar: nil,
                            sync: SyncSidebarStatus.make(isRunning: syncStatus != .off, status: syncStatus, progress: nil, refusal: nil),
@@ -110,10 +108,11 @@ public struct PadRootView: View {
                              go: open)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .tenancies:
-            PadTenanciesView(model: tabs.padProperty, syncStatus: syncStatus)
+            PadTenanciesView(model: tabs.padProperty, rentReceipts: tabs.padRentReceipts, write: tabs.padWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .billsAndRecharges:
-            legacyBills
+            PadBillsAndRechargesView(model: tabs.padBills, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
         case .documents:
             PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
@@ -128,38 +127,12 @@ public struct PadRootView: View {
     /// Where This month's actions go.
     private func open(_ destination: PadDestination) {
         switch destination {
-        case .billsAndRecharges:
-            legacyTab = .bills
-            selection = .billsAndRecharges
-        case .recharges:
-            legacyTab = .recharges
+        case .billsAndRecharges, .recharges:
             selection = .billsAndRecharges
         case .evidence:
             selection = .evidence
         case .site, .check:
             break
-        }
-    }
-
-    /// Bills & recharges until Task 11: the step 8 screens behind a picker.
-    private var legacyBills: some View {
-        VStack(spacing: 0) {
-            Picker("Show", selection: $legacyTab) {
-                ForEach(PadLegacyTab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            Group {
-                switch legacyTab {
-                case .bills:
-                    PadBillsView(model: tabs.padProperty, actions: tabs.padBillActions, write: tabs.padWrite, syncStatus: syncStatus)
-                case .recharges:
-                    PadRechargesView(model: tabs.padRecharges, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
-                case .rentReceipts:
-                    PadRentReceiptsView(model: tabs.padRentReceipts, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
-                }
-            }
-            .offlineBanner(syncStatus, lastSync: lastSync)
         }
     }
 }

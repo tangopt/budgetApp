@@ -205,8 +205,7 @@ struct PadThisMonthView: View {
     @ViewBuilder
     private func detail(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot) -> some View {
         if step.id == .chargesInGrid, step.state != .notApplicable {
-            let so = Money.format(snapshot.rechargeSoFarMinorUnits, currency: snapshot.currency)
-            let text = step.state == .done ? (step.detail ?? "") : "Checked bills go in automatically: \(so) to recharge so far."
+            let text = PadThisMonthModel.chargesText(step, soFarMinorUnits: snapshot.rechargeSoFarMinorUnits, currency: snapshot.currency)
             Text(text.figuresUnbroken)
                 .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button("See the grid") { go(.billsAndRecharges) }.buttonStyle(.pad(.textLink, size: .small))

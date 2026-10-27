@@ -5,7 +5,11 @@ import BudgetCore
 /// the selected tenancy).
 struct PadTenanciesView: View {
     @ObservedObject var model: PadPropertyModel
+    /// Until Tenancies is rebuilt (Task 13), the rent receipts open from here.
+    @ObservedObject var rentReceipts: PadRentReceiptsModel
+    @ObservedObject var write: PadWriteModel
     let syncStatus: SyncStatus
+    @State private var showsReceipts = false
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
@@ -26,6 +30,14 @@ struct PadTenanciesView: View {
             .background(theme.background)
             .offlineBannerSlot()
             .navigationTitle("Tenancies")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Rent receipts") { showsReceipts = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showsReceipts) {
+            PadRentReceiptsView(model: rentReceipts, property: model, write: write, syncStatus: syncStatus)
         }
         .task(id: SyncReloadTrigger(syncStatus)) { await model.reload() }
     }

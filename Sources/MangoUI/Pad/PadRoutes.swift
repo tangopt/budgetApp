@@ -67,38 +67,33 @@ public enum PadRoutes {
             AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .tenancies,
                                 columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-bills", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .billsAndRecharges,
-                                columns: .doubleColumn))
-        },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
             let model = tabs.padDocuments
             model.preload(PadDocumentsModel.readNow(context.dbQueue))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
-        // Task 8: the Property screens with their actions (the demo's admin edits).
-        DemoRoute(name: "pad-recharges", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            tabs.padRecharges.preload(PadRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
-                                                                tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, legacyTab: .recharges, columns: .doubleColumn))
+        // Step 10, Task 11: Bills & recharges as one screen (summary, the year's grid by stage, statements), then with a bill's
+        // document panel open, and with a filed-year refusal under a bill. Rent receipts (reached from Tenancies) as in Task 8.
+        DemoRoute(name: "pad-bills-recharges", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context)
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-bills-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context, selecting: { $0.invoice?.documentId != nil && $0.stage >= .inRecharge && $0.stage < .paidByTenant })
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let tabs = billsTabs(context, selecting: { $0.stage == .inRecharge })
+            if let id = tabs.padBills.selectedBillId {
+                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(rowId: id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-rent-receipts", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
             let tabs = editingTabs(context)
             tabs.padRentReceipts.preload(PadRentReceiptsModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, legacyTab: .rentReceipts, columns: .doubleColumn))
-        },
-        // A filed-year refusal under the latest draft's bill, its cell selected.
-        DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            if let grid = tabs.padProperty.bills, let bill = grid.bills.last(where: { $0.stage == .inRecharge }) ?? grid.bills.last {
-                tabs.padProperty.selectedCellId = grid.rows.compactMap { grid.cell(row: $0, month: bill.month) }
-                    .first { cell in cell.bills.contains { $0.id == bill.id } }?.id
-                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(
-                    rowId: bill.id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
-            }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .billsAndRecharges, columns: .doubleColumn))
+            return AnyView(PadRentReceiptsView(model: tabs.padRentReceipts, property: tabs.padProperty, write: tabs.padWrite, syncStatus: context.syncStatus))
         },
         // Task 10: Missing evidence for 2025/26, its first missing item with suggestions in the side panel (Link offered).
         DemoRoute(name: "pad-missing-evidence", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
@@ -226,6 +221,18 @@ public enum PadRoutes {
         let tabs = tabs(context, writer: DeviceWriter(db: context.dbQueue, viewer: { .demoAdmin }, afterWrite: {}))
         tabs.padWrite.preload(canEdit: true)
         tabs.padDocumentWrite.preload(canEdit: true)
+        return tabs
+    }
+
+    /// Editing tabs with Bills & recharges read, the first bill `selecting` accepts (latest first) open in the panel.
+    @MainActor
+    static func billsTabs(_ context: PhoneDemoContext, selecting: ((UtilityBill) -> Bool)? = nil) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        tabs.padBills.preload(PadBillsAndRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
+                                                                tenancyId: tabs.padProperty.selectedTenancyId, today: context.today))
+        if let selecting, let bill = tabs.padProperty.bills?.bills.sorted(by: { $0.month > $1.month }).first(where: selecting) {
+            tabs.padBills.selectedBillId = bill.id
+        }
         return tabs
     }
 

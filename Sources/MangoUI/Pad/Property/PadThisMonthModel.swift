@@ -102,6 +102,13 @@ public final class PadThisMonthModel: ObservableObject {
         return Snapshot(checklist: checklist, amounts: amounts, rechargeSoFarMinorUnits: total, currency: currency)
     }
 
+    /// Step 3's line: what it found (done) or how checked bills go in, and in both "€X to recharge so far".
+    static func chargesText(_ step: ThisMonthChecklist.Step, soFarMinorUnits: Int, currency: Currency) -> String {
+        let so = "\(Money.format(soFarMinorUnits, currency: currency)) to recharge so far."
+        guard step.state == .done, let detail = step.detail, !detail.isEmpty else { return "Checked bills go in automatically: \(so)" }
+        return "\(detail) \(so)"
+    }
+
     // MARK: Actions
 
     /// Where `action` goes; nil for the one handled here (`confirmMatch`).

@@ -3,6 +3,8 @@ import SwiftUI
 /// The fixed vocabulary of actions inside list rows: the same icon for the same action everywhere.
 enum RowAction: CaseIterable, Sendable {
     case openSite, linkDocument, check, email, notExpected, download, discard
+    /// Step 10, Task 11 (controller ruling): the Bills & recharges row actions.
+    case linkPayment, addToRecharge, markSent, recordPayment, view, unlink
 
     var systemImage: String {
         switch self {
@@ -13,6 +15,12 @@ enum RowAction: CaseIterable, Sendable {
         case .notExpected: "bell.slash"
         case .download: "arrow.down.tray"
         case .discard: "trash"
+        case .linkPayment: "link"
+        case .addToRecharge: "doc.badge.plus"
+        case .markSent: "paperplane"
+        case .recordPayment: "checkmark.circle"
+        case .view: "eye"
+        case .unlink: "link.slash"
         }
     }
 
@@ -25,10 +33,19 @@ enum RowAction: CaseIterable, Sendable {
         case .notExpected: "Not expected any more"
         case .download: "Download"
         case .discard: "Discard"
+        case .linkPayment: "Link payment"
+        case .addToRecharge: "Add to recharge"
+        case .markSent: "Mark sent"
+        case .recordPayment: "Record payment"
+        case .view: "View"
+        case .unlink: "Unlink"
         }
     }
 
     /// The label naming the action and the item it acts on ("Link document, Gas bill").
+    /// Whether the icon is drawn in the destructive tint.
+    var isDestructive: Bool { self == .discard || self == .unlink }
+
     static func link(_ action: RowAction, item: String?) -> String {
         guard let item, !item.isEmpty else { return action.accessibilityLabel }
         return "\(action.accessibilityLabel), \(item)"
@@ -57,7 +74,7 @@ struct RowIconButton: View {
         Button(action: perform) {
             Image(systemName: action.systemImage)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(action == .discard ? Color.red : theme.accent)
+                .foregroundStyle(action.isDestructive ? Color.red : theme.accent)
                 .frame(width: Self.targetSize(size), height: Self.targetSize(size))
                 .contentShape(Rectangle())
         }
