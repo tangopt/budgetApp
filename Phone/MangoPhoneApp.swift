@@ -123,7 +123,8 @@ struct PhoneRoot: View {
     /// Opens demo data while it is on, else the phone's own database (and attaches sync to it).
     private func load() async {
         do {
-            // The iPad's writer (step 8): as this device's iCloud user, each committed write asking sync for a push.
+            // The device's writer (step 8; the iPhone too, step 7b): as this device's iCloud user, each committed write
+            // asking sync for a push.
             let sync = self.sync
             let environment = PhoneDemoData.isOn
                 ? try await PhoneEnvironment.loadDemo()
@@ -133,7 +134,7 @@ struct PhoneRoot: View {
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
             // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
             let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
-            // The iPad's Property edits write through the device writer; demo data's database is read-only: no writer.
+            // Edits write through the device writer; demo data's database is read-only: no writer.
             let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer,
                                       writer: environment.isDemo ? nil : environment.writer)
             // This iPhone's iCloud user, as sync reads it: followed by the model, not by a view, because the content

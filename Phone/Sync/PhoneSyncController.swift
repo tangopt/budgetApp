@@ -19,16 +19,18 @@ import MangoUI
 ///   (`CloudKitAccountStatus.userRecordName` → `SyncViewer.forCloudKitUser`), once the household pull has brought
 ///   that app user here: the engine is then made again with the viewer and syncs once more. Never another person's
 ///   private zone. The screens read through the same iCloud user (`viewerRecordName`, `PhoneViewer.iCloudUser`).
-/// - **Read-only on the iPhone:** the engine is made `.readOnly`: it only pulls, never creates the zone (a missing one
-///   is "nothing to download yet", the first download waiting for the Mac), never pushes, makes no key and takes no
-///   lease. Documents aren't downloaded (`documents: nil`).
-/// - **A writer on the iPad** (step 8): the mode is `DeviceWriteMode.decide`'s. A user bound to this iPad with Edit
-///   somewhere gets `.device(zones:)` (it pushes those zones only, and still makes no zone, key or lease); anyone else
-///   stays `.readOnly`. After each sync the mode is decided again (`DeviceWriteMode.changed`): a permission or
-///   membership pulled in that changes it makes the engine again, so a user who lost Edit stops pushing at once
-///   (`DeviceWriter` already refuses her next edit). Each committed write asks for a push (`localChange`). Document
-///   files are downloaded when opened (`documents: .lazy` over `Application Support/Mango/Library`, `openDocument`),
-///   checked and decrypted into that folder only; a document not downloaded keeps its file reference on any push.
+/// - **Read-only without Edit:** an engine made `.readOnly` only pulls, never creates the zone (a missing one is
+///   "nothing to download yet", the first download waiting for the Mac), never pushes, makes no key and takes no
+///   lease.
+/// - **A writer on the iPad and the iPhone** (step 8; the iPhone since step 7b): the mode is `DeviceWriteMode.decide`'s.
+///   A user bound to this device with Edit somewhere gets `.device(zones:)` (it pushes those zones only, and still
+///   makes no zone, key or lease); anyone else stays `.readOnly`. After each sync the mode is decided again
+///   (`DeviceWriteMode.changed`): a permission or membership pulled in that changes it makes the engine again, so a
+///   user who lost Edit stops pushing at once (`DeviceWriter` already refuses her next edit). Each committed write
+///   asks for a push (`localChange`).
+/// - **Documents on the iPad only:** files are downloaded when opened (`documents: .lazy` over
+///   `Application Support/Mango/Library`, `openDocument`), checked and decrypted into that folder only. The iPhone
+///   keeps no files (`documents: nil`). A document not downloaded keeps its file reference on any push.
 /// - **Keys:** iCloud Keychain under the demo scope for `--sync-demo` (`CloudKitTransport.keyScope`); the simulator
 ///   may be handed the demo key (`PhoneSyncDemoMode`).
 /// - **Triggers:** `.launch` once the database is open, `.foreground` when the scene comes back, a cancel when it goes
@@ -67,7 +69,7 @@ final class PhoneSyncController: ObservableObject {
     /// While this device joins the household, or after it was removed (step 7a); nil on the admin's phone and once the
     /// first household pull has landed. The root shows `HouseholdJoinView` for it.
     @Published private(set) var joinState: HouseholdJoinState?
-    /// How the running engine writes: `.readOnly` on the iPhone always, and on an iPad until its user has Edit.
+    /// How the running engine writes: `.readOnly` until this device's user has Edit somewhere.
     @Published private(set) var writeMode: SyncWriteMode = .readOnly
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
@@ -107,7 +109,7 @@ final class PhoneSyncController: ObservableObject {
     private var requester: SyncKeyExchange.Requester?
     private var exchange: Task<Void, Never>?
     private let canUseCloudKit = PhoneEntitlements.hasCloudKitContainer()
-    /// Writer mode and document downloads are the iPad's only; the iPhone stays as it was.
+    /// Document downloads are the iPad's only (both idioms write).
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
     /// The iPad's library folder (`PhoneDatabase.libraryFolder`), made once sync starts; nil on the iPhone.
     private var libraryRoot: URL?
@@ -119,10 +121,10 @@ final class PhoneSyncController: ObservableObject {
     /// Sync runs here (so "Sync now" means something).
     var isRunning: Bool { scheduler != nil }
 
-    /// Whom the iPad's `DeviceWriter` writes as: this device's iCloud user, read at each write (no one until known).
+    /// Whom this device's `DeviceWriter` writes as: this device's iCloud user, read at each write (no one until known).
     nonisolated var deviceViewer: PhoneViewer { .iCloudUser(recordName: writerRecordName.withLock { $0 }) }
 
-    // MARK: Writing (iPad)
+    // MARK: Writing
 
     /// A write committed here (`DeviceWriter.afterWrite`): asks for a push. Nothing while the engine is read-only.
     func localChange() {
@@ -270,7 +272,7 @@ final class PhoneSyncController: ObservableObject {
         }
     }
 
-    /// Makes the engine (read-only, or on an iPad the decided writer mode) for `viewer`'s zones and its scheduler
+    /// Makes the engine (read-only, or the decided writer mode) for `viewer`'s zones and its scheduler
     /// (stopping one already running), then asks for a sync. One at a time: a newer call (or demo data going on)
     /// supersedes one still stopping the old scheduler, so no scheduler is ever left running unowned.
     private func startEngine(viewer: SyncViewer) async {
@@ -308,7 +310,7 @@ final class PhoneSyncController: ObservableObject {
         } else {
             transport = CloudKitTransport()
         }
-        // The iPhone: read-only, no documents, as before. An iPad: the decided mode, documents on demand.
+        // The decided mode on both idioms; documents on demand on the iPad only.
         let mode = await decidedMode(owner: owner)
         guard mine == engineGeneration, !isDemo else { return }
         let documents = isPad ? libraryRoot.map { SyncDocumentFiles(root: $0, policy: .lazy) } : nil
@@ -316,7 +318,7 @@ final class PhoneSyncController: ObservableObject {
                                     device: SyncDevice(id: deviceId, name: UIDevice.current.name),
                                     keyStore: keyStore, documents: documents, mode: mode, viewer: viewer,
                                     householdIsShared: owner != nil)
-        if mode != .readOnly { Self.log.info("Sync: this iPad writes (\(mode == .device(zones: [SyncZones.household]) ? "household" : "household and own", privacy: .public))") }
+        if mode != .readOnly { Self.log.info("Sync: this device writes (\(mode == .device(zones: [SyncZones.household]) ? "household" : "household and own", privacy: .public))") }
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
         self.engine = engine
@@ -333,30 +335,30 @@ final class PhoneSyncController: ObservableObject {
         if plan == .pullHousehold { await updateJoinState(status: .off) }
     }
 
-    /// The write mode for this device now: `.readOnly` on the iPhone (nothing read), else `DeviceWriteMode.decide`'s
-    /// for this iPad's iCloud user (`.readOnly` when it can't be read).
+    /// The write mode for this device now: `DeviceWriteMode.decide`'s for this device's iCloud user (`.readOnly` when
+    /// it can't be read).
     private func decidedMode(owner: String?) async -> SyncWriteMode {
-        guard isPad, let dbQueue else { return .readOnly }
+        guard let dbQueue else { return .readOnly }
         let recordName = viewerRecordName
         return (try? await dbQueue.read { db in
-            try DeviceWriteMode.decide(recordName: recordName, isMember: owner != nil, isPad: true, db: db)
+            try DeviceWriteMode.decide(recordName: recordName, isMember: owner != nil, canWrite: true, db: db)
         }) ?? .readOnly
     }
 
-    /// After a sync on an iPad: when the mode decided now differs from the running engine's (a pulled permission or
+    /// After a sync: when the mode decided now differs from the running engine's (a pulled permission or
     /// membership changed it), the engine is made again with it. One check at a time; a check overtaken by a newer
     /// engine drops its answer (that engine decided its own).
     private func followWriteMode() async {
-        guard isPad, !followingWriteMode, scheduler != nil, let dbQueue, !isDemo else { return }
+        guard !followingWriteMode, scheduler != nil, let dbQueue, !isDemo else { return }
         followingWriteMode = true
         defer { followingWriteMode = false }
         let generation = engineGeneration
         let (current, recordName, isMember) = (writeMode, viewerRecordName, memberOwner != nil)
         let changed = (try? await dbQueue.read { db in
-            try DeviceWriteMode.changed(from: current, recordName: recordName, isMember: isMember, isPad: true, db: db)
+            try DeviceWriteMode.changed(from: current, recordName: recordName, isMember: isMember, canWrite: true, db: db)
         }) ?? nil
         guard let changed, generation == engineGeneration, scheduler != nil, !isDemo else { return }
-        Self.log.notice("Sync: this iPad's permissions changed; it now \(changed == .readOnly ? "only reads" : "writes", privacy: .public)")
+        Self.log.notice("Sync: this device's permissions changed; it now \(changed == .readOnly ? "only reads" : "writes", privacy: .public)")
         await startEngine(viewer: engineViewer)
     }
 
@@ -504,7 +506,7 @@ final class PhoneSyncController: ObservableObject {
             Task { [weak self] in await self?.householdLeft() }
             return
         }
-        if case .idle = status, isPad {
+        if case .idle = status {
             // Not inside the status loop: making the engine again ends that loop.
             Task { [weak self] in await self?.followWriteMode() }
         }

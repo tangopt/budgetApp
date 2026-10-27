@@ -3,11 +3,13 @@ import Foundation
 /// What a device's sync engine may write to the server (step 8).
 /// - `full`: the Mac. It makes the zones, their keys and the import lease, rebuilds its person's summaries, and
 ///   pushes to every zone it syncs.
-/// - `readOnly`: the iPhone (step 4). It pulls only and never writes to the server.
-/// - `device(zones:)`: an iPad whose user has Edit somewhere. It pushes only records placed in `zones` (of the zones
-///   it syncs); any other record stays pending, counted in `SyncPushReport.heldBack`. Otherwise it is as read-only:
-///   it never makes a zone, a key or a lease, never rebuilds summaries, and never deletes a file record a pull names.
-///   What it pulls is tracked as on the Mac (its own edits merge with what arrives).
+/// - `readOnly`: a phone or tablet whose user has no Edit (the iPhone always, before step 7b). It pulls only and
+///   never writes to the server.
+/// - `device(zones:)`: an iPad or (step 7b) an iPhone whose user has Edit somewhere. It pushes only records placed
+///   in `zones` (of the zones it syncs); any other record stays pending, counted in `SyncPushReport.heldBack`.
+///   Otherwise it is as read-only: it never makes a zone, a key or a lease, never rebuilds summaries, and never
+///   deletes a file record a pull names. What it pulls is tracked as on the Mac (its own edits merge with what
+///   arrives).
 public enum SyncWriteMode: Equatable, Sendable {
     case full
     case readOnly
