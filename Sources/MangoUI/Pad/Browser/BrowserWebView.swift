@@ -38,6 +38,8 @@ struct BrowserWebView: UIViewRepresentable {
         private var observations: [NSKeyValueObservation] = []
         /// Each download's temporary folder, the host it came from and the model's generation when it started.
         private var downloads: [ObjectIdentifier: (folder: URL, file: URL?, host: String?, generation: Int)] = [:]
+        /// Downloads cancelled here, whose failure keeps the notice already given.
+        private var refused: Set<ObjectIdentifier> = []
 
         init(model: BrowserModel) { self.model = model }
 
@@ -185,6 +187,19 @@ struct BrowserWebView: UIViewRepresentable {
             return file
         }
 
+        /// A redirect is held to the download rule (https, never to http or a local file).
+        func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                      decisionHandler: @escaping @MainActor @Sendable (WKDownload.RedirectPolicy) -> Void) {
+            switch BrowserModel.downloadRedirectDecision(to: request.url) {
+            case .allow, .download:
+                decisionHandler(.allow)
+            case .cancel:
+                refused.insert(ObjectIdentifier(download))
+                model.notice = "Mango downloads from secure (https) pages only, so that file wasn't kept."
+                decisionHandler(.cancel)
+            }
+        }
+
         func downloadDidFinish(_ download: WKDownload) {
             guard let entry = downloads.removeValue(forKey: ObjectIdentifier(download)), let file = entry.file else { return }
             Task {
@@ -198,6 +213,8 @@ struct BrowserWebView: UIViewRepresentable {
             if let entry = downloads.removeValue(forKey: ObjectIdentifier(download)) {
                 try? FileManager.default.removeItem(at: entry.folder)
             }
+            // Cancelled here: the reason was already said.
+            guard refused.remove(ObjectIdentifier(download)) == nil else { return }
             model.notice = "The download didn't finish. Try again."
         }
     }

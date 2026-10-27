@@ -284,6 +284,11 @@ public final class BrowserModel {
         ["https", "blob", "data"].contains(url?.scheme?.lowercased() ?? "")
     }
 
+    /// A download's redirect: followed only to an address a download may come from (`downloadAllowed`), else cancelled.
+    public nonisolated static func downloadRedirectDecision(to url: URL?) -> NavigationDecision {
+        downloadAllowed(url) ? .allow : .cancel
+    }
+
     /// Whether a download announced at `expectedLength` bytes may start (unknown, -1, may: the tray checks the file).
     public nonisolated static func acceptsDownload(expectedLength: Int64) -> Bool {
         expectedLength <= Int64(DownloadsTray.defaultMaxBytes)

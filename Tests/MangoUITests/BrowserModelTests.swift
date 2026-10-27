@@ -129,6 +129,18 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertFalse(BrowserModel.acceptsDownload(expectedLength: Int64(DownloadsTray.defaultMaxBytes) + 1))
     }
 
+    /// A download's redirect is held to the same rule: an https download redirected to http is cancelled.
+    func testDownloadRedirectsHeldToHTTPS() {
+        func redirect(_ text: String) -> BrowserModel.NavigationDecision {
+            BrowserModel.downloadRedirectDecision(to: URL(string: text))
+        }
+        XCTAssertEqual(redirect("https://cdn.example.test/bill.pdf"), .allow)
+        XCTAssertEqual(redirect("http://cdn.example.test/bill.pdf"), .cancel)
+        XCTAssertEqual(redirect("file:///tmp/bill.pdf"), .cancel)
+        XCTAssertEqual(redirect("ftp://cdn.example.test/bill.pdf"), .cancel)
+        XCTAssertEqual(BrowserModel.downloadRedirectDecision(to: nil), .cancel)
+    }
+
     func testNewWindowFollowsTheMainFrameRules() {
         func decide(_ text: String, download: Bool = false) -> BrowserModel.NavigationDecision {
             BrowserModel.newWindowDecision(for: URL(string: text), shouldPerformDownload: download)
