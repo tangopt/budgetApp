@@ -3,8 +3,8 @@ import BudgetCore
 
 /// The iPad's unlocked app (step 8, Task 6; step 10, Task 3): the sidebar (`PadSidebar`: Home, Month, Accounts, Search;
 /// Property; Everything else; collapsible to an icon rail; footer with the person, sync and Settings) and the selected
-/// screen as its detail. Home, Month, Accounts, Search and This month reuse the iPhone's views over the same
-/// `PhoneTabsModel`; the others are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
+/// screen as its detail. Home, Month, Accounts and Search reuse the iPhone's views over the same
+/// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
 ///
 /// Sections whose screens later tasks build: Bills & recharges shows the step 8 Bills / Recharges / Rent receipts
@@ -45,6 +45,8 @@ public struct PadRootView: View {
         self.isDemo = isDemo
         self.waitingChanges = waitingChanges
         self.browser = isDemo ? nil : browser
+        let shown = self.browser
+        tabs.padThisMonth.trayItems = { shown?.tray.items() ?? [] }
         self.onRefresh = onRefresh
         self.onSettings = onSettings
         _selection = State(initialValue: initialSelection)
@@ -104,7 +106,8 @@ public struct PadRootView: View {
             SearchView(model: tabs.search, syncStatus: syncStatus, onRefresh: onRefresh)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .thisMonth:
-            PadOverviewView(model: tabs.property, syncStatus: syncStatus, onRefresh: onRefresh)
+            PadThisMonthView(model: tabs.padThisMonth, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus,
+                             go: open)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .tenancies:
             PadTenanciesView(model: tabs.padProperty, syncStatus: syncStatus)
@@ -119,6 +122,22 @@ public struct PadRootView: View {
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .money, .calendar, .checks, .profile:
             PlaceholderPadScreen(section: section)
+        }
+    }
+
+    /// Where This month's actions go.
+    private func open(_ destination: PadDestination) {
+        switch destination {
+        case .billsAndRecharges:
+            legacyTab = .bills
+            selection = .billsAndRecharges
+        case .recharges:
+            legacyTab = .recharges
+            selection = .billsAndRecharges
+        case .evidence:
+            selection = .evidence
+        case .site, .check:
+            break
         }
     }
 

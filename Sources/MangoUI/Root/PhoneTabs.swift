@@ -38,6 +38,8 @@ public final class PhoneTabsModel: ObservableObject {
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
     public let padMissingEvidence: PadMissingEvidenceModel
+    /// The iPad's This-month checklist (step 10, Task 10); its edit (Confirm match) goes through `padWrite`.
+    public let padThisMonth: PadThisMonthModel
     /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
     public let quickEdit: QuickEditModel
 
@@ -71,6 +73,7 @@ public final class PhoneTabsModel: ObservableObject {
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        padThisMonth = PadThisMonthModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)
         quickEdit.viewer = viewer
         // After an edit saves, what it moved is read again: the figures, the lists, the queue.

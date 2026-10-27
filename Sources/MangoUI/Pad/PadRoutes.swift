@@ -1,5 +1,6 @@
 import SwiftUI
 import BudgetCore
+import GRDB
 
 /// The iPad's snapshot routes (step 8, Task 6): rendered by `--device ipad` at the iPad window sizes.
 public enum PadRoutes {
@@ -16,8 +17,8 @@ public enum PadRoutes {
                                                           preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, columns: .doubleColumn))
         },
-        // Step 10, Task 3: the sidebar over This month, expanded (pad-root shows it over Home) and collapsed to the icon rail.
-        DemoRoute(name: "pad-sidebar-expanded", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
+        // Step 10, Task 3: the sidebar over This month (its progress and counts are the figures), expanded (pad-root shows it over Home) and collapsed to the icon rail.
+        DemoRoute(name: "pad-sidebar-expanded", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
             AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
                                 waitingChanges: 2, columns: .doubleColumn))
         },
@@ -25,9 +26,42 @@ public enum PadRoutes {
             AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
                                 sidebarCollapsed: true, columns: .doubleColumn))
         },
-        DemoRoute(name: "pad-property-overview", sizes: DemoRoute.padSizes, minimumFigures: 15, pad: true) { context in
-            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .thisMonth,
-                                columns: .doubleColumn))
+        // Step 10, Task 10: This month for the demo's tenancy (two downloads waiting), with nothing to show yet, and with every step done.
+        DemoRoute(name: "pad-this-month", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let browser = sampleBrowser("pad-this-month", items: 2)
+            let tabs = editingTabs(context)
+            tabs.padThisMonth.trayItems = { browser.tray.items() }
+            tabs.padThisMonth.preload(PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId,
+                                                                 today: context.today, tray: browser.tray.items()))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, browser: browser,
+                                       columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-this-month-empty", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            // A household with no tenancy: nothing to read.
+            let tabs = PhoneTabsModel(dbQueue: (try? DatabaseQueue()) ?? context.dbQueue, today: { context.today }, hasProperty: true, viewer: .demoAdmin)
+            tabs.padProperty.preload(PadPropertyModel.Snapshot(property: nil, tenancies: [], bills: nil))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-this-month-allDone", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            let tabs = editingTabs(context)
+            if var snapshot = PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId, today: context.today) {
+                snapshot.checklist.steps = snapshot.checklist.steps.map { step in
+                    var step = step
+                    step.state = .done
+                    step.actions = []
+                    step.isWaitingForMac = false
+                    step.providers = step.providers.map { var p = $0; p.state = .checked; p.trayItemIds = []; return p }
+                    switch step.id {
+                    case .lastRechargePaid: step.detail = ThisMonthCopy.paid
+                    case .billsIn: step.detail = ThisMonthCopy.billsChecked(step.providers.count, of: step.providers.count)
+                    case .chargesInGrid: step.detail = ThisMonthCopy.chargesIn(step.providers.count)
+                    case .emailTenant: step.detail = ThisMonthCopy.sentOn(context.today)
+                    }
+                    return step
+                }
+                tabs.padThisMonth.preload(snapshot)
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .thisMonth, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-tenancies", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
             AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .tenancies,
@@ -207,6 +241,7 @@ public enum PadRoutes {
         tabs.padDocuments.panelLocalFile = { _ in try? SampleDocumentFile.url() }
         #endif
         tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
+        tabs.padThisMonth.preload(PadThisMonthModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId, today: today))
         return tabs
     }
 }

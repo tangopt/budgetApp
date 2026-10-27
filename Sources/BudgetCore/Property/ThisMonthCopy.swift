@@ -54,7 +54,7 @@ public enum ThisMonthCopy {
     public static func emailTitle(_ tenancy: String) -> String { "Email the \(tenancy) statement" }
     public static func sentOn(_ day: Date?) -> String { day.map { "Sent on \(Self.day($0))" } ?? "Sent" }
     public static func readyToSend(_ total: String) -> String { "Ready to send: \(total)" }
-    public static let afterSteps = "Available once last month's recharge and this month's bills are done."
+    public static let afterSteps = "Available once this month's bills are checked."
     public static let noChargesYet = "Nothing on this month's statement yet."
     public static let nothingToRecharge = "Nothing to recharge this month."
 

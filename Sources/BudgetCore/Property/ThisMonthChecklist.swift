@@ -4,8 +4,8 @@ import GRDB
 /// A tenancy's This-month checklist on the iPad (step 10 Task 9), computed from the Mac's read models and never stored:
 /// (1) last month's recharge paid — its statement sent and the tenant's transfer seen; (2) this month's bills — each
 /// expected provider's invoice fetched, checked or missing (`UtilityBills`' grid stages, the downloads tray);
-/// (3) the charges in the bills grid — automatic once the bills are checked; (4) email the tenant — once 1–3 are done,
-/// then sent. Beside them: this month's rent receipt and condomínio, the tax year's missing evidence and the
+/// (3) the charges in the bills grid — automatic once the bills are checked; (4) email the tenant — once 2–3 are done
+/// (last month's payment never holds this month's email back), then sent. Beside them: this month's rent receipt and condomínio, the tax year's missing evidence and the
 /// downloads waiting.
 public struct ThisMonthChecklist: Equatable, Sendable {
     public enum StepID: String, CaseIterable, Sendable {
@@ -163,7 +163,7 @@ extension ThisMonthChecklist {
         let step2 = try billsStep(db: db, tenancy: tenancy, month: month, trayItems: trayItems)
         let step3 = chargesStep(after: step2, month: month)
         let currency = try Property.fetchOne(db, key: tenancy.propertyId)?.currency ?? .eur
-        let step4 = emailStep(tenancy: tenancy, statement: current, currency: currency, before: [step1, step2, step3])
+        let step4 = emailStep(tenancy: tenancy, statement: current, currency: currency, before: [step2, step3])
         checklist.steps = [step1, step2, step3, step4]
         checklist.side = try sideItems(db: db, tenancy: tenancy, month: month, nextMonth: nextMonth, today: day)
         return checklist
@@ -337,8 +337,8 @@ extension ThisMonthChecklist {
 
     // MARK: Step 4
 
-    /// Done once this month's statement is sent (or paid). Before that, waiting until steps 1–3 are each done or not
-    /// applicable; then the draft with charges on it is to email.
+    /// Done once this month's statement is sent (or paid). Before that, waiting until steps 2–3 are each done or not
+    /// applicable (step 1, last month's payment, doesn't hold it back); then the draft with charges on it is to email.
     static func emailStep(tenancy: Tenancy, statement: RechargeStatement?, currency: Currency, before: [Step]) -> Step {
         func step(_ state: StepState, _ detail: String?, _ actions: [ChecklistAction] = []) -> Step {
             Step(id: .emailTenant, state: state, headline: ThisMonthCopy.emailTitle(tenancy.referenceLabel), detail: detail, actions: actions)

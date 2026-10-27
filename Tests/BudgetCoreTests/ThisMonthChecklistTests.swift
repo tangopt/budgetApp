@@ -303,9 +303,12 @@ final class ThisMonthChecklistTests: XCTestCase {
         XCTAssertEqual(email.detail, ThisMonthCopy.readyToSend(Money.format(5_000, currency: .eur)))
         XCTAssertEqual(checklist.statementId, draft)
 
-        // Last month's recharge not in yet: the email waits too.
+        // Last month's recharge not paid yet: this month's email is not held back.
         try db.write { db in try db.execute(sql: "UPDATE rechargeStatement SET status = 'sent' WHERE month = ?", arguments: [Self.september]) }
-        XCTAssertEqual(try step(.emailTenant, try build()).state, .waiting)
+        let unpaid = try build()
+        XCTAssertNotEqual(try step(.lastRechargePaid, unpaid).state, .done)
+        XCTAssertEqual(try step(.emailTenant, unpaid).state, .needsYou)
+        XCTAssertEqual(try step(.emailTenant, unpaid).actions, [.prepareEmail(statementId: draft)])
     }
 
     func testSentStatementIsDone() throws {
