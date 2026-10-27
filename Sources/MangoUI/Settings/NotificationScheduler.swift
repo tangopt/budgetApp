@@ -16,6 +16,8 @@ public protocol NotificationCenterClient: Sendable {
     func pendingContent() async -> [String: String]
     func add(_ notification: PlannedNotification) async throws
     func remove(ids: [String]) async
+    /// Removes every reminder already shown in Notification Centre (only Mango's: the center is per app).
+    func removeAllDelivered() async
 }
 
 /// Every notification id this iPhone has ever handed to the notification center, so a reminder that already fired is
@@ -97,9 +99,11 @@ public enum NotificationScheduler {
         }
     }
 
-    /// Removes everything pending (no one's figures stay scheduled once no iCloud user is bound to this iPhone).
+    /// Removes everything pending and everything already shown (no one's reminders stay on this iPhone once no iCloud
+    /// user is bound to it).
     public static func clear(client: any NotificationCenterClient) async {
         let pending = await client.pendingContent()
         if !pending.isEmpty { await client.remove(ids: pending.keys.sorted()) }
+        await client.removeAllDelivered()
     }
 }

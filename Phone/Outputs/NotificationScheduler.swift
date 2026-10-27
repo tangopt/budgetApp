@@ -38,6 +38,10 @@ struct SystemNotificationCenter: NotificationCenterClient {
     func remove(ids: [String]) async {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
     }
+
+    func removeAllDelivered() async {
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+    }
 }
 
 /// A tap on a delivered reminder: hands its tab to `PhoneOutputs`, which the root opens.

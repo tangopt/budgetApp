@@ -8,6 +8,8 @@ private actor FakeCenter: NotificationCenterClient {
     var status: NotificationAuthorization
     /// id → words (`PlannedNotification.content`).
     var pending: [String: String] = [:]
+    /// Ids shown in Notification Centre (already fired).
+    var delivered: Set<String> = []
     private(set) var requests = 0
     private(set) var adds = 0
     /// When set, reading what is pending waits until `resume()` (a refresh suspended mid-way).
@@ -39,6 +41,7 @@ private actor FakeCenter: NotificationCenterClient {
         pending[notification.id] = notification.content
     }
     func remove(ids: [String]) async { for id in ids { pending[id] = nil } }
+    func removeAllDelivered() async { delivered = [] }
 }
 
 /// Step 7b Task 9: reminders scheduled from the plan, asked for only in Settings ▸ Notifications.
@@ -153,6 +156,17 @@ final class NotificationsSettingsTests: XCTestCase {
         XCTAssertEqual(adds, 0)
     }
 
+    func testClearRemovesPendingAndDelivered() async {
+        let center = FakeCenter(status: .granted)
+        await center.add(ids: ["a"])
+        await center.deliver(ids: ["fired"])
+        await NotificationScheduler.clear(client: center)
+        let pending = await center.pending
+        let delivered = await center.delivered
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertTrue(delivered.isEmpty)
+    }
+
     func testAdminOnlyToggleHiddenForMember() {
         XCTAssertEqual(NotificationsSection.kinds(isAdmin: true), [.rentLate, .billDue, .taxDue, .noImport])
         XCTAssertEqual(NotificationsSection.kinds(isAdmin: false), [.rentLate, .billDue, .taxDue])
@@ -183,4 +197,5 @@ final class NotificationsSettingsTests: XCTestCase {
 
 private extension FakeCenter {
     func add(ids: [String]) { for id in ids { pending[id] = "T\nB" } }
+    func deliver(ids: [String]) { delivered.formUnion(ids) }
 }
