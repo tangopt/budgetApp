@@ -24,14 +24,35 @@ enum PhoneBrowser {
         await shared?.purgeAll()
     }
 
+    /// Said when a PDF is shared to Mango where there's no tray (the iPhone, demo data).
+    static let notCollectedHere = "PDFs are collected on the iPad. Share it to Mango there; this copy wasn't kept."
+
     /// A file shared into Mango (More… ▸ Mango; it arrives in `Documents/Inbox`): into the tray, and the browser shown
-    /// with it. On the iPhone, or with demo data on, it isn't kept: the incoming copy is deleted.
-    static func receiveShared(_ url: URL, isDemo: Bool) async {
+    /// with it. On the iPhone, or with demo data on, it isn't kept: the incoming copy is deleted and the returned notice
+    /// says why (nil when the tray took it, or said why not itself).
+    static func receiveShared(_ url: URL, isDemo: Bool) async -> String? {
         guard let browser = shared, !isDemo else {
             try? FileManager.default.removeItem(at: url)
-            return
+            return notCollectedHere
         }
         await browser.ingestShared(url)
         browser.isPresented = true
+        return nil
+    }
+
+    /// At launch: whatever was left in `Documents/Inbox` (a share the app didn't finish taking) goes into the tray on
+    /// the iPad (PDFs only); anything else, and everything on the iPhone or with demo data, is deleted. Inbox is backed
+    /// up: nothing stays there.
+    static func sweepInbox(isDemo: Bool) async {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let inbox = documents.appendingPathComponent("Inbox", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
+        for file in files {
+            if let browser = shared, !isDemo {
+                await browser.ingestShared(file)
+            } else {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
     }
 }

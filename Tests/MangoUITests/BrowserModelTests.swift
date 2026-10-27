@@ -92,14 +92,58 @@ final class BrowserModelTests: XCTestCase {
     }
 
     func testResponsePolicy() {
-        func decide(_ mime: String?, _ disposition: String? = nil, main: Bool = true, canShow: Bool = true) -> BrowserModel.NavigationDecision {
-            BrowserModel.responseDecision(mimeType: mime, contentDisposition: disposition, isMainFrame: main, canShowMIMEType: canShow)
+        func decide(_ mime: String?, _ disposition: String? = nil, main: Bool = true, canShow: Bool = true,
+                    url: String = "https://water.example.test/bill") -> BrowserModel.NavigationDecision {
+            BrowserModel.responseDecision(url: URL(string: url), mimeType: mime, contentDisposition: disposition, isMainFrame: main,
+                                          canShowMIMEType: canShow)
         }
         XCTAssertEqual(decide("application/pdf"), .download, "inline PDF")
         XCTAssertEqual(decide("application/octet-stream", "Attachment; filename=bill.pdf"), .download)
         XCTAssertEqual(decide("text/html"), .allow, "an HTML error page stays a page")
         XCTAssertEqual(decide("application/zip", canShow: false), .download)
         XCTAssertEqual(decide("application/pdf", main: false), .allow, "a PDF inside a frame is shown")
+        XCTAssertEqual(decide("application/pdf", url: "http://water.example.test/bill.pdf"), .cancel, "no download over http")
+        XCTAssertEqual(decide("application/pdf", url: "blob:https://water.example.test/1"), .download)
+    }
+
+    func testDownloadsOnlyFromHTTPSBlobOrData() {
+        func decide(_ text: String) -> BrowserModel.NavigationDecision {
+            BrowserModel.decision(for: URL(string: text), isMainFrame: true, shouldPerformDownload: true)
+        }
+        XCTAssertEqual(decide("https://water.example.test/bill.pdf"), .download)
+        XCTAssertEqual(decide("blob:https://water.example.test/1234"), .download)
+        XCTAssertEqual(decide("data:application/pdf;base64,JVBERi0="), .download)
+        XCTAssertEqual(decide("http://water.example.test/bill.pdf"), .cancel)
+        XCTAssertEqual(decide("file:///tmp/bill.pdf"), .cancel)
+        XCTAssertTrue(BrowserModel.acceptsDownload(expectedLength: -1), "unknown length: the tray checks the file")
+        XCTAssertTrue(BrowserModel.acceptsDownload(expectedLength: 2_000_000))
+        XCTAssertFalse(BrowserModel.acceptsDownload(expectedLength: Int64(DownloadsTray.defaultMaxBytes) + 1))
+    }
+
+    func testNewWindowFollowsTheMainFrameRules() {
+        func decide(_ text: String, download: Bool = false) -> BrowserModel.NavigationDecision {
+            BrowserModel.newWindowDecision(for: URL(string: text), shouldPerformDownload: download)
+        }
+        XCTAssertEqual(decide("https://water.example.test/statement"), .allow, "loaded in the same web view")
+        XCTAssertEqual(decide("http://water.example.test/statement"), .cancel)
+        XCTAssertEqual(decide("javascript:void(0)"), .cancel)
+        XCTAssertEqual(decide("data:text/html,hi"), .cancel)
+        XCTAssertEqual(decide("https://water.example.test/bill.pdf", download: true), .download)
+    }
+
+    func testDownloadFinishingAfterAPurgeIsDropped() async throws {
+        let browser = model()
+        let started = browser.generation
+        await browser.purgeAll()
+        let file = try WebFixtures.copy("bill.pdf")
+        await browser.handleCapturedDownload(at: file, suggestedName: "bill.pdf", host: "water.example.test", generation: started)
+        XCTAssertEqual(browser.downloadedItems, [])
+        XCTAssertEqual(browser.tray.items(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the late file is deleted, not kept")
+
+        await browser.handleCapturedDownload(at: try WebFixtures.copy("bill.pdf"), suggestedName: "bill.pdf", host: nil,
+                                             generation: browser.generation)
+        XCTAssertEqual(browser.downloadedItems.count, 1, "a download started after the purge is kept")
     }
 
     func testDownloadOfPDFLandsInTray() async throws {

@@ -28,11 +28,14 @@ public enum TrayError: Error, Equatable, LocalizedError {
     case notAPDF
     /// The file has no bytes.
     case empty
+    /// Larger than the tray takes (`DownloadsTray.maxBytes`, 50 MB): no bill or statement is that big.
+    case tooLarge
 
     public var errorDescription: String? {
         switch self {
         case .notAPDF: "That download isn't a PDF, so it wasn't kept. The site may have sent an error page instead."
         case .empty: "That download was empty, so it wasn't kept."
+        case .tooLarge: "That download is larger than 50 MB, so it wasn't kept."
         }
     }
 }
@@ -42,19 +45,25 @@ public enum TrayError: Error, Equatable, LocalizedError {
 /// from backup, and never synced (a checked file becomes a normal document or import; the tray copy is discarded).
 /// One item per sha256. Sign-out, leaving the household and demo data empty it (`purgeAll`).
 ///
-/// Each file is stored as `<id>.pdf`; the items' metadata is a JSON sidecar (`tray.json`) in the same folder. All work
-/// runs on one serial queue.
+/// Each file is stored as `<id>.pdf`; the items' metadata is a JSON sidecar (`tray.json`) in the same folder. A sidecar
+/// that can't be read is rebuilt from the files (their names are lost: "Download.pdf"). All work runs on one serial
+/// queue.
 public final class DownloadsTray: @unchecked Sendable {
     public let directory: URL
+    /// The largest file taken, in bytes.
+    public let maxBytes: Int
     private let now: @Sendable () -> Date
     private let queue = DispatchQueue(label: "ubberninja.mango.downloadsTray")
     private let fileManager = FileManager.default
 
     static let indexName = "tray.json"
     static let pdfMagic = Data("%PDF-".utf8)
+    /// 50 MB.
+    public static let defaultMaxBytes = 50 * 1024 * 1024
 
-    public init(directory: URL, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(directory: URL, maxBytes: Int = DownloadsTray.defaultMaxBytes, now: @escaping @Sendable () -> Date = { Date() }) {
         self.directory = directory
+        self.maxBytes = maxBytes
         self.now = now
     }
 
@@ -64,10 +73,12 @@ public final class DownloadsTray: @unchecked Sendable {
     /// deleted. Refused, nothing is kept and the file at `url` is left for the caller to remove.
     public func ingest(fileAt url: URL, suggestedName: String, sourceHost: String?) throws -> TrayItem {
         try queue.sync {
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { throw TrayError.tooLarge }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard data.count <= maxBytes else { throw TrayError.tooLarge }
             guard !data.isEmpty else { throw TrayError.empty }
             guard data.starts(with: Self.pdfMagic) else { throw TrayError.notAPDF }
-            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let hash = Self.sha256(data)
             try prepareDirectory()
             var items = try readIndex()
             if let existing = items.first(where: { $0.sha256 == hash }) {
@@ -145,11 +156,38 @@ public final class DownloadsTray: @unchecked Sendable {
         try protect(&folder)
     }
 
-    /// The items whose files are still here.
+    static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The items whose files are still here. A sidecar that can't be read is rebuilt from the files.
     private func readIndex() throws -> [TrayItem] {
         guard fileManager.fileExists(atPath: indexURL.path) else { return [] }
-        let items = try JSONDecoder().decode([TrayItem].self, from: Data(contentsOf: indexURL))
+        guard let data = try? Data(contentsOf: indexURL), let items = try? JSONDecoder().decode([TrayItem].self, from: data) else {
+            let rebuilt = rebuiltIndex()
+            try? writeIndex(rebuilt)
+            return rebuilt
+        }
         return items.filter { fileManager.fileExists(atPath: storedURL($0.id).path) }
+    }
+
+    /// The items the stored files still say: each `<id>.pdf` that is a PDF, dated by its file; the rest are deleted.
+    private func rebuiltIndex() -> [TrayItem] {
+        let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        var seen: Set<String> = []
+        return names.compactMap { name -> TrayItem? in
+            guard name.hasSuffix(".pdf"), let id = UUID(uuidString: String(name.dropLast(4))) else { return nil }
+            let url = directory.appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: url), !data.isEmpty, data.starts(with: Self.pdfMagic), data.count <= maxBytes,
+                  seen.insert(Self.sha256(data)).inserted
+            else {
+                try? fileManager.removeItem(at: url)
+                return nil
+            }
+            let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? now()
+            return TrayItem(id: id, fileName: "Download.pdf", sha256: Self.sha256(data), byteCount: data.count,
+                            receivedAt: date, sourceHost: nil)
+        }
     }
 
     private func writeIndex(_ items: [TrayItem]) throws {

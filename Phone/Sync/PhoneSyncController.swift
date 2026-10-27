@@ -47,9 +47,9 @@ import MangoUI
 ///   only); an undetermined one (no account, offline, a blip) drops nothing and keeps sync stopped until it is known.
 /// - **Removed from the household** (`SyncScheduler.leftHousehold`, a member device): the household's data and key go
 ///   from this device, the membership is forgotten, and `householdNotice` says so.
-/// - **The iPad's browser** (step 10, Task 5): an iCloud account change (sign-out or another user), leaving the
-///   household and demo data each empty the Downloads tray and clear the browser's website data, awaited
-///   (`PhoneBrowser.purge`).
+/// - **The iPad's browser** (step 10, Task 5): signing out of iCloud (the account becomes unavailable, checked with
+///   or without sync running), another iCloud user bound here, leaving the household and demo data each empty the
+///   Downloads tray and clear the browser's website data, awaited (`PhoneBrowser.purge`).
 /// - **Changes waiting** (step 10, Task 5): `waitingChanges` counts this device's unsent changes in the zones it pushes
 ///   to (`SyncWaitingChanges`), read again with each status and after each local write; the iPad's sidebar shows it.
 @MainActor
@@ -170,6 +170,15 @@ final class PhoneSyncController: ObservableObject {
             Task { @MainActor [weak self] in await self?.shareReceived(metadata) }
         }
         checkAccount()
+        // Watched even when sync is off here: signing out of iCloud still clears the browser (`checkAccount`).
+        if canUseCloudKit, accountWatch == nil {
+            accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.checkAccount()
+                    await self?.iCloudAccountChanged()
+                }
+            }
+        }
         if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit,
                                       demoModeOn: PhoneDemoData.isOn) {
             Self.log.info("Sync is off on this iPhone: \(refusal, privacy: .public)")
@@ -193,11 +202,6 @@ final class PhoneSyncController: ObservableObject {
             } catch {
                 // Documents then stay "not on this iPad"; sync itself goes on.
                 Self.log.error("Sync: the library folder couldn't be made (\(String(describing: type(of: error)), privacy: .public))")
-            }
-        }
-        if canUseCloudKit, accountWatch == nil {
-            accountWatch = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in await self?.iCloudAccountChanged() }
             }
         }
         // The household's zone starts at once; this iPhone's iCloud user is read beside it (and again on a later
@@ -229,7 +233,11 @@ final class PhoneSyncController: ObservableObject {
         guard let dbQueue else { return }
         let stored = (try? await dbQueue.read { db in try SyncAccountSwitch.stored(db: db) }) ?? nil
         let switching = stored != nil && stored != recordName
-        if switching { await stopEngine() }
+        if switching {
+            await stopEngine()
+            // Someone else: the sites' sessions and the downloads waiting go from this iPad.
+            await PhoneBrowser.purge()
+        }
         guard generation == identityGeneration else { return }
         do {
             let action = try await dbQueue.write { db in try SyncAccountSwitch.apply(current: recordName, db: db) }
@@ -265,8 +273,6 @@ final class PhoneSyncController: ObservableObject {
         // Nobody bound here until the new user is read: the previous user's figures leave the widget.
         outputs.clear()
         await stopEngine()
-        // Signed out, or someone else: the sites' sessions and the downloads waiting go from this iPad.
-        await PhoneBrowser.purge()
         checkAccount()
         readViewerRecordName()
     }
@@ -788,12 +794,15 @@ final class PhoneSyncController: ObservableObject {
         accountCheck = Task { [weak self] in
             let status = await CloudKitAccountStatus.current()
             guard !Task.isCancelled, let self, self.accountGeneration == generation else { return }
+            let previous = self.account
             self.account = switch status {
             case .available: .available
             case .noAccount: .noAccount
             case .restricted: .restricted
             case .couldNotDetermine: .couldNotDetermine
             }
+            // Signed out of iCloud: the sites' sessions and the downloads waiting go from this iPad (once per change).
+            if self.account.isUnavailable, self.account != previous { await PhoneBrowser.purge() }
         }
     }
 }

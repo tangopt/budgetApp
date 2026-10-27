@@ -62,6 +62,9 @@ public final class BrowserModel {
     /// The latest refusal or failure, said once in plain words ("That download isn't a PDF..."); nil when none.
     public var notice: String?
 
+    /// Counts purges: a download started before the latest purge is dropped when it finishes.
+    @ObservationIgnored public private(set) var generation = 0
+
     /// Back and forward, set by the web view while it is shown.
     @ObservationIgnored public var goBack: () -> Void = {}
     @ObservationIgnored public var goForward: () -> Void = {}
@@ -153,9 +156,10 @@ public final class BrowserModel {
     // MARK: Downloads
 
     /// A download the web view finished into a temporary file: into the tray (PDFs only, once per sha256). The
-    /// temporary file is gone afterwards, kept or refused.
-    public func handleCapturedDownload(at url: URL, suggestedName: String, host: String?) async {
-        await ingest(url, suggestedName: suggestedName, host: host)
+    /// temporary file is gone afterwards, kept or refused. `generation` is the model's when the download started
+    /// (nil: now): a download that outlived a purge is dropped, not kept.
+    public func handleCapturedDownload(at url: URL, suggestedName: String, host: String?, generation started: Int? = nil) async {
+        await ingest(url, suggestedName: suggestedName, host: host, generation: started ?? generation)
     }
 
     /// A file shared into Mango (More… ▸ Mango from Safari, or another app; it arrives in `Documents/Inbox`): the
@@ -164,12 +168,16 @@ public final class BrowserModel {
     public func ingestShared(_ url: URL) async -> Bool {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        return await ingest(url, suggestedName: url.lastPathComponent, host: nil)
+        return await ingest(url, suggestedName: url.lastPathComponent, host: nil, generation: generation)
     }
 
     @discardableResult
-    private func ingest(_ url: URL, suggestedName: String, host: String?) async -> Bool {
+    private func ingest(_ url: URL, suggestedName: String, host: String?, generation started: Int) async -> Bool {
         let tray = tray
+        guard started == generation else {
+            try? FileManager.default.removeItem(at: url)
+            return false
+        }
         let result = await Task.detached { () -> Result<TrayItem, Error> in
             let result = Result { try tray.ingest(fileAt: url, suggestedName: suggestedName, sourceHost: host) }
             // Refused (or failed): nothing of it stays outside the tray either.
@@ -177,6 +185,11 @@ public final class BrowserModel {
             return result
         }.value
         switch result {
+        case .success(let item) where started != generation:
+            // A purge ran meanwhile: the file doesn't stay.
+            await Task.detached { tray.discard(item) }.value
+            await refreshTray()
+            return false
         case .success:
             notice = nil
             await refreshTray()
@@ -205,6 +218,7 @@ public final class BrowserModel {
     /// Sign-out, leaving the household, demo data: the tray emptied and the browser's website data cleared (awaited),
     /// the site closed. The saved sites stay (addresses only).
     public func purgeAll() async {
+        generation += 1
         closeSite()
         let tray = tray
         await Task.detached { tray.purgeAll() }.value
@@ -218,20 +232,39 @@ public final class BrowserModel {
     /// A navigation: a download the page asked for (`<a download>`, a `blob:`) is captured; the main frame loads only
     /// `https` (or `about:blank`); a frame inside the page may also be `about:`, `blob:` or `data:`.
     public nonisolated static func decision(for url: URL?, isMainFrame: Bool, shouldPerformDownload: Bool) -> NavigationDecision {
-        if shouldPerformDownload { return .download }
         guard let scheme = url?.scheme?.lowercased() else { return .cancel }
+        if shouldPerformDownload { return downloadAllowed(url) ? .download : .cancel }
         if scheme == "https" { return .allow }
         if url?.absoluteString == "about:blank" { return .allow }
         if !isMainFrame, ["about", "blob", "data"].contains(scheme) { return .allow }
         return .cancel
     }
 
+    /// A window the page opens (`target="_blank"`, `window.open`): loaded in the same web view under the main frame's
+    /// rules, or captured when it is a download.
+    public nonisolated static func newWindowDecision(for url: URL?, shouldPerformDownload: Bool) -> NavigationDecision {
+        decision(for: url, isMainFrame: true, shouldPerformDownload: shouldPerformDownload)
+    }
+
+    /// Downloads come only from `https`, `blob:` or `data:` addresses.
+    public nonisolated static func downloadAllowed(_ url: URL?) -> Bool {
+        ["https", "blob", "data"].contains(url?.scheme?.lowercased() ?? "")
+    }
+
+    /// Whether a download announced at `expectedLength` bytes may start (unknown, -1, may: the tray checks the file).
+    public nonisolated static func acceptsDownload(expectedLength: Int64) -> Bool {
+        expectedLength <= Int64(DownloadsTray.defaultMaxBytes)
+    }
+
     /// A response: a PDF (inline or as an attachment) or anything sent as an attachment, in the main frame, or anything
-    /// the web view can't show, becomes a download; the rest is shown (an HTML error page stays a page).
-    public nonisolated static func responseDecision(mimeType: String?, contentDisposition: String?, isMainFrame: Bool,
+    /// the web view can't show, becomes a download (from an allowed address only: else cancelled); the rest is shown
+    /// (an HTML error page stays a page). A PDF inside a frame is shown there.
+    public nonisolated static func responseDecision(url: URL?, mimeType: String?, contentDisposition: String?, isMainFrame: Bool,
                                                     canShowMIMEType: Bool) -> NavigationDecision {
         let disposition = contentDisposition?.lowercased() ?? ""
-        if isMainFrame, mimeType?.lowercased() == "application/pdf" || disposition.hasPrefix("attachment") { return .download }
-        return canShowMIMEType ? .allow : .download
+        let downloads = (isMainFrame && (mimeType?.lowercased() == "application/pdf" || disposition.hasPrefix("attachment")))
+            || !canShowMIMEType
+        guard downloads else { return .allow }
+        return downloadAllowed(url) ? .download : .cancel
     }
 }

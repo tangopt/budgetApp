@@ -61,6 +61,8 @@ struct PhoneRoot: View {
     @State private var showingSettings = false
     /// "Show what's here" on the iCloud explanation, for this run of the app.
     @State private var showsLocalData = false
+    /// A PDF shared to Mango where it isn't collected (the iPhone, demo data): said once, then gone.
+    @State private var sharedNotice: String?
     /// Settings' read-only Sharing section, read each time Settings opens.
     @State private var sharing: SharingSectionState?
     @AppStorage("phone.appearance") private var appearanceValue = PhoneAppearance.system.rawValue
@@ -107,6 +109,8 @@ struct PhoneRoot: View {
             }
             showingSettings = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
+            // The browser closes too: nothing of a site shows behind the lock or after it.
+            PhoneBrowser.shared?.isPresented = false
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -126,11 +130,14 @@ struct PhoneRoot: View {
             await load()
         }
         .onChange(of: outputs.pendingLink) { _, _ in openTappedReminder() }
+        .alert(sharedNotice ?? "", isPresented: Binding(get: { sharedNotice != nil }, set: { if !$0 { sharedNotice = nil } })) {
+            Button("OK", role: .cancel) { sharedNotice = nil }
+        }
         .onOpenURL { url in
             // A PDF shared into Mango (More… ▸ Mango; the iPad's tray), copied by the system into Documents/Inbox.
             if url.isFileURL {
                 let isDemo = if case .ready(let environment, _) = stage { environment.isDemo } else { PhoneDemoData.isOn }
-                Task { await PhoneBrowser.receiveShared(url, isDemo: isDemo) }
+                Task { sharedNotice = await PhoneBrowser.receiveShared(url, isDemo: isDemo) }
                 return
             }
             // The widget's link: Home or Month, over whatever was open.
@@ -185,6 +192,7 @@ struct PhoneRoot: View {
                 }
             }
             stage = .ready(environment, tabs)
+            await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
             outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
             refreshOutputs()
             openTappedReminder()

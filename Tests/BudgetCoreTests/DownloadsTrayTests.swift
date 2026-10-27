@@ -104,6 +104,34 @@ final class DownloadsTrayTests: XCTestCase {
         XCTAssertNoThrow(try tray.ingest(fileAt: WebFixtures.copy("bill.pdf"), suggestedName: "bill.pdf", sourceHost: nil))
     }
 
+    func testTooLargeRefused() throws {
+        let small = DownloadsTray(directory: folder.appendingPathComponent("Tray", isDirectory: true), maxBytes: 100)
+        let bill = try WebFixtures.copy("bill.pdf")
+        XCTAssertThrowsError(try small.ingest(fileAt: bill, suggestedName: "bill.pdf", sourceHost: nil)) { error in
+            XCTAssertEqual(error as? TrayError, .tooLarge)
+        }
+        XCTAssertEqual(small.items(), [])
+        XCTAssertEqual(DownloadsTray.defaultMaxBytes, 50 * 1024 * 1024)
+        XCTAssertNotNil(TrayError.tooLarge.errorDescription)
+    }
+
+    func testCorruptIndexIsRebuiltFromTheFiles() throws {
+        let tray = tray()
+        let item = try tray.ingest(fileAt: WebFixtures.copy("bill.pdf"), suggestedName: "bill.pdf", sourceHost: "example.test")
+        // A stray non-PDF under a tray name is not taken back.
+        let stray = tray.directory.appendingPathComponent(UUID().uuidString.lowercased() + ".pdf")
+        try Data("<html></html>".utf8).write(to: stray)
+        try Data("not json".utf8).write(to: tray.directory.appendingPathComponent(DownloadsTray.indexName))
+
+        let rebuilt = DownloadsTray(directory: tray.directory).items()
+        XCTAssertEqual(rebuilt.map(\.id), [item.id], "the file is kept, its item rebuilt")
+        XCTAssertEqual(rebuilt.first?.sha256, item.sha256)
+        XCTAssertEqual(rebuilt.first?.fileName, "Download.pdf", "its name is lost with the sidecar")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path))
+        // Same-hash dedupe still holds afterwards.
+        XCTAssertEqual(try tray.ingest(fileAt: WebFixtures.copy("bill.pdf"), suggestedName: "again.pdf", sourceHost: nil).id, item.id)
+    }
+
     func testDisplayName() {
         XCTAssertEqual(DownloadsTray.displayName("../../etc/statement.PDF"), "statement.PDF")
         XCTAssertEqual(DownloadsTray.displayName(""), "Download.pdf")

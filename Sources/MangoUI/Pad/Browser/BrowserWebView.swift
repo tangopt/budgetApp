@@ -16,6 +16,7 @@ struct BrowserWebView: UIViewRepresentable {
         configuration.websiteDataStore = .default()
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         context.coordinator.attach(webView)
         return webView
@@ -31,12 +32,12 @@ struct BrowserWebView: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         private let model: BrowserModel
         private var loaded: UUID?
         private var observations: [NSKeyValueObservation] = []
-        /// Each download's temporary folder and the host it came from.
-        private var downloads: [ObjectIdentifier: (folder: URL, file: URL?, host: String?)] = [:]
+        /// Each download's temporary folder, the host it came from and the model's generation when it started.
+        private var downloads: [ObjectIdentifier: (folder: URL, file: URL?, host: String?, generation: Int)] = [:]
 
         init(model: BrowserModel) { self.model = model }
 
@@ -83,11 +84,14 @@ struct BrowserWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse) async -> WKNavigationResponsePolicy {
             let http = response.response as? HTTPURLResponse
-            switch BrowserModel.responseDecision(mimeType: response.response.mimeType,
+            switch BrowserModel.responseDecision(url: response.response.url, mimeType: response.response.mimeType,
                                                  contentDisposition: http?.value(forHTTPHeaderField: "Content-Disposition"),
                                                  isMainFrame: response.isForMainFrame, canShowMIMEType: response.canShowMIMEType) {
             case .download: return .download
-            case .allow, .cancel: return .allow
+            case .allow: return .allow
+            case .cancel:
+                model.notice = "Mango downloads from secure (https) pages only, so that file wasn't kept."
+                return .cancel
             }
         }
 
@@ -106,9 +110,70 @@ struct BrowserWebView: UIViewRepresentable {
             model.notice = "The page couldn't be opened. Check the connection and try again."
         }
 
+        // MARK: Windows and panels
+
+        /// A new window (`target="_blank"`, `window.open`): no second web view; it loads here under the same rules.
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            switch BrowserModel.newWindowDecision(for: action.request.url, shouldPerformDownload: action.shouldPerformDownload) {
+            case .allow:
+                webView.load(action.request)
+            case .download:
+                webView.startDownload(using: action.request) { [weak self] download in download.delegate = self }
+            case .cancel:
+                model.notice = "Mango opens secure (https) pages only, so that page wasn't opened."
+            }
+            return nil
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo) async {
+            _ = await panel(webView, message: message, buttons: [("OK", true)])
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo) async -> Bool {
+            await panel(webView, message: message, buttons: [("Cancel", false), ("OK", true)]) ?? false
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+                     initiatedByFrame frame: WKFrameInfo) async -> String? {
+            await withCheckedContinuation { continuation in
+                let alert = UIAlertController(title: webView.url?.host, message: prompt, preferredStyle: .alert)
+                alert.addTextField { $0.text = defaultText }
+                alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in continuation.resume(returning: nil) })
+                alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
+                    continuation.resume(returning: alert?.textFields?.first?.text ?? "")
+                })
+                guard present(alert, over: webView) else { return continuation.resume(returning: nil) }
+            }
+        }
+
+        /// A native alert for the page's panel, naming its host: the tapped button's value (nil if it couldn't show).
+        private func panel(_ webView: WKWebView, message: String, buttons: [(String, Bool)]) async -> Bool? {
+            await withCheckedContinuation { continuation in
+                let alert = UIAlertController(title: webView.url?.host, message: message, preferredStyle: .alert)
+                for (title, value) in buttons {
+                    alert.addAction(UIAlertAction(title: title, style: value ? .default : .cancel) { _ in continuation.resume(returning: value) })
+                }
+                guard present(alert, over: webView) else { return continuation.resume(returning: nil) }
+            }
+        }
+
+        private func present(_ alert: UIAlertController, over webView: WKWebView) -> Bool {
+            guard var top = webView.window?.rootViewController else { return false }
+            while let presented = top.presentedViewController { top = presented }
+            top.present(alert, animated: true)
+            return true
+        }
+
         // MARK: Downloads
 
         func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
+            guard BrowserModel.acceptsDownload(expectedLength: response.expectedContentLength) else {
+                model.notice = TrayError.tooLarge.errorDescription
+                return nil
+            }
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mango-download-" + UUID().uuidString, isDirectory: true)
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -116,14 +181,15 @@ struct BrowserWebView: UIViewRepresentable {
                 return nil
             }
             let file = folder.appendingPathComponent(DownloadsTray.displayName(suggestedFilename))
-            downloads[ObjectIdentifier(download)] = (folder, file, download.originalRequest?.url?.host ?? model.currentHost)
+            downloads[ObjectIdentifier(download)] = (folder, file, download.originalRequest?.url?.host ?? model.currentHost, model.generation)
             return file
         }
 
         func downloadDidFinish(_ download: WKDownload) {
             guard let entry = downloads.removeValue(forKey: ObjectIdentifier(download)), let file = entry.file else { return }
             Task {
-                await model.handleCapturedDownload(at: file, suggestedName: file.lastPathComponent, host: entry.host)
+                await model.handleCapturedDownload(at: file, suggestedName: file.lastPathComponent, host: entry.host,
+                                                   generation: entry.generation)
                 try? FileManager.default.removeItem(at: entry.folder)
             }
         }
