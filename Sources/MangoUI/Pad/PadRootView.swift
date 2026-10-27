@@ -6,7 +6,7 @@ import BudgetCore
 /// views over the same `PhoneTabsModel`; the other destinations are placeholders until their iPad screens land
 /// (`PadPlaceholder`, replaced by Tasks 7-10). The lock cover, banners and Settings sheet are the app's, as on iPhone.
 ///
-/// The plan's `writer: DeviceWriter` parameter arrives with the engine tasks; the first screen that writes adds it.
+/// Property's edits (Bills, Recharges, Rent receipts) go through the tabs' `padWrite` (the device writer, Task 8).
 public struct PadRootView: View {
     @ObservedObject var tabs: PhoneTabsModel
     let syncStatus: SyncStatus
@@ -83,12 +83,18 @@ public struct PadRootView: View {
             PadTenanciesView(model: tabs.padProperty, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .bills:
-            PadBillsView(model: tabs.padProperty, syncStatus: syncStatus)
+            PadBillsView(model: tabs.padProperty, actions: tabs.padBillActions, write: tabs.padWrite, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .recharges:
+            PadRechargesView(model: tabs.padRecharges, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
+                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .rentReceipts:
+            PadRentReceiptsView(model: tabs.padRentReceipts, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .documents:
             PadDocumentsView(model: tabs.padDocuments, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .recharges, .rentReceipts, .missingEvidence:
+        case .missingEvidence:
             PadPlaceholder(section: section)
         }
     }

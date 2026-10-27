@@ -47,6 +47,22 @@ public struct DeviceWriter: Sendable {
         }) ?? false
     }
 
+    /// How many of the actor's own changes are still waiting to go up (`SyncChangeTracker.pending`, last written by
+    /// them): after the user lost Edit the engine is read-only, so these are never sent (0 with no actor, or when it
+    /// can't be read).
+    public func unsentChanges() async -> Int {
+        let viewer = viewer()
+        return (try? await db.read { db -> Int in
+            guard let actor = try Self.actor(viewer, db: db) else { return 0 }
+            return try SyncChangeTracker.pending(db: db).filter { change in
+                let by = try String.fetchOne(db, sql: """
+                    SELECT COALESCE((SELECT modifiedBy FROM syncRecord WHERE uuid = ?), (SELECT deletedBy FROM syncTombstone WHERE uuid = ?))
+                    """, arguments: [change.uuid, change.uuid])
+                return by == actor.appUserUuid
+            }.count
+        }) ?? 0
+    }
+
     /// Runs `body` as the actor in `area`, stamped with `origin`. Throws `DeviceWriteRefusal.notLinkedYet` with no
     /// actor, `AccessDenied` outside her Edit areas, and whatever `body` throws (an `EvidenceLinkGuard.Failure`
     /// stays as it is); each writes nothing.

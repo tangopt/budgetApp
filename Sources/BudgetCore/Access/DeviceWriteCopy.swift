@@ -15,4 +15,13 @@ public enum DeviceWriteCopy {
     public static func viewOnly(_ area: AccessArea) -> String {
         "View only: you don't have Edit on \(area.title)."
     }
+
+    /// Edits made here that can't go up any more: the user lost Edit before they were sent (they stay on this iPad
+    /// only, until the Mac's version replaces them).
+    public static func notSent(_ count: Int) -> String {
+        "\(count) change\(count == 1 ? "" : "s") not sent — you can no longer change this"
+    }
+
+    /// A refusal with no copy of its own (a statement already sent, an amount that no longer fits).
+    public static let notSaved = "Not saved: this can't change here any more. Sync, then try again, or use the Mac."
 }

@@ -34,13 +34,44 @@ public enum PadRoutes {
             model.preload(PadDocumentsModel.readNow(context.dbQueue))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
+        // Task 8: the Property screens with their actions (the demo's admin edits).
+        DemoRoute(name: "pad-recharges", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
+            let tabs = editingTabs(context)
+            tabs.padRecharges.preload(PadRechargesModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id,
+                                                                tenancyId: tabs.padProperty.selectedTenancyId))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .recharges, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-rent-receipts", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
+            let tabs = editingTabs(context)
+            tabs.padRentReceipts.preload(PadRentReceiptsModel.readNow(context.dbQueue, tenancyId: tabs.padProperty.selectedTenancyId))
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .rentReceipts, columns: .doubleColumn))
+        },
+        // A filed-year refusal under the latest draft's bill, its cell selected.
+        DemoRoute(name: "pad-bills-refusal", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
+            let tabs = editingTabs(context)
+            if let grid = tabs.padProperty.bills, let bill = grid.bills.last(where: { $0.stage == .inRecharge }) ?? grid.bills.last {
+                tabs.padProperty.selectedCellId = grid.rows.compactMap { grid.cell(row: $0, month: bill.month) }
+                    .first { cell in cell.bills.contains { $0.id == bill.id } }?.id
+                tabs.padWrite.preload(canEdit: true, refusal: PadWriteModel.Refusal(
+                    rowId: bill.id, message: DeviceWriteCopy.filedYear(years: ["2024/25"])))
+            }
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .bills, columns: .doubleColumn))
+        },
     ]
+
+    /// `tabs`, writing as the demo's admin (nothing is written by a render).
+    @MainActor
+    static func editingTabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+        let tabs = tabs(context, writer: DeviceWriter(db: context.dbQueue, viewer: { .demoAdmin }, afterWrite: {}))
+        tabs.padWrite.preload(canEdit: true)
+        return tabs
+    }
 
     /// Tabs over the demo with Property's models already read, so the first frame has its data.
     @MainActor
-    static func tabs(_ context: PhoneDemoContext) -> PhoneTabsModel {
+    static func tabs(_ context: PhoneDemoContext, writer: DeviceWriter? = nil) -> PhoneTabsModel {
         let today = context.today
-        let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin)
+        let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, writer: writer)
         tabs.padProperty.preload(PadPropertyModel.readNow(context.dbQueue, today: today))
         tabs.property.preload(PropertyViewModel.readNow(context.dbQueue, today: today))
         return tabs

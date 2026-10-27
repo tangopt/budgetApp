@@ -133,7 +133,9 @@ struct PhoneRoot: View {
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
             // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
             let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
-            let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer)
+            // The iPad's Property edits write through the device writer; demo data's database is read-only: no writer.
+            let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer,
+                                      writer: environment.isDemo ? nil : environment.writer)
             // This iPhone's iCloud user, as sync reads it: followed by the model, not by a view, because the content
             // is out of the view tree while locked and the name is usually read before the first unlock.
             if !environment.isDemo {
