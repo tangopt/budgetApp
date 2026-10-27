@@ -6,7 +6,8 @@ import BudgetCore
 /// Downloads tray on the right. Sign-in is typed or pasted on the site. "Open in Safari" is the way out for a site
 /// that needs Safari: a PDF shared back from there (More… ▸ Mango) lands in the same tray.
 ///
-/// Check (the magnifier) previews the file until the check-and-link screen takes it over (`onCheck`).
+/// Check (the magnifier) opens the check-and-link sheet (`CheckAndLinkSheet`) once the app has given the model its
+/// `checkSource`; before that it previews the file (or calls `onCheck`).
 public struct BrowserView: View {
     @Bindable var model: BrowserModel
     /// False in the snapshot routes: a still placeholder where the web view goes (a web view draws nothing there).
@@ -16,6 +17,7 @@ public struct BrowserView: View {
     @State private var addingSite = false
     @State private var showsTray = true
     @State private var previewing: TrayItem?
+    @State private var checking: TrayItem?
     @Environment(\.openURL) private var openURL
     @Environment(\.phoneTheme) private var theme
 
@@ -45,7 +47,7 @@ public struct BrowserView: View {
                 if showsTray {
                     Divider()
                     TrayListView(items: model.downloadedItems, onCheck: check,
-                                 onDiscard: { item in Task { await model.discard(item) } })
+                                 onDiscard: { item in Task { await model.discard(item) } }, canCheck: model.canCheck)
                         .frame(width: Self.trayWidth)
                 }
             }
@@ -56,6 +58,14 @@ public struct BrowserView: View {
             AddSiteSheet { name, address, kind in
                 let site = try await model.addSite(name: name, address: address, kind: kind)
                 model.load(site)
+            }
+        }
+        .sheet(item: $checking) { item in
+            if let source = model.checkSource {
+                CheckAndLinkHost(item: item, tray: model.tray, source: source, showsLivePreview: showsWebView) {
+                    checking = nil
+                    Task { await model.refreshTray() }
+                }
             }
         }
         #if canImport(UIKit)
@@ -70,7 +80,7 @@ public struct BrowserView: View {
     }
 
     private func check(_ item: TrayItem) {
-        if let onCheck { onCheck(item) } else { previewing = item }
+        if model.checkSource != nil { checking = item } else if let onCheck { onCheck(item) } else { previewing = item }
     }
 
     private var header: some View {

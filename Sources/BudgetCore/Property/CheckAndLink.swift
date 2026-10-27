@@ -71,6 +71,18 @@ public struct TenantShare: Equatable, Sendable {
     public var statementMonth: Date
     /// A recorded invoice already on a statement (a document attached to it): that statement, any status.
     public var alreadyOnStatement: Bool
+
+    public init(tenancyId: Int64, tenancyName: String, amountMinorUnits: Int, note: String? = nil, month: Date,
+                joinsStatement: Int64? = nil, statementMonth: Date, alreadyOnStatement: Bool = false) {
+        self.tenancyId = tenancyId
+        self.tenancyName = tenancyName
+        self.amountMinorUnits = amountMinorUnits
+        self.note = note
+        self.month = month
+        self.joinsStatement = joinsStatement
+        self.statementMonth = statementMonth
+        self.alreadyOnStatement = alreadyOnStatement
+    }
 }
 
 /// What every checked file carries: what holds it back, and the review it came from (the Mac's import plan).
@@ -97,6 +109,36 @@ public struct CheckAndLinkCheck: Equatable, Sendable {
     var itemId: UUID
 
     public var canSave: Bool { blockers.isEmpty && duplicateOf == nil }
+
+    /// For the sheet's previews and tests: a check with no plan behind it (the engine makes the real ones, which Save
+    /// needs; a check made here can't be saved by `CheckAndLink`).
+    public init(title: String, fileName: String, blockers: [String] = [], notes: [String] = [], duplicateOf: String? = nil,
+                filedYears: [String] = [], toCheck: [String] = [], kindChosen: Bool = false) {
+        self.title = title
+        self.fileName = fileName
+        self.blockers = blockers
+        self.notes = notes
+        self.duplicateOf = duplicateOf
+        self.filedYears = filedYears
+        self.toCheck = toCheck
+        self.kindChosen = kindChosen
+        plan = ImportPlan(items: [])
+        itemId = UUID()
+    }
+
+    init(title: String, fileName: String, blockers: [String], notes: [String], duplicateOf: String?, filedYears: [String],
+         toCheck: [String], kindChosen: Bool, plan: ImportPlan, itemId: UUID) {
+        self.title = title
+        self.fileName = fileName
+        self.blockers = blockers
+        self.notes = notes
+        self.duplicateOf = duplicateOf
+        self.filedYears = filedYears
+        self.toCheck = toCheck
+        self.kindChosen = kindChosen
+        self.plan = plan
+        self.itemId = itemId
+    }
 }
 
 /// A utility bill read from a downloaded PDF, with its payment and what it means for the tenant.
@@ -121,6 +163,29 @@ public struct UtilityBillFields: Equatable, Sendable {
     public var tenantShares: [TenantShare]
     /// Recorded already without its document: Save attaches it (no figure of the invoice changes).
     public var attachesToInvoice: Int64?
+
+    public init(check: CheckAndLinkCheck, kind: DocumentKind = .utilityInvoice, provider: CheckedValue<Int64>? = nil,
+                providerName: String? = nil, propertyId: Int64? = nil, propertyName: String? = nil, currency: Currency,
+                periodStart: CheckedValue<Date>? = nil, periodEnd: CheckedValue<Date>? = nil, amount: CheckedValue<Int>? = nil,
+                issueDate: CheckedValue<Date>? = nil, invoiceNumber: CheckedValue<String>? = nil, paidBy: PaymentSuggestion? = nil,
+                paymentChoices: [PaymentSuggestion] = [], tenantShares: [TenantShare] = [], attachesToInvoice: Int64? = nil) {
+        self.check = check
+        self.kind = kind
+        self.provider = provider
+        self.providerName = providerName
+        self.propertyId = propertyId
+        self.propertyName = propertyName
+        self.currency = currency
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.amount = amount
+        self.issueDate = issueDate
+        self.invoiceNumber = invoiceNumber
+        self.paidBy = paidBy
+        self.paymentChoices = paymentChoices
+        self.tenantShares = tenantShares
+        self.attachesToInvoice = attachesToInvoice
+    }
 
     public var tenantShare: TenantShare? { tenantShares.first }
     /// The draft recharge statement (its id) the bill joins; nil: a new statement, or no tenancy shares it.
@@ -147,6 +212,27 @@ public struct StatementImportSummary: Equatable, Sendable {
     /// duplicates, lines it couldn't read): each a blocker too.
     public var checks: [String]
     public var balanceMatches: Bool
+
+    public init(check: CheckAndLinkCheck, accountId: Int64? = nil, accountName: CheckedValue<String>? = nil, currency: Currency,
+                periodStart: CheckedValue<Date>? = nil, periodEnd: CheckedValue<Date>? = nil,
+                openingBalance: CheckedValue<Int>? = nil, closingBalance: CheckedValue<Int>? = nil, rowsToAdd: Int = 0,
+                alreadyImported: Int = 0, instalments: String? = nil, fund: String? = nil, checks: [String] = [],
+                balanceMatches: Bool = true) {
+        self.check = check
+        self.accountId = accountId
+        self.accountName = accountName
+        self.currency = currency
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.openingBalance = openingBalance
+        self.closingBalance = closingBalance
+        self.rowsToAdd = rowsToAdd
+        self.alreadyImported = alreadyImported
+        self.instalments = instalments
+        self.fund = fund
+        self.checks = checks
+        self.balanceMatches = balanceMatches
+    }
 }
 
 /// Any other document: its kind (the picker when nothing recognised it), what was read, and what it links to.
@@ -166,6 +252,25 @@ public struct DocumentFields: Equatable, Sendable {
     public var currency: Currency?
     /// What Save links it to ("Bank A · 2023-03-20 · DEMO PWR DD 123").
     public var links: [String]
+
+    public init(check: CheckAndLinkCheck, kind: ImportKind, kindName: String, kindOrigin: FieldOrigin = .read, needsKind: Bool = false,
+                kindChoices: [ImportKindChoice] = [], issuer: CheckedValue<String>? = nil, date: CheckedValue<Date>? = nil,
+                periodStart: CheckedValue<Date>? = nil, periodEnd: CheckedValue<Date>? = nil, amount: CheckedValue<Int>? = nil,
+                currency: Currency? = nil, links: [String] = []) {
+        self.check = check
+        self.kind = kind
+        self.kindName = kindName
+        self.kindOrigin = kindOrigin
+        self.needsKind = needsKind
+        self.kindChoices = kindChoices
+        self.issuer = issuer
+        self.date = date
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.amount = amount
+        self.currency = currency
+        self.links = links
+    }
 }
 
 /// A downloaded file checked: proposed like any import on the Mac, saved only on Save.
@@ -195,6 +300,14 @@ public struct CheckAndLinkResult: Equatable, Sendable {
     public var waitingFileId: Int64?
     /// "Saved <title>", or "Sent to the Mac to import".
     public var summary: String
+
+    public init(documentId: Int64?, invoiceId: Int64? = nil, sentToMac: Bool = false, waitingFileId: Int64? = nil, summary: String) {
+        self.documentId = documentId
+        self.invoiceId = invoiceId
+        self.sentToMac = sentToMac
+        self.waitingFileId = waitingFileId
+        self.summary = summary
+    }
 }
 
 /// Why Save didn't save (nothing written, the file stays in the tray). Filed years, permissions and link guards keep

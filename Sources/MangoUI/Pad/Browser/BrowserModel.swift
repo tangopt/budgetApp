@@ -52,6 +52,8 @@ public final class BrowserModel {
     public private(set) var sites: [SavedSite] = []
     /// Whether "Add site" and "Remove site" are offered: the store's say (Edit on Property for the household's sites).
     public private(set) var canEditSites = true
+    /// Whether the tray's Check is offered: Edit on Property and Documents. True until `checkSource` says otherwise.
+    public private(set) var canCheck = true
     public private(set) var currentSite: SavedSite?
     public private(set) var loadRequest: LoadRequest?
     /// The open page's host (the address bar shows it, read-only).
@@ -72,6 +74,8 @@ public final class BrowserModel {
     @ObservationIgnored public var goForward: () -> Void = {}
 
     @ObservationIgnored public let tray: DownloadsTray
+    /// What the check-and-link sheet reads and saves with (step 10 Task 8); nil: Check only previews the file.
+    @ObservationIgnored public var checkSource: CheckAndLinkSource?
     @ObservationIgnored private var store: any SavedSiteStore
     /// This device's own sites, still to move into `store` (step 10 Task 6); nil once moved, or with nothing to move.
     @ObservationIgnored private var adopting: LocalSavedSiteStore?
@@ -110,6 +114,7 @@ public final class BrowserModel {
             notice = "The saved sites couldn't be read."
         }
         canEditSites = await store.canEdit()
+        if let source = checkSource { canCheck = await source.offersCheck() }
         await refreshTray()
     }
 
@@ -224,7 +229,8 @@ public final class BrowserModel {
 
     public func fileURL(for item: TrayItem) -> URL { tray.fileURL(for: item) }
 
-    private func refreshTray() async {
+    /// Reads the tray again (after a file was checked and saved).
+    public func refreshTray() async {
         let tray = tray
         downloadedItems = await Task.detached { tray.items() }.value
     }

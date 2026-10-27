@@ -25,8 +25,16 @@ enum PhoneBrowser {
     static func attach(_ environment: PhoneEnvironment) async {
         guard let browser = shared else { return }
         if environment.isDemo {
+            browser.checkSource = nil
             await browser.use(LocalSavedSiteStore())
         } else {
+            // Check and link (step 10 Task 8): the tray's files read as the Mac's import reads them, saved through the
+            // device writer into this iPad's library.
+            if let folder = try? PhoneDatabase.libraryFolder() {
+                let library = EvidenceLibrary(root: folder, database: environment.dbQueue)
+                browser.checkSource = CheckAndLinkSource(engine: CheckAndLink(dbQueue: environment.dbQueue, library: library),
+                                                         writer: environment.writer)
+            }
             await browser.use(GRDBSavedSiteStore(writer: environment.writer, reader: environment.dbQueue), adopting: LocalSavedSiteStore())
         }
     }

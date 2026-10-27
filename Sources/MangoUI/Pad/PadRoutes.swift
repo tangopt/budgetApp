@@ -131,6 +131,18 @@ public enum PadRoutes {
         DemoRoute(name: "pad-tray", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { _ in
             AnyView(BrowserView(model: sampleBrowser("pad-tray", items: 3), showsWebView: false, onDone: {}))
         },
+        // Step 10, Task 8: the Check and link sheet for a utility bill (a figure to check, the suggested payment, the tenant's
+        // share), a bank statement (sent to the Mac), and a bill that Save was refused (a filed year), the file still in the tray.
+        DemoRoute(name: "pad-check-utility", sizes: DemoRoute.padSizes, minimumFigures: 6, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.utility(refusal: nil), showsLivePreview: false, onClose: {}))
+        },
+        DemoRoute(name: "pad-check-statement", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.statement(), showsLivePreview: false, onClose: {}))
+        },
+        DemoRoute(name: "pad-check-refusal", sizes: DemoRoute.padSizes, minimumFigures: 6, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.utility(refusal: DeviceWriteCopy.filedYear(years: ["2024/25"])),
+                                      showsLivePreview: false, onClose: {}))
+        },
     ]
 
     /// The browser routes' saved sites: synthetic names on `example.test` hosts.

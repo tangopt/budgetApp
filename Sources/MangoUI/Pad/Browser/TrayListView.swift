@@ -8,6 +8,8 @@ struct TrayListView: View {
     let items: [TrayItem]
     let onCheck: (TrayItem) -> Void
     let onDiscard: (TrayItem) -> Void
+    /// Check is hidden (not disabled) without Edit on Property and Documents.
+    var canCheck = true
     var now = Date()
     @Environment(\.phoneTheme) private var theme
 
@@ -84,7 +86,7 @@ struct TrayListView: View {
                 .accessibilityElement(children: .combine)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            RowIconButton(.check, item: item.fileName, size: .small) { onCheck(item) }
+            if canCheck { RowIconButton(.check, item: item.fileName, size: .small) { onCheck(item) } }
             RowIconButton(.discard, item: item.fileName, size: .small) { onDiscard(item) }
         }
         .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 8)
