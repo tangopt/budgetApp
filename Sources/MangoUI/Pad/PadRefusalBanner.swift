@@ -107,6 +107,8 @@ public final class PadWriteModel: ObservableObject {
 
     nonisolated static func text(for error: Error) -> String {
         if let error = error as? LocalizedError, let text = error.errorDescription { return text }
+        if let error = error as? RechargeError { return error.userMessage }
+        if let error = error as? RentPaymentError { return error.userMessage }
         return DeviceWriteCopy.notSaved
     }
 }

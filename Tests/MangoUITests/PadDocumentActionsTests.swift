@@ -289,3 +289,12 @@ final class PadDocumentActionsTests: XCTestCase {
         return recordName
     }
 }
+
+final class PadRefusalCopyTests: XCTestCase {
+    func testRechargeAndRentRefusalsShowTheirReason() {
+        XCTAssertEqual(PadWriteModel.text(for: RechargeError.laterStatementExists),
+                       "A later month's statement exists: prepare the months in order.")
+        XCTAssertEqual(PadWriteModel.text(for: RentPaymentError.overAllocated), "That's more than is left of the credit.")
+        XCTAssertEqual(PadWriteModel.text(for: CocoaError(.fileNoSuchFile)), DeviceWriteCopy.notSaved)
+    }
+}

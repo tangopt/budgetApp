@@ -762,18 +762,7 @@ enum PropertyMessages {
         }
     }
 
-    static func text(_ error: RentPaymentError) -> String {
-        switch error {
-        case .receiptNotFound: return "The receipt no longer exists."
-        case .transactionNotFound: return "The transaction no longer exists."
-        case .notACredit: return "Only credits pay rent."
-        case .negativeAmount: return "Amounts can't be negative."
-        case .nothingAllocated: return "Nothing would be linked."
-        case .overAllocated: return "That's more than is left of the credit."
-        case .exceedsReceipt: return "That's more rent than the receipt received."
-        case .receiptCancelled: return "Cancelled receipts take no payments."
-        }
-    }
+    static func text(_ error: RentPaymentError) -> String { error.userMessage }
 }
 
 /// Formatting for the property screens.
