@@ -153,5 +153,6 @@ public final class DatabaseManager {
         registerSyncRedirectStampMigration(&migrator)
         registerImportWaitingFileMigration(&migrator)
         registerSharingMigration(&migrator)
+        registerSavedSiteMigration(&migrator)
     }
 }

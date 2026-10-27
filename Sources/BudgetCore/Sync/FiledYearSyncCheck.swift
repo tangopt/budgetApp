@@ -77,8 +77,9 @@ public enum FiledYearSyncCheck {
     /// Ruling R13: the years filed in the real database, protected whatever their stored status.
     public static let fixedYears = 2020...2024
 
-    /// Tables no tax figure reads, left out of the tables an apply wrote: files kept for later (plan Task 10).
-    static let unprotectedTables: Set<String> = ["importWaitingFile"]
+    /// Tables no tax figure reads, left out of the tables an apply wrote: files kept for later (plan Task 10), the
+    /// iPad browser's saved sites (step 10 Task 6).
+    static let unprotectedTables: Set<String> = ["importWaitingFile", "savedSite"]
 
     /// The tables written that the check looks at (nil: can't tell, every recorded statement runs again).
     static func checkedWritten(_ written: Set<String>?) -> Set<String>? {

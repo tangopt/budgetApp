@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 8
+    public static let version = 9
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -257,6 +257,9 @@ public enum SyncSchema {
         SyncTableSchema("taxTransactionOwner",
                         synced: ["transactionId", "personId", "notes"],
                         foreignKeys: ["personId": "person", "transactionId": "transaction_"]),
+        // The iPad browser's saved sites (step 10 Task 6, schema 9): the household's, addresses only.
+        SyncTableSchema("savedSite",
+                        synced: ["name", "url", "kind", "sortOrder"]),
     ]
 
     /// Tables that record history, whose references may name rows that are gone (ruling R7): the import
@@ -533,6 +536,7 @@ extension SyncSchema {
         SyncUniqueKey("taxNotClaimed", ["startYear", "manualItemId"], .identity),
         SyncUniqueKey("taxNotClaimed", ["startYear", "policyReceiptId"], .identity),
         SyncUniqueKey("taxTransactionOwner", ["transactionId"], .identity),
+        SyncUniqueKey("savedSite", ["url"], .identity),                        // the same site, saved on two devices
     ]
 
     static func uniqueKey(table: String, columns: [String]) -> SyncUniqueKey? {

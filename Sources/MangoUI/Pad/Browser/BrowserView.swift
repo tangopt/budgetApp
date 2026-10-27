@@ -32,7 +32,7 @@ public struct BrowserView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
-            SavedSitesStrip(sites: model.sites, currentId: model.currentSite?.id, onOpen: { model.load($0) },
+            SavedSitesStrip(sites: model.sites, currentId: model.currentSite?.id, canEdit: model.canEditSites, onOpen: { model.load($0) },
                             onRemove: { site in Task { await model.removeSite(id: site.id) } }, onAdd: { addingSite = true })
             Divider()
             if let notice = model.notice {
@@ -106,7 +106,7 @@ public struct BrowserView: View {
                 Text("Sign in on the site by typing or pasting; Mango never keeps your password. Every PDF you download lands in Downloads.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                if model.sites.isEmpty {
+                if model.sites.isEmpty, model.canEditSites {
                     Button("Add site") { addingSite = true }.buttonStyle(.pad(.primary))
                 }
             }

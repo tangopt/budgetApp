@@ -50,6 +50,8 @@ public final class BrowserModel {
     /// The browser is on screen (the iPad's root presents it over everything).
     public var isPresented = false
     public private(set) var sites: [SavedSite] = []
+    /// Whether "Add site" and "Remove site" are offered: the store's say (Edit on Property for the household's sites).
+    public private(set) var canEditSites = true
     public private(set) var currentSite: SavedSite?
     public private(set) var loadRequest: LoadRequest?
     /// The open page's host (the address bar shows it, read-only).
@@ -70,7 +72,9 @@ public final class BrowserModel {
     @ObservationIgnored public var goForward: () -> Void = {}
 
     @ObservationIgnored public let tray: DownloadsTray
-    @ObservationIgnored private let store: any SavedSiteStore
+    @ObservationIgnored private var store: any SavedSiteStore
+    /// This device's own sites, still to move into `store` (step 10 Task 6); nil once moved, or with nothing to move.
+    @ObservationIgnored private var adopting: LocalSavedSiteStore?
     @ObservationIgnored private let websiteData: any WebsiteDataClearing
 
     public init(tray: DownloadsTray, store: any SavedSiteStore, websiteData: any WebsiteDataClearing = WebKitWebsiteData()) {
@@ -87,13 +91,25 @@ public final class BrowserModel {
         downloadedItems = items
     }
 
+    /// Keeps the sites in `store` from now on (the household's, once its database is open), first moving `local`'s
+    /// sites into it when given: tried on each `reload` until the move is done (a refused write keeps them for later).
+    public func use(_ store: any SavedSiteStore, adopting local: LocalSavedSiteStore? = nil) async {
+        self.store = store
+        adopting = local
+        await reload()
+    }
+
     /// Reads the saved sites and the tray again.
     public func reload() async {
+        if let local = adopting, await SavedSiteAdoption.adopt(from: local, into: store) {
+            adopting = nil
+        }
         do {
             sites = try await store.all()
         } catch {
             notice = "The saved sites couldn't be read."
         }
+        canEditSites = await store.canEdit()
         await refreshTray()
     }
 

@@ -4,8 +4,8 @@ import BudgetCore
 import MangoUI
 
 /// The iPad's built-in browser for the app's life (step 10, Task 5): its Downloads tray in
-/// `Application Support/Mango/Tray` (app-private, protected, excluded from backup), the sites saved on this device,
-/// and the web view's own persistent website data. None on the iPhone.
+/// `Application Support/Mango/Tray` (app-private, protected, excluded from backup), the household's saved sites
+/// (`attach`), and the web view's own persistent website data. None on the iPhone.
 @MainActor
 enum PhoneBrowser {
     static let shared: BrowserModel? = UIDevice.current.userInterfaceIdiom == .pad
@@ -17,6 +17,18 @@ enum PhoneBrowser {
         let support = (try? PhoneDatabase.appFolder())
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Mango")
         return support.appendingPathComponent("Tray", isDirectory: true)
+    }
+
+    /// The strip's sites once the database is open: the household's (step 10 Task 6: synced, each add and remove written
+    /// through the device writer as Property), with the sites saved on this device before moved into them once. With
+    /// demo data (read-only, never synced), this device's own.
+    static func attach(_ environment: PhoneEnvironment) async {
+        guard let browser = shared else { return }
+        if environment.isDemo {
+            await browser.use(LocalSavedSiteStore())
+        } else {
+            await browser.use(GRDBSavedSiteStore(writer: environment.writer, reader: environment.dbQueue), adopting: LocalSavedSiteStore())
+        }
     }
 
     /// Sign-out, leaving the household, demo data: the tray emptied and the website data cleared, awaited.

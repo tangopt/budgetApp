@@ -2,10 +2,12 @@ import SwiftUI
 import BudgetCore
 
 /// The browser's top strip (step 10, Task 5): the saved sites as chips, the open one highlighted, and "Add site" at
-/// the end. The chips scroll sideways when there are more than fit; names truncate in the middle.
+/// the end. The chips scroll sideways when there are more than fit; names truncate in the middle. Without Edit on the
+/// sites (`canEdit`), "Add site" and "Remove site" are hidden.
 struct SavedSitesStrip: View {
     let sites: [SavedSite]
     let currentId: UUID?
+    var canEdit = true
     let onOpen: (SavedSite) -> Void
     let onRemove: (SavedSite) -> Void
     let onAdd: () -> Void
@@ -32,11 +34,13 @@ struct SavedSitesStrip: View {
                 .padding(.leading, 16).padding(.vertical, 8)
             }
             // Always in reach, however many sites there are.
-            Button(action: onAdd) {
-                Label("Add site", systemImage: "plus")
+            if canEdit {
+                Button(action: onAdd) {
+                    Label("Add site", systemImage: "plus")
+                }
+                .buttonStyle(.pad(.secondary, size: .small))
+                .padding(.trailing, 16)
             }
-            .buttonStyle(.pad(.secondary, size: .small))
-            .padding(.trailing, 16)
         }
     }
 
@@ -59,7 +63,9 @@ struct SavedSitesStrip: View {
         .accessibilityLabel("\(RowAction.openSite.accessibilityLabel), \(site.name)")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
-            Button("Remove site", systemImage: "trash", role: .destructive) { onRemove(site) }
+            if canEdit {
+                Button("Remove site", systemImage: "trash", role: .destructive) { onRemove(site) }
+            }
         }
     }
 }

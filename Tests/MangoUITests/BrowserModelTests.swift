@@ -29,6 +29,15 @@ final class BrowserModelTests: XCTestCase {
         func remove(id: UUID) async throws { sites.removeAll { $0.id == id } }
     }
 
+    /// The household's sites as a member with View on Property sees them.
+    private struct ViewOnlySites: SavedSiteStore {
+        let sites: [SavedSite]
+        func all() async throws -> [SavedSite] { sites }
+        func save(_ site: SavedSite) async throws { throw AccessDenied(area: .property) }
+        func remove(id: UUID) async throws { throw AccessDenied(area: .property) }
+        func canEdit() async -> Bool { false }
+    }
+
     private final class FakeWebsiteData: WebsiteDataClearing, @unchecked Sendable {
         var clears = 0
         @MainActor func clearAll() async { clears += 1 }
@@ -212,5 +221,26 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertTrue(TrayListView.summary(shared, now: now, calendar: calendar).hasPrefix("Shared to Mango"))
         XCTAssertEqual(TrayListView.title(count: 0), "Downloads")
         XCTAssertEqual(TrayListView.title(count: 2), "Downloads (2)")
+    }
+
+    /// Step 10 Task 6: the household's store replaces the device's, the device's sites moving into it once; without Edit
+    /// the strip offers no Add or Remove.
+    func testHouseholdStoreAdoptsLocalSitesAndHidesEditsWithoutEdit() async throws {
+        let suite = "mango.tests.savedSites." + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let local = LocalSavedSiteStore(suiteName: suite)
+        try await local.save(SavedSite(name: "Water", url: try SavedSite.validate("water.example.test"), kind: .utility, sortOrder: 0))
+        let browser = model()
+        let household = MemorySites()
+        await browser.use(household, adopting: local)
+        XCTAssertEqual(browser.sites.map(\.name), ["Water"])
+        XCTAssertTrue(browser.canEditSites)
+        let left = try await local.all()
+        XCTAssertEqual(left, [], "moved once")
+
+        let bank = SavedSite(name: "Bank", url: try SavedSite.validate("bank.example.test"), kind: .bank, sortOrder: 0)
+        await browser.use(ViewOnlySites(sites: [bank]))
+        XCTAssertEqual(browser.sites, [bank])
+        XCTAssertFalse(browser.canEditSites, "Add and Remove are hidden")
     }
 }

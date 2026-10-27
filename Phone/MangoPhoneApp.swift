@@ -192,6 +192,7 @@ struct PhoneRoot: View {
                 }
             }
             stage = .ready(environment, tabs)
+            await PhoneBrowser.attach(environment)
             await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
             outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
             refreshOutputs()
