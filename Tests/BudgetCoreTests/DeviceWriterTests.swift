@@ -311,6 +311,45 @@ final class DeviceWriterTests: XCTestCase {
         }
     }
 
+    /// The mode follows a pull (Task 5): the Mac turns her Property to View, every other area already at View; once her
+    /// iPad pulls it, the decided mode changes to read-only and the engine is made again. Before that pull nothing
+    /// changes, and an iPhone never changes from read-only.
+    func testModeFollowsPermissionChange() async throws {
+        let h = try TwoPersonHousehold.make(memberMode: TwoPersonHousehold.memberTabletMode)
+        let memberUser = try await h.adminMac.db.read { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [h.fixture.personB])!
+        }
+        try await h.adminMac.db.write { db in
+            try MemberPermissions.ensureDefaults(appUserId: memberUser, db: db)
+            try db.execute(sql: "UPDATE memberPermission SET level = 'view' WHERE appUserId = ?", arguments: [memberUser])
+            try db.execute(sql: "UPDATE memberPermission SET level = 'edit' WHERE appUserId = ? AND area = 'property'", arguments: [memberUser])
+        }
+        try await h.syncAll()
+        let tablet = TwoPersonHousehold.memberTabletMode
+        func changed(from current: SyncWriteMode, isPad: Bool) throws -> SyncWriteMode? {
+            try h.memberDevice.db.read { db in
+                try DeviceWriteMode.changed(from: current, recordName: TwoPersonHousehold.memberICloudUser, isMember: true, isPad: isPad, db: db)
+            }
+        }
+        XCTAssertNil(try changed(from: tablet, isPad: true), "Edit on Property: her iPad keeps writing")
+        XCTAssertEqual(try changed(from: .readOnly, isPad: true), tablet, "a read-only engine made before she was named starts writing")
+        XCTAssertNil(try changed(from: .readOnly, isPad: false), "an iPhone stays read-only")
+
+        try await h.adminMac.db.write { db in
+            try db.execute(sql: "UPDATE memberPermission SET level = 'view' WHERE appUserId = ? AND area = 'property'", arguments: [memberUser])
+        }
+        try await h.adminMac.engine.pushPending()
+        XCTAssertNil(try changed(from: tablet, isPad: true), "not pulled yet")
+        try await h.memberDevice.engine.pull()
+
+        XCTAssertEqual(try changed(from: tablet, isPad: true), .readOnly, "View everywhere: her iPad stops writing")
+        XCTAssertNil(try changed(from: .readOnly, isPad: true))
+        XCTAssertNil(try changed(from: .readOnly, isPad: false), "an iPhone stays read-only")
+        let canEdit = await DeviceWriter(db: h.memberDevice.db, viewer: { .iCloudUser(recordName: TwoPersonHousehold.memberICloudUser) },
+                                         afterWrite: {}).canEdit(.property)
+        XCTAssertFalse(canEdit, "and offers no edit")
+    }
+
     // MARK: Copy
 
     func testCopyStrings() {

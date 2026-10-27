@@ -122,4 +122,14 @@ public enum DeviceWriteMode {
               let personUuid = try SyncRecordStore.existingUUID(table: "person", localId: actor.personId, db: db) else { return .readOnly }
         return .device(zones: [SyncZones.household, SyncZones.privateZone(personUuid: personUuid)])
     }
+
+    /// The mode decided now, when it isn't `current`; nil when it is. After a sync (a pull may have brought a
+    /// changed permission or membership), a non-nil answer makes the engine again with it: a user who lost Edit
+    /// stops pushing, one who gained it starts. An iPhone is always read-only, so it never changes (and reads
+    /// nothing).
+    public static func changed(from current: SyncWriteMode, recordName: String?, isMember: Bool, isPad: Bool,
+                               db: Database) throws -> SyncWriteMode? {
+        let decided = isPad ? try decide(recordName: recordName, isMember: isMember, isPad: true, db: db) : .readOnly
+        return decided == current ? nil : decided
+    }
 }

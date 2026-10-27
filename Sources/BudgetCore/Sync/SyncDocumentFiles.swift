@@ -94,6 +94,14 @@ public enum SyncFileTables {
         return (table, row["localId"])
     }
 
+    /// The record UUID of the document stored at `storedRelativePath` (the iPad's Documents screen opens a document by
+    /// its stored path, `SyncEngineCore.downloadDocument` by its record); nil when no synced document is there.
+    public static func documentUUID(storedRelativePath: String, db: Database) throws -> String? {
+        guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM document WHERE storedRelativePath = ? ORDER BY id LIMIT 1",
+                                          arguments: [storedRelativePath]) else { return nil }
+        return try SyncRecordStore.existingUUID(table: document, localId: id, db: db)
+    }
+
     /// Whether `url` is a regular file (not a symbolic link, not a folder), as it is, without following a link.
     static func isRegularFile(_ url: URL) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular

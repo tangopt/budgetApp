@@ -364,6 +364,23 @@ final class DocumentSyncTests: XCTestCase {
         XCTAssertEqual(try phone.file(uuid: uuid), plaintext)
     }
 
+    /// The iPad's Documents screen opens a document by its stored path (step 8 Task 5): that path names the document's
+    /// record, whose file is then downloaded into the library.
+    func testLazyDeviceFindsTheDocumentByItsStoredPath() async throws {
+        let phone = try DocumentSyncTestDevice("user-b", transport: cloud, keys: keys, policy: .lazy)
+        let (document, uuid) = try a.add("lease.pdf", Self.bytes("by path"))
+        try await a.engine.syncNow()
+        try await phone.engine.syncNow()
+
+        try await phone.queue.read { db in
+            XCTAssertEqual(try SyncFileTables.documentUUID(storedRelativePath: document.storedRelativePath, db: db), uuid)
+            XCTAssertNil(try SyncFileTables.documentUUID(storedRelativePath: "00/missing.pdf", db: db))
+        }
+        let url = try await phone.engine.downloadDocument(uuid: uuid)
+        XCTAssertEqual(try Data(contentsOf: url), Self.bytes("by path"))
+        XCTAssertTrue(url.path.hasPrefix(phone.root.path), "decrypted into the library only")
+    }
+
     func testDownloadWhoseBytesDontMatchTheHashNeedsAttentionAndIsNeverWritten() async throws {
         let (_, uuid) = try a.add("statement.pdf", Self.bytes("genuine"))
         try await a.engine.syncNow()
