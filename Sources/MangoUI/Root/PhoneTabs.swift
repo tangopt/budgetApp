@@ -23,6 +23,19 @@ public final class PhoneTabsModel: ObservableObject {
     public let accounts: AccountsViewModel
     public let property: PropertyViewModel
     public let search: SearchViewModel
+    /// The iPad's Property screens (tenancies, bills); unused on the iPhone.
+    public let padProperty: PadPropertyModel
+    /// The iPad's Documents library; its `open` is set once sync can download a document on demand.
+    public let padDocuments: PadDocumentsModel
+    /// The iPad's Property edits (step 8, Task 8), through the device writer (nil: demo data, nothing offered).
+    public let padWrite: PadWriteModel
+    public let padBillActions: PadBillActions
+    public let padRecharges: PadRechargesModel
+    public let padRentReceipts: PadRentReceiptsModel
+    /// The iPad's Documents and Missing evidence edits (step 8, Task 10), through the device writer in Documents.
+    public let padDocumentWrite: PadWriteModel
+    public let padDocumentActions: PadDocumentActions
+    public let padMissingEvidence: PadMissingEvidenceModel
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -36,7 +49,7 @@ public final class PhoneTabsModel: ObservableObject {
     /// `hasProperty`: what `hasProperty(_:)` read when the database opened. `home`: an already loaded Home (the
     /// snapshot harness's `tabs` route).
     public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, hasProperty: Bool, viewer: PhoneViewer = .everyone,
-                home: HomeViewModel? = nil) {
+                home: HomeViewModel? = nil, writer: DeviceWriter? = nil) {
         self.dbQueue = dbQueue
         self.hasProperty = hasProperty
         self.viewer = viewer
@@ -45,6 +58,15 @@ public final class PhoneTabsModel: ObservableObject {
         accounts = AccountsViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         property = PropertyViewModel(dbQueue: dbQueue, today: today)
         search = SearchViewModel(dbQueue: dbQueue, today: today)
+        padProperty = PadPropertyModel(dbQueue: dbQueue, today: today)
+        padDocuments = PadDocumentsModel(dbQueue: dbQueue)
+        padWrite = PadWriteModel(writer: writer)
+        padBillActions = PadBillActions(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padRecharges = PadRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
+        padRentReceipts = PadRentReceiptsModel(property: padProperty, write: padWrite, dbQueue: dbQueue)
+        padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
+        padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
+        padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
     }
 
     /// Whether the database has a property row, read off the main actor; nil when the read fails (the tab then stays

@@ -11,11 +11,16 @@ import BudgetCore
 /// Step 7a: the cloud is the admin's iCloud user (`adminICloudUser`); the member's device acts as her own
 /// (`memberICloudUser`, `cloud.session(as:)`), an accepted participant of the household zone's share. Both record
 /// names are on the Mac's appUsers.
+///
+/// Step 8: the admin's iPad (`adminTablet`) writes in device mode, to the household and A's private zone; the member's
+/// device can run as her iPad (`memberMode: memberTabletMode`), writing the household only.
 public final class TwoPersonHousehold {
     public typealias Device = (db: DatabaseQueue, engine: SyncEngineCore)
 
     public static let adminICloudUser = "fake-owner"
     public static let memberICloudUser = "fake-member"
+    /// The member's iPad (step 8): she writes the household only.
+    public static let memberTabletMode = SyncWriteMode.device(zones: [SyncZones.household])
 
     public let cloud: FakeCloud
     /// The admin's devices' transport: every household save they make is judged, as it is made, by the Mac's router.
@@ -33,6 +38,8 @@ public final class TwoPersonHousehold {
     public let macTransport: LossyTransport
     public let mac2Transport: LossyTransport
     public let adminPhone: Device
+    /// The admin's iPad (step 8): `.device(zones: [household, A's private zone])` over `audit`, sharing `adminKeys`.
+    public let adminTablet: Device
     public let memberDevice: Device
     public let fixture: SharingFixture
     /// Person B's `person` UUID and private zone.
@@ -41,7 +48,7 @@ public final class TwoPersonHousehold {
 
     private init(cloud: FakeCloud, audit: ZoneAuditingTransport, memberAudit: ZoneAuditingTransport, audit2: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
                  adminMac: Device, adminMac2: Device, macTransport: LossyTransport, mac2Transport: LossyTransport,
-                 adminPhone: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
+                 adminPhone: Device, adminTablet: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
         self.cloud = cloud
         self.audit = audit
         self.memberAudit = memberAudit
@@ -53,6 +60,7 @@ public final class TwoPersonHousehold {
         self.macTransport = macTransport
         self.mac2Transport = mac2Transport
         self.adminPhone = adminPhone
+        self.adminTablet = adminTablet
         self.memberDevice = memberDevice
         self.fixture = fixture
         self.personBUuid = personBUuid
@@ -64,10 +72,12 @@ public final class TwoPersonHousehold {
     /// keep files, when a test syncs files. `revalidatesAccess`: the admin's Mac re-validates what it pulls (step 6
     /// Task 9), as the app's Mac does. `memberInvited` false (step 7a Task 7): the household isn't shared yet, so her
     /// iCloud user isn't on its share and her appUser has no record name. `memberHasHouseholdKey` false (step 7a Task 8):
-    /// her device starts without the household key, as before the key exchange.
+    /// her device starts without the household key, as before the key exchange. `memberMode` (step 8): how her device
+    /// writes (`memberTabletMode` for her iPad); `memberDocuments`: where it keeps files, when a test syncs them there.
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
                             phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false,
-                            memberInvited: Bool = true, memberHasHouseholdKey: Bool = true) throws -> TwoPersonHousehold {
+                            memberInvited: Bool = true, memberHasHouseholdKey: Bool = true,
+                            memberMode: SyncWriteMode = .full, memberDocuments: SyncDocumentFiles? = nil) throws -> TwoPersonHousehold {
         // The admin made the household zone before inviting her (the member can't create it in his database).
         // Its clock keeps up with the devices' (they stamp `Date()`), so the members' clocks aren't all clamped (step 7a).
         let cloud = FakeCloud(start: Date(), zones: [SyncZones.household], ownerRecordName: adminICloudUser, followsWallClock: true)
@@ -109,6 +119,8 @@ public final class TwoPersonHousehold {
         try mac2.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
         let phone = try TestDatabase.migrated()
         try phone.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
+        let tablet = try TestDatabase.migrated()
+        try tablet.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
         let member = try TestDatabase.migrated()
         try member.write { db in try SyncChangeTracker.setWriter(memberUser, db: db) }
 
@@ -122,14 +134,16 @@ public final class TwoPersonHousehold {
                                        documents: macDocuments, viewer: admin, revalidatesAccess: revalidatesAccess)
         let phoneEngine = SyncEngineCore(db: phone, transport: audit, device: SyncDevice(id: "admin-phone", name: "iPhone"), keyStore: adminKeys,
                                          documents: phoneDocuments, readOnly: true, viewer: admin)
+        let tabletEngine = SyncEngineCore(db: tablet, transport: audit, device: SyncDevice(id: "admin-tablet", name: "Admin iPad"), keyStore: adminKeys,
+                                          mode: .device(zones: [SyncZones.household, fixture.privateZone]), viewer: admin)
         let memberEngine = SyncEngineCore(db: member, transport: memberAudit, device: SyncDevice(id: "member-device", name: "iPad"), keyStore: memberKeys,
-                                          viewer: SyncViewer(personUuid: personB))
+                                          documents: memberDocuments, mode: memberMode, viewer: SyncViewer(personUuid: personB))
         audit.judge(with: router(mac))
         memberAudit.judge(with: router(member))
         audit2.judge(with: router(mac2))
         return TwoPersonHousehold(cloud: cloud, audit: audit, memberAudit: memberAudit, audit2: audit2, adminKeys: adminKeys, memberKeys: memberKeys,
                                   adminMac: (mac, macEngine), adminMac2: (mac2, mac2Engine), macTransport: macTransport,
-                                  mac2Transport: mac2Transport, adminPhone: (phone, phoneEngine), memberDevice: (member, memberEngine),
+                                  mac2Transport: mac2Transport, adminPhone: (phone, phoneEngine), adminTablet: (tablet, tabletEngine), memberDevice: (member, memberEngine),
                                   fixture: fixture, personBUuid: personB)
     }
 

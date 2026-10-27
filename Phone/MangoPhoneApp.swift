@@ -123,15 +123,28 @@ struct PhoneRoot: View {
     /// Opens demo data while it is on, else the phone's own database (and attaches sync to it).
     private func load() async {
         do {
-            let environment = PhoneDemoData.isOn ? try await PhoneEnvironment.loadDemo() : try await PhoneEnvironment.load()
+            // The iPad's writer (step 8): as this device's iCloud user, each committed write asking sync for a push.
+            let sync = self.sync
+            let environment = PhoneDemoData.isOn
+                ? try await PhoneEnvironment.loadDemo()
+                : try await PhoneEnvironment.load(viewer: { sync.deviceViewer },
+                                                  afterWrite: { Task { @MainActor in sync.localChange() } })
             // Property is absent only when the database has no property row; an unreadable answer keeps it.
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
             // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
             let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
-            let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer)
+            // The iPad's Property edits write through the device writer; demo data's database is read-only: no writer.
+            let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer,
+                                      writer: environment.isDemo ? nil : environment.writer)
             // This iPhone's iCloud user, as sync reads it: followed by the model, not by a view, because the content
             // is out of the view tree while locked and the name is usually read before the first unlock.
-            if !environment.isDemo { tabs.follow(recordNames: sync.$viewerRecordName) }
+            if !environment.isDemo {
+                tabs.follow(recordNames: sync.$viewerRecordName)
+                // The iPad's Documents open a file by downloading it on demand (the iPhone has no such screen).
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    tabs.padDocuments.open = { path in try await sync.openDocument(storedRelativePath: path) }
+                }
+            }
             stage = .ready(environment, tabs)
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
@@ -171,7 +184,11 @@ struct PhoneRoot: View {
     @ViewBuilder
     private func content(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         if environment.isDemo {
-            PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            } else {
+                PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+            }
         } else if let joining = sync.joinState {
             // Joining the household (a member's device), or just removed from it.
             HouseholdJoinView(state: joining, onRetry: { sync.retryJoin() }, onStartAgain: { sync.startKeyExchangeAgain() },
@@ -184,8 +201,13 @@ struct PhoneRoot: View {
             // Nothing of the household's here yet: the Mac hasn't shared the zone, or sync is off in this build.
             FirstDownloadView(received: 0, waiting: true, actions: waitingActions)
         } else {
-            PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
-                      onSettings: { showingSettings = true })
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
+                            onSettings: { showingSettings = true })
+            } else {
+                PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
+                          onSettings: { showingSettings = true })
+            }
         }
     }
 

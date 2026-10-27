@@ -49,6 +49,7 @@ final class HouseholdController: ObservableObject {
         HouseholdActions(
             add: { [weak self] index, name in Task { await self?.add(unclaimedIndex: index, name: name) } },
             invite: { [weak self] in Task { await self?.invite() } },
+            allowEdits: { [weak self] in Task { await self?.allowEdits() } },
             remove: { [weak self] in Task { await self?.remove() } },
             give: { [weak self] in Task { await self?.give() } },
             notNow: { [weak self] in Task { await self?.notNow() } })
@@ -158,6 +159,7 @@ final class HouseholdController: ObservableObject {
             next.blockers = blockers
             next.ambiguous = ambiguous
             if next.status == .joined {
+                next.edits = HouseholdInvite.needsEditUpgrade(share) ? .waiting : .allowed
                 next.keyCode = request?.code
                 if let granter = granter?.granter, request == nil {
                     next.locked = (try? await granter.lockedUntil(now: Date())) != nil
@@ -207,6 +209,22 @@ final class HouseholdController: ObservableObject {
                 share = made
                 guard let sheet = try await transport.shareForSheet(SyncZones.household) else { error = HouseholdCopy.shareFailed; return }
                 sharePrompt = SharePrompt(share: sheet.share, container: sheet.container)
+            }
+        }
+    }
+
+    /// "Let … make changes" (step 8): the admin's press is the only thing that upgrades the live share, behind the
+    /// invite's gate and audit (`HouseholdInvite.allowMemberEdits`). Blocked: the reasons, as for an invite again.
+    func allowEdits() async {
+        await run {
+            blockers = []
+            guard isRunning() else { blockers = [HouseholdCopy.blocker(.syncNotOn, alreadyShared: true)]; return }
+            let result = try await HouseholdInvite.allowMemberEdits(transport: cloud(), keys: keys, db: dbQueue, title: "Mango household")
+            switch result {
+            case .blocked(let found):
+                blockers = found.map { HouseholdCopy.blocker($0, alreadyShared: true) }
+            case .share(let upgraded):
+                share = upgraded
             }
         }
     }

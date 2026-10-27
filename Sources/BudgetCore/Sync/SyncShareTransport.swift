@@ -46,8 +46,10 @@ public protocol SyncShareTransport: Sendable {
     func currentUserRecordName() async throws -> String
     /// The zone's share, or nil when it has none.
     func zoneShare(_ zone: String) async throws -> SyncZoneShare?
-    /// Shares the zone (owner only), read-only: no public access, and every participant can read but not write (step
-    /// 7a: the member views only). Returns the existing share when there is one, made read-only too.
+    /// Shares the zone (owner only), read-write: no public access, and every participant can read and write (step 8:
+    /// what the member writes is still limited by her Edit areas, and the Mac re-validates it). Returns the existing
+    /// share when there is one, upgraded in place (never made twice): no public access, every read-only participant
+    /// made read-write. Callers go through the invite's gate first (`HouseholdInvite.invite` / `allowMemberEdits`).
     func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare
     /// Takes the participant off the zone's share: the zone stops being reachable for them.
     func removeParticipant(userRecordName: String, zone: String) async throws

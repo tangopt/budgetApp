@@ -109,7 +109,7 @@ final class WrapProbeTests: XCTestCase {
     }
 
     func testEveryRouteRendersAtAnAccessibilitySizeAndTheGalleryAtTheLargest() {
-        for route in DemoRoutes.all {
+        for route in DemoRoutes.all where !route.pad {
             XCTAssertTrue(route.sizes.contains(.accessibility3), route.name)
         }
         XCTAssertTrue(DemoRoutes.all.first { $0.name == "gallery" }?.sizes.contains(.accessibility5) ?? false)

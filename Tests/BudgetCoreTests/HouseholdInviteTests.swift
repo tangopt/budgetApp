@@ -471,21 +471,24 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
     }
 
-    /// Fix round 1 (M2): the share is read-only at the source; a participant's save is refused by the server.
-    func testShareIsReadOnlyForParticipants() async throws {
+    /// Step 8 (was fix round 1 M2's read-only rule): the invite makes the share read-write, with no public access. Whoever
+    /// is on it can write; an invitee the sheet adds later gets what the sheet gives (read-write, `allowedParticipantPermissionOptions`).
+    func testShareIsReadWriteForParticipants() async throws {
         let h = try await ready()
-        // Someone on the household's share with write access before the invite (as the share sheet could set it).
-        h.cloud.invite(member, zone: household, canWrite: true)
+        // Someone on the household's share read-only before the invite (as a 7a share left her).
+        h.cloud.invite(member, zone: household, canWrite: false)
         h.cloud.accept(zone: household, as: member)
         let made = try share(try await invite(h))
-        XCTAssertEqual(made.participants.map(\.canWrite), [false], "made read-only")
+        XCTAssertEqual(made.participants.map(\.canWrite), [true], "made read-write")
         h.cloud.invite("fake-later", zone: household, canWrite: true)
         let later = try await h.cloud.zoneShare(household)
-        XCTAssertEqual(later?.participants.map(\.canWrite), [false, false], "a later invitee reads only too")
+        XCTAssertEqual(later?.participants.map(\.canWrite), [true, true], "a later invitee writes too")
 
         let wire = SyncWireRecord(recordType: "transaction_", recordName: UUID().uuidString.lowercased(), zone: household)
         let results = try await h.cloud.session(as: member).save([wire], ifUnchanged: [:], atomic: false)
-        XCTAssertEqual(results.map(\.outcome), [.failed("permissionFailure")])
+        guard case .saved = results.first?.outcome else { return XCTFail("not saved: \(results)") }
+        let stored = await h.cloud.record(named: wire.recordName)
+        XCTAssertEqual(stored?.lastModifiedBy, member)
     }
 
     /// Fix round 1 (I2): a document file whose document isn't in the household (an orphan) fails the audit, even when
@@ -523,6 +526,113 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertEqual(kept.count, 1)
     }
 
+    // MARK: Step 8: letting her make changes
+
+    /// A 7a household: shared read-only (the old rule), she accepted, the Mac bound her and has nothing left to upload.
+    private func joinedReadOnly(_ h: TwoPersonHousehold) async throws -> SyncZoneShare {
+        _ = try share(try await invite(h))
+        h.cloud.invite(member, zone: household, canWrite: false)
+        h.cloud.accept(zone: household, as: member)
+        let accepted = try await h.macTransport.zoneShare(household)!
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
+        try await settle(h)
+        XCTAssertEqual(HouseholdInvite.status(share: accepted, member: try memberAppUser(h)), .joined)
+        return accepted
+    }
+
+    private func allowEdits(_ h: TwoPersonHousehold, transport: (any SyncTransport & SyncShareTransport)? = nil) async throws
+        -> HouseholdInvite.Result {
+        try await HouseholdInvite.allowMemberEdits(transport: transport ?? h.macTransport, keys: h.adminKeys, db: h.adminMac.db,
+                                                   title: "Synthetic household")
+    }
+
+    private func canWrite(_ h: TwoPersonHousehold) async throws -> [Bool] {
+        try await h.cloud.zoneShare(household)?.participants.map(\.canWrite) ?? []
+    }
+
+    func testAllowMemberEditsUpgradesReadOnlyShare() async throws {
+        let h = try await ready()
+        let before = try await joinedReadOnly(h)
+        XCTAssertTrue(HouseholdInvite.needsEditUpgrade(before))
+        XCTAssertFalse(HouseholdInvite.needsEditUpgrade(nil))
+        let refused = try await h.cloud.session(as: member).save(
+            [SyncWireRecord(recordType: "transaction_", recordName: "synthetic-before", zone: household)], ifUnchanged: [:], atomic: false)
+        XCTAssertEqual(refused.map(\.outcome), [.failed("permissionFailure")], "read-only until the admin presses the button")
+
+        let upgraded = try share(try await allowEdits(h))
+        XCTAssertEqual(upgraded.url, before.url, "the same share")
+        XCTAssertEqual(upgraded.participants, [SyncShareParticipant(userRecordName: member, status: .accepted, canWrite: true)])
+        XCTAssertFalse(HouseholdInvite.needsEditUpgrade(upgraded))
+        XCTAssertEqual(try memberAppUser(h).cloudKitUserRecordName, member, "still bound")
+        let saved = try await h.cloud.session(as: member).save(
+            [SyncWireRecord(recordType: "transaction_", recordName: "synthetic-after", zone: household)], ifUnchanged: [:], atomic: false)
+        guard case .saved = saved.first?.outcome else { return XCTFail("not saved: \(saved)") }
+        XCTAssertEqual(h.audit.householdViolations(router: h.adminRouter()), [])
+    }
+
+    /// Pressing the button again (or after another Mac upgraded it) keeps the one share and saves nothing.
+    func testAllowMemberEditsTwiceKeepsOneShare() async throws {
+        let h = try await ready()
+        _ = try await joinedReadOnly(h)
+        let counting = CountingShareTransport(inner: h.macTransport)
+        let first = try share(try await allowEdits(h, transport: counting))
+        let second = try share(try await allowEdits(h, transport: counting))
+        XCTAssertEqual(second.url, first.url)
+        XCTAssertEqual(second, first)
+        let writes1 = try await canWrite(h)
+        XCTAssertEqual(writes1, [true])
+        let made = await counting.made
+        XCTAssertEqual(made, 1, "the second press finds nothing to change")
+    }
+
+    /// Something blocks: the share stays read-only; once clear, the same press upgrades it.
+    func testAllowMemberEditsBlockedKeepsShareReadOnly() async throws {
+        let h = try await ready()
+        let before = try await joinedReadOnly(h)
+        try write(h.adminMac.db) { db in
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Synthetic note' WHERE id = ?", arguments: [h.fixture.sharedTransaction])
+        }
+        let blocked = try await allowEdits(h)
+        XCTAssertEqual(blocked, .blocked([.pendingUpload(1)]))
+        let writes2 = try await canWrite(h)
+        XCTAssertEqual(writes2, [false])
+        let offline = try await allowEdits(h, transport: OfflineShareTransport())
+        XCTAssertEqual(offline, .blocked([.offline]))
+
+        try await settle(h)
+        let upgraded = try share(try await allowEdits(h))
+        XCTAssertEqual(upgraded.url, before.url)
+        let writes3 = try await canWrite(h)
+        XCTAssertEqual(writes3, [true])
+    }
+
+    /// The server audit finds a private record in `household`: nothing changes about the share.
+    func testAllowMemberEditsAuditViolationKeepsShareReadOnly() async throws {
+        let h = try await ready()
+        _ = try await joinedReadOnly(h)
+        let f = h.fixture
+        let leaking = try h.uuid("transaction_", f.privateTransaction)
+        let original = try await h.cloud.fetch(leaking, zone: f.privateZone)
+        var payload = try SyncLargePayload.payload(from: XCTUnwrap(original), keys: try h.adminKeys.allKeys(zone: f.privateZone))
+        payload.zone = household
+        payload.serverWriter = nil
+        let (planted, _) = try SyncLargePayload.wire(for: payload, key: try XCTUnwrap(try h.adminKeys.key(zone: household)))
+        _ = try await h.cloud.save([planted], ifUnchanged: [:], atomic: false)
+
+        let result = try await allowEdits(h)
+        XCTAssertEqual(result, .blocked([.householdAudit(1)]))
+        let writes4 = try await canWrite(h)
+        XCTAssertEqual(writes4, [false])
+        XCTAssertEqual(HouseholdCopy.blocker(.householdAudit(1), alreadyShared: true),
+                       "1 record in the household shouldn't be there. Nothing new was shared.")
+    }
+
+    func testEditsCopy() {
+        XCTAssertEqual(HouseholdCopy.editsAllowed("Person B"), "Person B can make changes within their permissions.")
+        XCTAssertEqual(HouseholdCopy.editsWaiting("Person B"), "Person B can view only for now:")
+        XCTAssertEqual(HouseholdCopy.allowEditsButton("Person B"), "Let Person B make changes")
+    }
+
     func testCopy() {
         XCTAssertEqual(HouseholdCopy.paneTitle, "Household")
         XCTAssertEqual(HouseholdCopy.addTitle, "Add someone to the household")
@@ -530,7 +640,7 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertEqual(HouseholdCopy.addButton, "Add")
         XCTAssertEqual(HouseholdCopy.inviteButton, "Invite…")
         XCTAssertEqual(HouseholdCopy.inviteExplainer("Person B"),
-                       "Invite Person B to Mango. They'll see what your sharing levels allow, and can't change anything yet.")
+                       "Invite Person B to Mango. They'll see what your sharing levels allow, and can change documents, imports and property; your Mac checks every change.")
         XCTAssertEqual(HouseholdCopy.status(.notInvited), "Not invited yet")
         XCTAssertEqual(HouseholdCopy.status(.invited), "Invited — waiting for them to accept")
         XCTAssertEqual(HouseholdCopy.removeButton, "Remove from household…")
@@ -563,4 +673,31 @@ private struct OfflineShareTransport: SyncTransport, SyncShareTransport {
     func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare { throw SyncTransportError.networkUnavailable }
     func removeParticipant(userRecordName: String, zone: String) async throws { throw SyncTransportError.networkUnavailable }
     func removeAllParticipants(zone: String) async throws -> [String] { throw SyncTransportError.networkUnavailable }
+}
+
+/// Counts the shares made or changed (`makeZoneShare`); everything else goes to the wrapped transport.
+private actor CountingShareTransport: SyncTransport, SyncShareTransport {
+    let inner: any SyncTransport & SyncShareTransport
+    private(set) var made = 0
+    init(inner: any SyncTransport & SyncShareTransport) { self.inner = inner }
+
+    func operationLimits() async -> SyncOperationLimits { await inner.operationLimits() }
+    func createZone(_ zone: String) async throws { try await inner.createZone(zone) }
+    func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
+        try await inner.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
+    }
+    func changes(since token: Data?, zone: String) async throws -> SyncChanges { try await inner.changes(since: token, zone: zone) }
+    func delete(_ recordNames: [String], zone: String) async throws { try await inner.delete(recordNames, zone: zone) }
+    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await inner.fetch(recordName, zone: zone) }
+    func serverTime() async throws -> Date? { try await inner.serverTime() }
+    func currentUserRecordName() async throws -> String { try await inner.currentUserRecordName() }
+    func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await inner.zoneShare(zone) }
+    func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
+        made += 1
+        return try await inner.makeZoneShare(zone, title: title)
+    }
+    func removeParticipant(userRecordName: String, zone: String) async throws {
+        try await inner.removeParticipant(userRecordName: userRecordName, zone: zone)
+    }
+    func removeAllParticipants(zone: String) async throws -> [String] { try await inner.removeAllParticipants(zone: zone) }
 }

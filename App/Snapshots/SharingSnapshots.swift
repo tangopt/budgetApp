@@ -98,6 +98,13 @@ enum SharingSnapshots {
         locked.locked = true
         var longName = added(.invited)
         longName.member = "Person B with a very long synthetic name that goes on and on and on and on and on"
+        var editsWaiting = added(.joined)
+        editsWaiting.edits = .waiting
+        var editsBlocked = editsWaiting
+        editsBlocked.blockers = [HouseholdCopy.blocker(.pendingUpload(1), alreadyShared: true),
+                                 HouseholdCopy.blocker(.householdAudit(1), alreadyShared: true)]
+        var editsAllowed = added(.joined)
+        editsAllowed.edits = .allowed
         var ambiguous = added(.notInvited)
         ambiguous.ambiguous = HouseholdCopy.ambiguousParticipants(member)
         return [
@@ -106,6 +113,9 @@ enum SharingSnapshots {
             route("-blocked", "the invite is blocked, with the reasons", blocked),
             route("-invited", "invited, waiting", added(.invited)),
             route("-joined", "joined", added(.joined)),
+            route("-edits_waiting", "joined, view only: the button that lets her make changes", editsWaiting),
+            route("-edits_blocked", "joined, view only: the upgrade is blocked, with the reasons", editsBlocked),
+            route("-edits_allowed", "joined: she can make changes", editsAllowed),
             route("-key_request", "her device asks for the key, with the code", request),
             route("-locked", "too many attempts", locked),
             route("-removed", "removed", added(.removed)),

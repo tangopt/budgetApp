@@ -3,7 +3,7 @@ import Foundation
 import BudgetCore
 
 /// `SyncShareTransport` over CloudKit (step 7a): a zone-wide `CKShare` (`CKShare(recordZoneID:)`, fetched as the
-/// zone's `CKRecordNameZoneWideShare` record), with no public access; participants are added through the system
+/// zone's `CKRecordNameZoneWideShare` record), with no public access and read-write participants (step 8); participants are added through the system
 /// share sheet and accept through the link. Participants are matched by `userIdentity.userRecordID.recordName`;
 /// CloudKit names the current user `CKCurrentUserDefaultName`, which becomes `currentUserRecordName()`.
 extension CloudKitTransport: SyncShareTransport {
@@ -22,15 +22,7 @@ extension CloudKitTransport: SyncShareTransport {
 
     public func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
         if let existing = try await fetchZoneShare(zone) {
-            // Read-only at the source (step 7a): no public access, and no participant writes, whatever the share sheet set.
-            let writers = existing.participants.filter { $0.role != .owner && $0.permission != .readOnly }
-            guard !writers.isEmpty || existing.publicPermission != .none else {
-                return Self.syncShare(existing, zone: zone, currentUser: try await currentUser())
-            }
-            existing.publicPermission = .none
-            for participant in writers { participant.permission = .readOnly }
-            let saved = try await saveShare(existing, zone: zone)
-            return Self.syncShare(saved, zone: zone, currentUser: try await currentUser())
+            return try await upgrade(existing, zone: zone, retry: true)
         }
         let share = CKShare(recordZoneID: zoneID(zone))
         share[CKShare.SystemFieldKey.title] = title as CKRecordValue
@@ -39,9 +31,30 @@ extension CloudKitTransport: SyncShareTransport {
             let saved = try await saveShare(share, zone: zone)
             return Self.syncShare(saved, zone: zone, currentUser: try await currentUser())
         } catch let error as CKError where error.code == .serverRecordChanged {
-            // Made meanwhile (another device, or a reply lost after it saved): that share is the one.
-            if let existing = try await zoneShare(zone) { return existing }
+            // Made meanwhile (another device, or a reply lost after it saved): that share is the one, upgraded as needed.
+            if let existing = try await fetchZoneShare(zone) { return try await upgrade(existing, zone: zone, retry: false) }
             throw CloudKitRecordMapping.operationError(error, zone: zone)
+        }
+    }
+
+    /// The existing share made read-write in place (step 8): no public access, and every read-only participant (not the
+    /// owner, not removed) `.readWrite`; nothing else about it changes. Saved against the version fetched; when the server's
+    /// share changed meanwhile, it is fetched again and tried once more.
+    private func upgrade(_ share: CKShare, zone: String, retry: Bool) async throws -> SyncZoneShare {
+        let readOnly = share.participants.filter {
+            $0.role != .owner && $0.acceptanceStatus != .removed && $0.permission == .readOnly
+        }
+        guard !readOnly.isEmpty || share.publicPermission != .none else {
+            return Self.syncShare(share, zone: zone, currentUser: try await currentUser())
+        }
+        share.publicPermission = .none
+        for participant in readOnly { participant.permission = .readWrite }
+        do {
+            let saved = try await saveShare(share, zone: zone)
+            return Self.syncShare(saved, zone: zone, currentUser: try await currentUser())
+        } catch let error as CKError where error.code == .serverRecordChanged {
+            guard retry, let fresh = try await fetchZoneShare(zone) else { throw CloudKitRecordMapping.operationError(error, zone: zone) }
+            return try await upgrade(fresh, zone: zone, retry: false)
         }
     }
 

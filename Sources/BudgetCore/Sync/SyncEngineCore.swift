@@ -14,7 +14,9 @@ public struct SyncPushReport: Equatable, Sendable {
     public var refused = 0
     /// Records that went with their payload as an encrypted asset (ruling R4).
     public var asAssets = 0
-    /// Local edits not sent because the server's version of the record waits in staging here.
+    /// Local edits not sent: the server's version of the record waits in staging here, or the record is placed in a
+    /// zone this device doesn't push to (another person's; on an iPad, step 8, any outside its mode's zones). They
+    /// stay pending.
     public var heldBack = 0
     /// Server versions of refused saves held because merging them would change a filed tax year (§5.4): the
     /// local edit waits (`heldBack` from the next push on).
@@ -140,9 +142,12 @@ public actor SyncEngineCore {
     let documents: SyncDocumentFiles?
     /// Where the zone keys are (iCloud Keychain in the apps; ruling R15).
     let keyStore: any SyncKeyStore
+    /// What this device may write to the server (step 8, `SyncWriteMode`): everything (the Mac), nothing (the iPhone),
+    /// or only its own zones' records (an iPad).
+    public nonisolated let mode: SyncWriteMode
     /// Pulls only, never writes to the server (the read-only iPhone, plan step 4 Task 12): no zone is created (a
     /// missing one is "nothing to download yet"), nothing is pushed, no key marker is published, no lease is taken.
-    public nonisolated let readOnly: Bool
+    public nonisolated var readOnly: Bool { mode == .readOnly }
     /// Whose device this is: which private zone it syncs besides the household (step 6).
     public nonisolated let viewer: SyncViewer
     /// Whether incoming changes are re-validated against the writer's permissions (the Mac; step 6 Task 9).
@@ -170,10 +175,11 @@ public actor SyncEngineCore {
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
                 clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil, readOnly: Bool = false,
-                viewer: SyncViewer = .none, revalidatesAccess: Bool = false, householdIsShared: Bool = false) {
+                mode: SyncWriteMode? = nil, viewer: SyncViewer = .none, revalidatesAccess: Bool = false, householdIsShared: Bool = false) {
         self.db = db
         self.householdIsShared = householdIsShared
-        self.readOnly = readOnly
+        // `mode` wins; without it, the step 4 flag.
+        self.mode = mode ?? (readOnly ? .readOnly : .full)
         self.viewer = viewer
         self.revalidatesAccess = revalidatesAccess
         self.documents = documents
@@ -191,6 +197,10 @@ public actor SyncEngineCore {
     nonisolated var zoneList: [String] {
         [SyncZones.household] + (viewer.personUuid.map { [SyncZones.privateZone(personUuid: $0)] } ?? [])
     }
+
+    /// The zones this device pushes to (step 8): all it syncs (the Mac), or those its mode names (an iPad). A record
+    /// placed in any other zone waits, counted in `SyncPushReport.heldBack`.
+    nonisolated var pushZones: [String] { mode.pushZones(of: zoneList) }
 
     /// The lease store, sealing with `key` (the zone's current key) and reading with every key held here.
     private func leaseStore(_ key: HouseholdKey?) throws -> TransportLeaseStore {
@@ -223,7 +233,8 @@ public actor SyncEngineCore {
     /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it, and
     /// `SyncKeyError.waitingForHouseholdKey` while this device doesn't hold the household key yet.
     public func acquireImportLease() async throws {
-        guard !readOnly else { throw ReadOnlyError.readOnly }
+        // Only the Mac imports: a read-only phone or an iPad (step 8) takes no lease.
+        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
         try await serialized {
             try await self.prepare()
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: true)
@@ -238,7 +249,7 @@ public actor SyncEngineCore {
     /// Gives the lease up without importing (the user cancelled). A batch's lease is released by the push
     /// that uploads the batch's close.
     public func releaseImportLease() async throws {
-        guard !readOnly else { throw ReadOnlyError.readOnly }
+        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
         try await serialized {
             guard let held = try await self.db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: false)
@@ -359,8 +370,8 @@ public actor SyncEngineCore {
                     left.leftHousehold = true
                     return left
                 }
-                // Read-only: the household hasn't been shared up yet; nothing to download, nothing made here.
-                if readOnly { return SyncPullReport() }
+                // Read-only, or an iPad (step 8): the zone isn't made yet; nothing to download, nothing made here.
+                if !mode.ownsZones { return SyncPullReport() }
                 try await recoverMissingZone(zone)
                 return SyncPullReport()
             }
@@ -408,8 +419,9 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
-        // A device that writes the zone deletes a deleted row's file there too (final review I-1).
-        let cleansFiles = !readOnly && !householdIsShared
+        // A device that writes the zone deletes a deleted row's file there too (final review I-1); an iPad leaves that
+        // to the Mac (step 8).
+        let cleansFiles = mode.ownsZones && !householdIsShared
         try Task.checkCancellation()
         let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
@@ -529,6 +541,11 @@ public actor SyncEngineCore {
                 }
             }
             incoming.removeAll { refused[$0.recordName] != nil }
+            // Step 8: the Mac settles the recharge statements the apply touched (field merge can leave a stored
+            // total or status behind its lines and payments).
+            if self.mode == .full {
+                try Self.rederiveStatements(touchedBy: incoming.compactMap { if case .save(let payload) = $0 { payload } else { nil } }, db: db)
+            }
             // Where the server has each record now: its copy (or a marker) in this zone, or nothing after a deletion.
             for change in incoming {
                 switch change {
@@ -615,12 +632,13 @@ public actor SyncEngineCore {
 
     func pushAll() async throws -> SyncPushReport {
         // Read-only: nothing is ever sent (nor a key made or a lease renewed).
-        if readOnly { return SyncPushReport() }
+        if !mode.pushes { return SyncPushReport() }
         try await prepare()
         var report = SyncPushReport()
         // Step 6: the summaries of the viewer's own accounts are rebuilt first when something they read changed, so
-        // what changed goes up with this push. Only the owner's devices build them (the viewer's own accounts only).
-        if let personUuid = viewer.personUuid {
+        // what changed goes up with this push. Only the owner's devices build them (the viewer's own accounts only), and
+        // of those only the Mac (step 8: an iPad never rebuilds them).
+        if mode.ownsZones, let personUuid = viewer.personUuid {
             let today = clock()
             try await db.write { db in
                 guard try AccountSummaryBuilder.isDirty(db: db),
@@ -630,11 +648,14 @@ public actor SyncEngineCore {
         }
         // Step 6: levels or owners that changed since this device last placed its person's records (a pull, a tool):
         // those records are queued, so this push moves them. One query when nothing changed.
+        // An iPad (step 8) leaves this to the Mac: it moves only what it edits (placed by the router as it goes), never
+        // takes over its person's records, nor re-sends every stub on its first push.
         let zoneSet = Set(zoneList)
         let viewerPerson = viewer.personUuid
         let reconcileTime = clock()
+        let placesAll = mode.ownsZones
         try await db.write { db in
-            guard try SharingSetup.isConfirmed(db: db) else { return }
+            guard placesAll, try SharingSetup.isConfirmed(db: db) else { return }
             let owner = try viewerPerson.flatMap { try SyncRecordStore.localId(table: "person", uuid: $0, db: db) }
             try SyncZoneMoves.reconcile(owner: owner, zones: zoneSet, db: db, now: reconcileTime)
             // Step 7a: anything else placement reads changed (a link, a pin, a property category, a document's kind):
@@ -663,12 +684,18 @@ public actor SyncEngineCore {
             report.keyWait = wait
             report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
             return report
+        } catch SyncTransportError.zoneNotFound where !mode.ownsZones {
+            // An iPad (step 8): the household isn't made yet (it is the Mac's to make); everything waits.
+            Self.log.notice("Sync push: the household isn't on the server yet; nothing sent from this device")
+            return report
         }
         try await renewLeaseIfDue(key)
         var tries: [String: Int] = [:]
         var pulled = false
         var recovered = false
         var movesTried = false
+        // Records placed in a zone this device doesn't push to (`pushZones`): they wait, tried once per push.
+        var outside: Set<String> = []
         do {
             while true {
                 var needsPull = false
@@ -676,13 +703,13 @@ public actor SyncEngineCore {
                 let limits = await transport.operationLimits()
                 let chunkSize = max(1, min(batchSize, limits.maxRecords))
                 let triesNow = tries
-                let (saves, heldBack) = try await db.read { db in
+                let (saves, stagedBack) = try await db.read { db in
                     let pending = try SyncChangeTracker.pending(db: db).filter { $0.kind != .delete && triesNow[$0.uuid, default: 0] < Self.triesPerPush }
                     let staged = try Set(String.fetchAll(db, sql: "SELECT uuid FROM syncStaging"))
                     // Not sent while the server's version waits here: it would overwrite a version never merged.
                     return (pending.filter { !staged.contains($0.uuid) }, pending.filter { staged.contains($0.uuid) }.count)
                 }
-                report.heldBack = heldBack
+                report.heldBack = stagedBack + outside.count
                 for start in stride(from: 0, to: saves.count, by: chunkSize) {
                     // Cancelled: stops before the next operation; what wasn't acknowledged stays pending.
                     try Task.checkCancellation()
@@ -693,7 +720,10 @@ public actor SyncEngineCore {
                     let flags = try await pushSaves(chunk, limits: limits, guardian: guardian, report: &report)
                     needsPull = needsPull || flags.needsPull
                     missingZones.formUnion(flags.missingZones)
+                    for uuid in flags.outside { tries[uuid] = Self.triesPerPush }
+                    outside.formUnion(flags.outside)
                 }
+                report.heldBack = stagedBack + outside.count
                 // Moves (step 6): markers over the old copies and the old file records' deletes, once the new copies
                 // are saved; then what is left to delete on the server.
                 missingZones.formUnion(try await finishMoves(limits: limits, guardian: guardian, tries: &tries, counted: !movesTried))
@@ -706,9 +736,15 @@ public actor SyncEngineCore {
                 }
                 for start in stride(from: 0, to: deletes.count, by: chunkSize) {
                     try Task.checkCancellation()
-                    let chunk = Array(deletes[start..<min(start + chunkSize, deletes.count)])
-                    for change in chunk { tries[change.uuid, default: 0] += 1 }
-                    let zoneSet = Set(zoneList)
+                    let slice = Array(deletes[start..<min(start + chunkSize, deletes.count)])
+                    for change in slice { tries[change.uuid, default: 0] += 1 }
+                    // An iPad (step 8): a delete the server has in a zone it doesn't push to waits, all of it.
+                    let heldDeletes = guardian == nil ? [] : try await heldOutsidePushZones(slice)
+                    for uuid in heldDeletes { tries[uuid] = Self.triesPerPush }
+                    outside.formUnion(heldDeletes)
+                    report.heldBack = stagedBack + outside.count
+                    let chunk = slice.filter { !heldDeletes.contains($0.uuid) }
+                    let zoneSet = Set(pushZones)
                     let zones = try await db.read { db in
                         guardian == nil ? try Self.zones(of: chunk, db: db) : try Self.presentZones(of: chunk, db: db).filter { zoneSet.contains($0.key) }
                     }
@@ -785,6 +821,11 @@ public actor SyncEngineCore {
                 // The files of what was just deleted (I-1) go in this push.
                 if !deletes.isEmpty { try await cleanUp() }
                 if !missingZones.isEmpty {
+                    guard mode.ownsZones else {
+                        // An iPad (step 8) never makes a zone again: what was for it waits, still pending.
+                        Self.log.notice("Sync push: a zone is missing on the server; this device waits for the Mac to make it")
+                        break
+                    }
                     guard !recovered else { throw SyncTransportError.zoneNotFound(missingZones.sorted().joined(separator: ",")) }
                     recovered = true
                     for zone in missingZones.sorted() { try await recoverMissingZone(zone) }
@@ -803,7 +844,7 @@ public actor SyncEngineCore {
                     continue
                 }
                 let triesLeft = tries
-                let zoneSet = zoneList
+                let zoneSet = pushZones
                 let more = try await db.read { db in
                     let staged = try Set(String.fetchAll(db, sql: "SELECT uuid FROM syncStaging"))
                     return try SyncChangeTracker.pending(db: db).contains {
@@ -821,6 +862,10 @@ public actor SyncEngineCore {
             report.keyWait = wait
             report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
             return report
+        } catch SyncTransportError.zoneNotFound where !mode.ownsZones {
+            // An iPad (step 8): a zone it pushes to isn't made yet (its key marker can't be read there); the rest waits.
+            Self.log.notice("Sync push: a zone isn't on the server yet; the rest waits")
+            return report
         }
         try await releaseLeaseIfDone(key)
         return report
@@ -830,7 +875,7 @@ public actor SyncEngineCore {
     /// are deleted, once ownership is confirmed and the household key is here, on a device that owns the household (a
     /// member's is read-only). A failure is logged and tried again on the next push.
     private func cleanOrphanFilesOnce() async throws {
-        guard !householdIsShared, zoneList.contains(SyncZones.household) else { return }
+        guard mode.ownsZones, !householdIsShared, zoneList.contains(SyncZones.household) else { return }
         let due = try await db.read { db in try SharingSetup.isConfirmed(db: db) && !HouseholdOrphanFiles.isDone(db: db) }
         guard due, (try? keyStore.allKeys(zone: SyncZones.household))?.isEmpty == false else { return }
         do {
@@ -843,10 +888,11 @@ public actor SyncEngineCore {
         try await db.write { db in try SyncImportGate.setState(Data([1]), key: HouseholdOrphanFiles.doneKey, db: db, now: now) }
     }
 
-    /// The zone's current key for this push (made for a zone of this device's own when it has none, ruling R15).
+    /// The zone's current key for this push (made for a zone of this device's own when it has none, ruling R15; never
+    /// on an iPad, step 8: it waits for the Mac's).
     private func sealingKey(zone: String) async throws -> HouseholdKey {
         if let known = pushKeys[zone] { return known }
-        let key = try await householdKey(zone: zone, create: true)
+        let key = try await householdKey(zone: zone, create: mode.ownsZones)
         pushKeys[zone] = key
         return key
     }
@@ -918,9 +964,10 @@ public actor SyncEngineCore {
     /// the exact payloads that go (file references included) and the server has taken them: a halt leaves this
     /// device's state as it was.
     private func pushSaves(_ chunk: [PendingChange], limits: SyncOperationLimits, guardian: SyncZoneGuard?,
-                           report: inout SyncPushReport) async throws -> (needsPull: Bool, missingZones: Set<String>) {
+                           report: inout SyncPushReport) async throws -> (needsPull: Bool, missingZones: Set<String>, outside: Set<String>) {
         let buildTime = clock()
-        let zoneSet = zoneList
+        let zoneSet = pushZones
+        let holdsCompanions = mode != .full
         let override = assignmentOverride
         let placing = guardian != nil
         let built = try await db.write { db -> [Built] in
@@ -970,14 +1017,17 @@ public actor SyncEngineCore {
         var kinds: [ZonedName: SendKind] = [:]
         var systemFields: [ZonedName: Data] = [:]
         var items: [String: Built] = [:]
+        var outside: Set<String> = []
         for item in built {
             guard let outgoing = item.outgoing else {
                 nothingToSend.append(item.change)
                 continue
             }
-            guard zoneSet.contains(outgoing.payload.zone) else {
-                Self.log.error("Sync left a \(item.change.table, privacy: .public) record unsent: its zone isn't one this device syncs")
-                report.heldBack += 1
+            // An iPad (step 8) holds back a record whose companion it can't write either.
+            let companionOutside = holdsCompanions && outgoing.companion.map { !zoneSet.contains($0.zone) } == true
+            guard zoneSet.contains(outgoing.payload.zone), !companionOutside else {
+                Self.log.error("Sync left a \(item.change.table, privacy: .public) record unsent: its zone isn't one this device pushes to")
+                outside.insert(item.change.uuid)
                 continue
             }
             items[item.change.uuid] = item
@@ -1034,7 +1084,7 @@ public actor SyncEngineCore {
         for payload in final {
             let name = ZonedName(zone: payload.zone, name: payload.recordName)
             let needsFile = sealed[payload.zone]?.files.contains { $0.uuid == payload.recordName } ?? false
-            let held = sealed[payload.zone]?.held.contains(payload.recordName) ?? false
+            let held = sealed[payload.zone].map { $0.held.contains(payload.recordName) || $0.waiting.contains(payload.recordName) } ?? false
             if held || (needsFile && uploaded[payload.zone]?.contains(payload.recordName) != true) {
                 // Its file isn't in the new zone yet: the record waits, still pending, and its old file stays.
                 report.documentsDeferred += 1
@@ -1240,6 +1290,7 @@ public actor SyncEngineCore {
                     try FiledYearSyncCheck.apply(merges.map { .save($0) }, baseline: baseline, db: db, deviceUser: user, now: now, flush: false)
                 }
                 let held = Set(outcome.alert?.records.map(\.recordName) ?? [])
+                if self.mode == .full { try Self.rederiveStatements(touchedBy: merges, db: db) }
                 for payload in merges {
                     let name = payload.recordName
                     if held.contains(name) {
@@ -1267,7 +1318,24 @@ public actor SyncEngineCore {
             report.filedYearAlert = merged
         }
         report.refused += outcome.0.refused
-        return (outcome.1, outcome.2)
+        return (outcome.1, outcome.2, outside)
+    }
+
+    /// Of `changes` (deletes), those the server has (a copy, a marker, or an account's companion) in a zone this device
+    /// syncs but doesn't push to (an iPad, step 8): the delete waits rather than going only partly.
+    private func heldOutsidePushZones(_ changes: [PendingChange]) async throws -> Set<String> {
+        guard case .device = mode else { return [] }
+        let pushing = Set(pushZones)
+        return try await db.read { db in
+            var held: Set<String> = []
+            for change in changes {
+                var zones = try SyncPresence.zones(uuid: change.uuid, db: db)
+                let companion = SyncZoneRouter.companionRecordName(accountUuid: change.uuid)
+                if let stamp = try SyncCompanions.stamp(name: companion, db: db), stamp.systemFields != nil { zones.append(stamp.zone) }
+                if zones.contains(where: { !pushing.contains($0) }) { held.insert(change.uuid) }
+            }
+            return held
+        }
     }
 
     static let fileNotMovedMessage = SyncTranslator.needsAttention
@@ -1394,7 +1462,7 @@ public actor SyncEngineCore {
     /// push) and logged for attention after a few pushes. Returns the zones found missing.
     private func finishMoves(limits: SyncOperationLimits, guardian: SyncZoneGuard?, tries: inout [String: Int],
                              counted: Bool) async throws -> Set<String> {
-        let zoneSet = zoneList
+        let zoneSet = pushZones
         let triesNow = tries
         let now = clock()
         struct Plan {
@@ -1566,7 +1634,7 @@ public actor SyncEngineCore {
     /// Deletes what `SyncCleanup` lists on the server (only in the zones this device syncs); a row goes once the
     /// server has taken its delete.
     private func cleanUp() async throws {
-        let zoneSet = Set(zoneList)
+        let zoneSet = Set(pushZones)
         let pending = try await db.read { db in try SyncCleanup.all(db: db) }.filter { zoneSet.contains($0.key) }
         for (zone, names) in pending.sorted(by: { $0.key < $1.key }) {
             do {
@@ -1647,8 +1715,8 @@ public actor SyncEngineCore {
         let (on, ready, known) = try await db.read { db in
             (try SyncImportGate.isSyncOn(db: db), try zones.filter { try Self.zoneReady($0, db: db) }, try SyncZoneSet.current(db: db))
         }
-        // Read-only: zones are the Mac's to make; none is marked ready here.
-        let missing = readOnly ? [] : zones.filter { !ready.contains($0) }
+        // Read-only, or an iPad (step 8): zones are the Mac's to make; none is marked ready here.
+        let missing = mode.ownsZones ? zones.filter { !ready.contains($0) } : []
         for zone in missing { try await transport.createZone(zone) }
         guard !on || !missing.isEmpty || known != Set(zones) else { return }
         try await db.write { db in
@@ -1662,6 +1730,8 @@ public actor SyncEngineCore {
     /// The zone is gone from the server (deleted, or reset): created again, and every record of it here is
     /// queued to go up again, with no stamps and no token.
     private func recoverMissingZone(_ zone: String) async throws {
+        // Only the Mac makes zones (step 8); its callers never get here otherwise.
+        guard mode.ownsZones else { return }
         Self.log.error("Sync zone missing on the server; creating it again and re-sending this device's records")
         try await transport.createZone(zone)
         let now = clock()
@@ -1815,6 +1885,32 @@ public actor SyncEngineCore {
 
     static func clearStamp(uuid: String, db: Database) throws {
         try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
+    }
+
+    /// The recharge statements `payloads` touched (a statement, or a line or payment of one), each re-derived
+    /// (`Recharges.rederive`): what changes is tracked as this Mac's own write, so every device takes it.
+    static func rederiveStatements(touchedBy payloads: [SyncPayload], db: Database) throws {
+        var ids = Set<Int64>()
+        for payload in payloads {
+            switch payload.recordType {
+            case "rechargeStatement":
+                if let id = try SyncRecordStore.localId(table: "rechargeStatement", uuid: payload.recordName, db: db) { ids.insert(id) }
+            case "rechargeLine", "rechargePayment":
+                if let id = try SyncRecordStore.localId(table: payload.recordType, uuid: payload.recordName, db: db),
+                   let statement = try Int64.fetchOne(db, sql: "SELECT statementId FROM \(payload.recordType) WHERE id = ?", arguments: [id]) {
+                    ids.insert(statement)
+                } else if case .string(let uuid)? = payload.fields["statementId"],
+                          let statement = try SyncRecordStore.localId(table: "rechargeStatement", uuid: uuid, db: db) {
+                    ids.insert(statement)
+                }
+            default:
+                continue
+            }
+        }
+        guard !ids.isEmpty else { return }
+        try SyncChangeTracker.trackingWrites(db: db) {
+            for id in ids.sorted() { try Recharges.rederive(db: db, statementId: id) }
+        }
     }
 
     /// `body` with incoming changes re-validated when this engine `revalidatesAccess` (the Mac; `AccessRevalidation`).

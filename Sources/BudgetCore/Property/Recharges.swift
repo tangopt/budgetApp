@@ -686,6 +686,17 @@ public enum Recharges {
                                    && Column("isDismissed") == true).fetchCount(db) > 0
     }
 
+    /// The statement's total and status again from its lines and payments (step 8: the Mac, after a sync merge,
+    /// since two devices' field merge can leave a statement's stored total or status behind what its rows say).
+    /// A draft keeps its status. Writes only what differs; nothing for a statement that's gone.
+    public static func rederive(db: Database, statementId: Int64) throws {
+        guard let statement = try RechargeStatement.fetchOne(db, key: statementId) else { return }
+        let total = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(amountMinorUnits), 0) FROM rechargeLine WHERE statementId = ?",
+                                     arguments: [statementId]) ?? 0
+        if statement.totalMinorUnits != total { try refreshTotal(db: db, statementId: statementId) }
+        try refreshStatus(db: db, statementId: statementId)
+    }
+
     private static func refreshStatus(db: Database, statementId: Int64) throws {
         guard var statement = try RechargeStatement.fetchOne(db, key: statementId), statement.status != .draft else { return }
         let status: RechargeStatementStatus = try outstanding(db: db, statementId: statementId) <= 0 ? .paid : .sent

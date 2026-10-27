@@ -82,8 +82,6 @@ public actor FakeCloud: SyncTransport, SyncShareTransport, SyncPublicBoard {
     private struct Sharing {
         var owners: [String: String] = [:]
         var shares: [String: [SyncShareParticipant]] = [:]
-        /// Zones whose share `makeZoneShare` made read-only: every participant reads only.
-        var readOnly: Set<String> = []
     }
 
     private enum Access { case owner, write, read }
@@ -282,9 +280,8 @@ public actor FakeCloud: SyncTransport, SyncShareTransport, SyncPublicBoard {
             if sharing.owners[zone] == nil { sharing.owners[zone] = ownerRecordName }
             var participants = sharing.shares[zone] ?? []
             participants.removeAll { $0.userRecordName == userRecordName }
-            // A read-only share (`makeZoneShare`) gives no one write access, whatever the sheet asked for.
-            participants.append(SyncShareParticipant(userRecordName: userRecordName, status: .invited,
-                                                     canWrite: canWrite && !sharing.readOnly.contains(zone)))
+            // As the sheet gives it: read-only stays read-only until the owner's `makeZoneShare` upgrades the share.
+            participants.append(SyncShareParticipant(userRecordName: userRecordName, status: .invited, canWrite: canWrite))
             sharing.shares[zone] = participants
         }
     }
@@ -335,9 +332,9 @@ public actor FakeCloud: SyncTransport, SyncShareTransport, SyncPublicBoard {
     func makeZoneShare(_ zone: String, title: String, as user: String) throws -> SyncZoneShare {
         guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
         sharing.withLock { sharing in
+            // Read-write (step 8), upgraded in place: only those it lists now; someone removed stays off it.
             if sharing.shares[zone] == nil { sharing.shares[zone] = [] }
-            sharing.readOnly.insert(zone)
-            for index in sharing.shares[zone]!.indices { sharing.shares[zone]![index].canWrite = false }
+            for index in sharing.shares[zone]!.indices { sharing.shares[zone]![index].canWrite = true }
         }
         return share(zone)!
     }

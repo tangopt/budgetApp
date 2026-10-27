@@ -12,7 +12,7 @@ public enum HouseholdCopy {
     public static let inviteButton = "Invite…"
 
     public static func inviteExplainer(_ name: String) -> String {
-        "Invite \(name) to Mango. They'll see what your sharing levels allow, and can't change anything yet."
+        "Invite \(name) to Mango. They'll see what your sharing levels allow, and can change documents, imports and property; your Mac checks every change."
     }
 
     public static func status(_ status: HouseholdInvite.Status) -> String {
@@ -41,6 +41,14 @@ public enum HouseholdCopy {
     public static func removeTitle(_ name: String) -> String { "Remove \(name) from the household?" }
 
     public static let removeMessage = "Their devices stop syncing and delete the household's data. Your data stays on this Mac."
+
+    // MARK: Letting her make changes (step 8)
+
+    /// The share lets her write: what she changes is still limited by her Edit areas.
+    public static func editsAllowed(_ name: String) -> String { "\(name) can make changes within their permissions." }
+    /// The share is still read-only (a 7a share); followed by `blocker(_:alreadyShared: true)` lines when the upgrade is blocked.
+    public static func editsWaiting(_ name: String) -> String { "\(name) can view only for now:" }
+    public static func allowEditsButton(_ name: String) -> String { "Let \(name) make changes" }
 
     // MARK: The household key (Mac and member device, side by side)
 

@@ -94,6 +94,14 @@ public enum SyncFileTables {
         return (table, row["localId"])
     }
 
+    /// The record UUID of the document stored at `storedRelativePath` (the iPad's Documents screen opens a document by
+    /// its stored path, `SyncEngineCore.downloadDocument` by its record); nil when no synced document is there.
+    public static func documentUUID(storedRelativePath: String, db: Database) throws -> String? {
+        guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM document WHERE storedRelativePath = ? ORDER BY id LIMIT 1",
+                                          arguments: [storedRelativePath]) else { return nil }
+        return try SyncRecordStore.existingUUID(table: document, localId: id, db: db)
+    }
+
     /// Whether `url` is a regular file (not a symbolic link, not a folder), as it is, without following a link.
     static func isRegularFile(_ url: URL) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
@@ -416,7 +424,8 @@ extension SyncEngineCore {
         let local = try await db.read { db in try SyncZoneKeys.local(zone: zone, db: db) }
         let held = try keyStore.allKeys(zone: zone)
         guard create else {
-            guard let local else { throw SyncKeyError.unavailable }
+            // No marker on the server, none known here: an iPad (step 8) waits for the Mac to publish the key.
+            guard let local else { throw mode.ownsZones ? SyncKeyError.unavailable : SyncKeyError.waitingForHouseholdKey }
             return try heldKey(local.marker.keyId, zone: zone)
         }
         // Not on the server (a new zone, or a reset): the key known here is published again, so what it sealed stays
@@ -465,7 +474,9 @@ extension SyncEngineCore {
     /// known here is re-wrapped with the current key and its document record sent again; no file is uploaded again.
     @discardableResult
     public func rotateZoneKey() async throws -> SyncZoneKeyRotation {
-        try await serialized {
+        // Only the Mac makes keys (step 8).
+        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
+        return try await serialized {
             try await self.prepare()
             let zone = SyncRecordStore.householdZone
             _ = try await self.householdKey(zone: zone, create: true)
@@ -534,6 +545,9 @@ extension SyncEngineCore {
         /// Moving rows whose file is on the server but couldn't be sealed for the new zone yet (not here, and the old
         /// zone's file record couldn't be fetched or opened): they wait, still pending, and their old file stays.
         var held: [String] = []
+        /// An iPad's rows (step 8) with neither a file reference known here nor their file: never sent without one (the
+        /// server's would be lost); they wait, still pending, for a pull to bring it.
+        var waiting: [String] = []
     }
 
     /// The file-bearing payloads of `zone` (`SyncFileTables`: documents, waiting files) with their file reference:
@@ -587,7 +601,12 @@ extension SyncEngineCore {
                 case .unavailable: result.held.append(payload.recordName)
                 }
             }
-            guard let plaintext else { continue }
+            guard let plaintext else {
+                // A stored reference goes unchanged and a file not here is never uploaded again (step 8): an iPad without
+                // either sends nothing of the row rather than a record with no file.
+                if !mode.ownsZones, leaving == nil { result.waiting.append(payload.recordName) }
+                continue
+            }
             // Sealed under the zone's current key (the push confirmed it with the server's marker).
             let box = try DocumentCrypto.seal(plaintext, zoneKey: key.key,
                                               authenticating: DocumentCrypto.fileContext(table: payload.recordType, uuid: payload.recordName,

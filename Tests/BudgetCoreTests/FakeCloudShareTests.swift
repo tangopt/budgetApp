@@ -185,6 +185,61 @@ final class FakeCloudShareTests: XCTestCase {
         XCTAssertEqual(fetched, second)
     }
 
+    // MARK: Step 8: the share is read-write
+
+    /// A read-only participant (as a 7a share left her) can write once the owner's `makeZoneShare` upgrades the share.
+    func testMadeShareLetsParticipantWrite() async throws {
+        let cloud = try await sharedCloud(canWrite: false)
+        let session = cloud.session(as: member)
+        let refused = try await session.save([wire("before")], ifUnchanged: [:], atomic: true)
+        XCTAssertEqual(refused.map(\.outcome), [.failed("permissionFailure")], "read-only until the upgrade")
+
+        let made = try await cloud.makeZoneShare(zone, title: "Household")
+        XCTAssertEqual(made.participants, [SyncShareParticipant(userRecordName: member, status: .accepted, canWrite: true)])
+        let results = try await session.save([wire("by-member")], ifUnchanged: [:], atomic: true)
+        guard case .saved = results.first?.outcome else { return XCTFail("not saved: \(results)") }
+        let stored = await cloud.record(named: "by-member")
+        XCTAssertEqual(stored?.lastModifiedBy, "fake-member")
+        let again = try await cloud.makeZoneShare(zone, title: "Household")
+        XCTAssertEqual(again, made, "the same share, upgraded in place")
+    }
+
+    /// Upgrading the share gives nobody else access: no public access, and someone it doesn't list can't reach the zone.
+    func testUninvitedUserStillCannotReach() async throws {
+        let cloud = try await sharedCloud(canWrite: false)
+        _ = try await cloud.save([wire("r1")], ifUnchanged: [:], atomic: true)
+        _ = try await cloud.makeZoneShare(zone, title: "Household")
+        let stranger = cloud.session(as: "fake-stranger")
+        cloud.accept(zone: zone, as: "fake-stranger")
+        await assertZoneNotFound { _ = try await stranger.changes(since: nil, zone: self.zone) }
+        await assertZoneNotFound { _ = try await stranger.fetch("r1", zone: self.zone) }
+        await assertZoneNotFound { try await stranger.delete(["r1"], zone: self.zone) }
+        let results = try await stranger.save([wire("r2")], ifUnchanged: [:], atomic: true)
+        XCTAssertEqual(results.map(\.outcome), [.zoneNotFound])
+        let share = try await cloud.zoneShare(zone)
+        XCTAssertEqual(share?.participants.map(\.userRecordName), [member])
+    }
+
+    /// Removed from a read-write share, she can't write, and neither accepting again nor another upgrade brings her back.
+    func testRemovedParticipantCannotWrite() async throws {
+        let cloud = try await sharedCloud(canWrite: false)
+        _ = try await cloud.makeZoneShare(zone, title: "Household")
+        let session = cloud.session(as: member)
+        let before = try await session.save([wire("r1")], ifUnchanged: [:], atomic: true)
+        guard case .saved = before.first?.outcome else { return XCTFail("not saved: \(before)") }
+
+        try await cloud.removeParticipant(userRecordName: member, zone: zone)
+        cloud.accept(zone: zone, as: member)
+        let upgraded = try await cloud.makeZoneShare(zone, title: "Household")
+        XCTAssertEqual(upgraded.participants, [])
+        let results = try await session.save([wire("r2")], ifUnchanged: [:], atomic: true)
+        XCTAssertEqual(results.map(\.outcome), [.zoneNotFound])
+        await assertZoneNotFound { _ = try await session.changes(since: nil, zone: self.zone) }
+        await assertZoneNotFound { try await session.delete(["r1"], zone: self.zone) }
+        let names = await cloud.storedRecords().map(\.recordName)
+        XCTAssertEqual(names, ["r1"])
+    }
+
     func testSplitTransportRoutesHouseholdToSharedSide() async throws {
         let cloud = try await sharedCloud()
         let own = FakeCloud(limits: SyncOperationLimits(maxRecords: 100, maxBytes: 5_000_000), ownerRecordName: member)

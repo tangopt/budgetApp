@@ -47,6 +47,17 @@ enum PhoneDatabase {
         return folder
     }
 
+    /// The iPad's evidence library (step 8): `Application Support/Mango/Library`, inside the app's own container with
+    /// the same protection and backup exclusion as the database. Document files are downloaded on demand, checked
+    /// and decrypted into it only (never a shared location); its sibling `Waiting` is the waiting list's root.
+    nonisolated static func libraryFolder(fileManager: FileManager = .default) throws -> URL {
+        var folder = try appFolder(fileManager: fileManager).appendingPathComponent("Library", isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true,
+                                        attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        try protect(&folder, fileManager: fileManager)
+        return folder
+    }
+
     /// Opens and migrates the database at `location`; protects the files when they are the app's own. A failure
     /// to protect them throws (the root view shows it) rather than leaving them unprotected.
     nonisolated static func open(_ location: Location, fileManager: FileManager = .default) throws -> DatabaseQueue {

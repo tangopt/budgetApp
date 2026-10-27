@@ -113,7 +113,17 @@ extension EvidenceLibrary {
     /// or paid return is refused whole, `EvidenceLinkGuard.Failure.detailsChangeFiledYear`).
     @discardableResult
     public func changeKind(_ documentId: Int64, to kind: DocumentKindRef, actor: AccessActor? = nil) throws -> EvidenceDocument {
-        try updating(documentId, actor: actor) { stored in
+        try database.write { db in
+            try ActorWrite.perform(orAdmin: actor, area: .documents, db: db) { try Self.changeKind(db: db, documentId: documentId, to: kind) }
+        }
+    }
+
+    /// `changeKind` in the caller's write, with no permission check of its own: the iPad's Change kind…, run inside
+    /// the device writer (step 8), which checks Documents' Edit and filed years. A change that would move a filed or
+    /// paid return is refused whole (`EvidenceLinkGuard.Failure.detailsChangeFiledYear`).
+    @discardableResult
+    public static func changeKind(db: Database, documentId: Int64, to kind: DocumentKindRef) throws -> EvidenceDocument {
+        try updating(db: db, documentId) { stored in
             var details = EvidenceDocumentDetails(stored)
             details.kindRef = kind
             return details
@@ -124,20 +134,24 @@ extension EvidenceLibrary {
     private func updating(_ documentId: Int64, actor: AccessActor?,
                           _ change: (EvidenceDocument) -> EvidenceDocumentDetails) throws -> EvidenceDocument {
         try database.write { db in
-            try ActorWrite.perform(orAdmin: actor, area: .documents, db: db) {
-                guard let stored = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
-                let document = Self.applying(change(stored), to: stored)
-                let movesFigures = document.kind != stored.kind || document.customKindId != stored.customKindId
-                    || document.docDate != stored.docDate || document.periodStart != stored.periodStart
-                    || document.periodEnd != stored.periodEnd || document.persons != stored.persons
-                if movesFigures, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
-                    try EvidenceLinkGuard.checked(db: db, refusal: EvidenceLinkGuard.Failure.detailsChangeFiledYear) { try document.update(db) }
-                } else {
-                    try document.update(db)
-                }
-                return document
-            }
+            try ActorWrite.perform(orAdmin: actor, area: .documents, db: db) { try Self.updating(db: db, documentId, change) }
         }
+    }
+
+    /// `updating`'s read, change and guarded save, in the caller's write.
+    private static func updating(db: Database, _ documentId: Int64,
+                                 _ change: (EvidenceDocument) -> EvidenceDocumentDetails) throws -> EvidenceDocument {
+        guard let stored = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
+        let document = applying(change(stored), to: stored)
+        let movesFigures = document.kind != stored.kind || document.customKindId != stored.customKindId
+            || document.docDate != stored.docDate || document.periodStart != stored.periodStart
+            || document.periodEnd != stored.periodEnd || document.persons != stored.persons
+        if movesFigures, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
+            try EvidenceLinkGuard.checked(db: db, refusal: EvidenceLinkGuard.Failure.detailsChangeFiledYear) { try document.update(db) }
+        } else {
+            try document.update(db)
+        }
+        return document
     }
 
     /// `document` with `details` (normalised) in place of its own.
