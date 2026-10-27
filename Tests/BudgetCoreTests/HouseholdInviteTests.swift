@@ -640,7 +640,7 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertEqual(HouseholdCopy.addButton, "Add")
         XCTAssertEqual(HouseholdCopy.inviteButton, "Invite…")
         XCTAssertEqual(HouseholdCopy.inviteExplainer("Person B"),
-                       "Invite Person B to Mango. They'll see what your sharing levels allow, and can't change anything yet.")
+                       "Invite Person B to Mango. They'll see what your sharing levels allow, and can change documents, imports and property; your Mac checks every change.")
         XCTAssertEqual(HouseholdCopy.status(.notInvited), "Not invited yet")
         XCTAssertEqual(HouseholdCopy.status(.invited), "Invited — waiting for them to accept")
         XCTAssertEqual(HouseholdCopy.removeButton, "Remove from household…")

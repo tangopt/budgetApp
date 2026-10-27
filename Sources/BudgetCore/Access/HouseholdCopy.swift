@@ -12,7 +12,7 @@ public enum HouseholdCopy {
     public static let inviteButton = "Invite…"
 
     public static func inviteExplainer(_ name: String) -> String {
-        "Invite \(name) to Mango. They'll see what your sharing levels allow, and can't change anything yet."
+        "Invite \(name) to Mango. They'll see what your sharing levels allow, and can change documents, imports and property; your Mac checks every change."
     }
 
     public static func status(_ status: HouseholdInvite.Status) -> String {
