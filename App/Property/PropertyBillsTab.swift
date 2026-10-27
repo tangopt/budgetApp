@@ -118,15 +118,12 @@ struct BillsSection: View {
     @ObservedObject var bills: BillsModel
     let tenancy: Tenancy
     let propertyId: Int64
-    @State private var chosenYear: Int?
+    /// The Summary's year: the grid follows it (no year picker of its own).
+    let year: Int
     @Environment(\.theme) private var theme
     @Environment(\.selectedRowScroller) private var pageScroller
 
     private var grid: UtilityBillsGrid { bills.grid }
-    private var year: Int {
-        chosenYear ?? (grid.years.contains(MonthRange.components(of: AppClock.now).year)
-                       ? MonthRange.components(of: AppClock.now).year : grid.years.first ?? MonthRange.components(of: AppClock.now).year)
-    }
 
     private var openCell: (String, Date)? {
         if case let .utilityBill(key, month, _) = viewModel.sidePanel { return (key, month) }
@@ -139,15 +136,7 @@ struct BillsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             if let message = bills.errorMessage { InlineBanner(.error, message) { bills.errorMessage = nil } }
-            Panel("Utility bills", subtitle: grid.summaryText) {
-                if grid.years.count > 1 {
-                    Picker("Year", selection: Binding(get: { year }, set: { chosenYear = $0 })) {
-                        ForEach(grid.years, id: \.self) { Text(String($0)).tag($0) }
-                    }
-                    .labelsHidden().fixedSize()
-                    .accessibilityLabel("Year")
-                }
-            } content: {
+            Panel("Utility bills · \(String(year))", subtitle: grid.summaryText) {
                 if !bills.isLoaded {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 80)
                 } else if grid.rows.isEmpty {
