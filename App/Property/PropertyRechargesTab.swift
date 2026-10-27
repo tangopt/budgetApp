@@ -21,20 +21,6 @@ final class RechargesModel: ObservableObject {
         let kind: UtilityKind
     }
 
-    /// A year's recharges at a glance.
-    struct YearFigures: Equatable {
-        /// The totals of the statements sent (or paid) for the year's months, and how many.
-        var recharged = 0
-        var statements = 0
-        /// What tenant credits paid of those statements.
-        var received = 0
-        /// The tenancy's share of the invoices paid in the year, and how many.
-        var paid = 0
-        var invoices = 0
-        /// Recharged less paid: below zero while invoices wait for a statement (or a draft).
-        var net: Int { recharged - paid }
-    }
-
     let dbQueue: DatabaseQueue
     let library: EvidenceLibrary
     let propertyId: Int64
@@ -46,6 +32,8 @@ final class RechargesModel: ObservableObject {
     @Published private(set) var nextMonth = AppClock.now
     @Published private(set) var providerCount = 0
     @Published private(set) var charges: [Charge] = []
+    /// The summary's figures by year (`Recharges.yearFigures`).
+    @Published private(set) var yearFigures: [Int: RechargeYearFigures] = [:]
     /// Per statement: what its lines are for ("Electricity · Water").
     @Published private(set) var lineSummaries: [Int64: String] = [:]
     @Published var errorMessage: String?
@@ -65,6 +53,7 @@ final class RechargesModel: ObservableObject {
         var providerCount: Int
         var charges: [Charge]
         var summaries: [Int64: String]
+        var figures: [Int: RechargeYearFigures]
     }
 
     func load() {
@@ -92,7 +81,8 @@ final class RechargesModel: ObservableObject {
                 return Loaded(rows: rows,
                               suggestions: try Recharges.paymentSuggestions(db: db, propertyId: propertyId).filter { $0.statement.tenancyId == tenancyId },
                               next: try Recharges.nextMonth(db: db, tenancyId: tenancyId, today: today),
-                              providerCount: providers.count, charges: charges, summaries: summaries)
+                              providerCount: providers.count, charges: charges, summaries: summaries,
+                              figures: try Recharges.yearFigures(db: db, tenancyId: tenancyId))
             }
             let ids = Set(loaded.rows.flatMap { $0.payments.map(\.transactionId) })
             transactions = (try? dbQueue.read { db in
@@ -104,6 +94,7 @@ final class RechargesModel: ObservableObject {
             providerCount = loaded.providerCount
             charges = loaded.charges
             lineSummaries = loaded.summaries
+            yearFigures = loaded.figures
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -192,18 +183,16 @@ final class RechargesModel: ObservableObject {
         return parts.year == year && (month == nil || parts.month == month)
     }
 
-    func figures(_ year: Int) -> YearFigures {
-        var figures = YearFigures()
-        for row in rows where row.statement.status != .draft && isIn(row.statement.month, year: year) {
-            figures.recharged += row.statement.totalMinorUnits
-            figures.statements += 1
-            figures.received += row.payments.reduce(0) { $0 + $1.amountMinorUnits }
-        }
-        for charge in charges where isIn(charge.date, year: year) {
-            figures.paid += charge.amountMinorUnits
-            figures.invoices += 1
-        }
-        return figures
+    /// The summary's figures for the year: statements by the month they're for, against what
+    /// the bank paid for their bills (`Recharges.yearFigures`).
+    func figures(_ year: Int) -> RechargeYearFigures {
+        yearFigures[year] ?? RechargeYearFigures(year: year)
+    }
+
+    /// The tenancy's share of the invoices paid in the year (by the day they were paid), and how many.
+    func invoicesPaid(_ year: Int) -> (minorUnits: Int, count: Int) {
+        let paid = charges.filter { isIn($0.date, year: year) }
+        return (paid.reduce(0) { $0 + $1.amountMinorUnits }, paid.count)
     }
 
     /// The year's months: recharged (statements sent for the month) above the line, utilities
@@ -330,7 +319,7 @@ struct RechargesTenancyView: View {
                 chartPanel
                 utilitiesPanel
             }
-            BillsSection(viewModel: viewModel, bills: viewModel.bills, tenancy: tenancy, propertyId: model.propertyId)
+            BillsSection(viewModel: viewModel, bills: viewModel.bills, tenancy: tenancy, propertyId: model.propertyId, year: year)
             statementsPanel
         }
         .onAppear { model.load() }
@@ -462,7 +451,7 @@ struct RechargesTenancyView: View {
     // MARK: Summary
 
     private var summaryPanel: some View {
-        Panel("Summary", subtitle: "Statements by the month they're for; invoices by the day they were paid, at the tenancy's share") {
+        Panel("Summary", subtitle: "Statements by the month they're for, against what the bank paid for their bills") {
             let years = model.years(today: today)
             if years.count > 1 {
                 Picker("Year", selection: Binding(get: { year }, set: { chosenYear = $0 })) {
@@ -475,12 +464,19 @@ struct RechargesTenancyView: View {
                 Text(String(year)).font(.callout).foregroundStyle(.secondary).figureText()
             }
         } content: {
-            FigureStrip(tiles)
+            let figures = model.figures(year)
+            VStack(alignment: .leading, spacing: 10) {
+                FigureStrip(tiles(figures))
+                if figures.difference != 0 {
+                    ForEach(differenceReasons(figures), id: \.reason) { reason in
+                        differenceLine(reason)
+                    }
+                }
+            }
         }
     }
 
-    private var tiles: [FigureTile] {
-        let figures = model.figures(year)
+    private func tiles(_ figures: RechargeYearFigures) -> [FigureTile] {
         let awaiting = model.awaiting
         let overdue = awaiting.filter { model.isOverdue($0, today: today) }.count
         let owedCaption: String = switch awaiting.count {
@@ -488,18 +484,55 @@ struct RechargesTenancyView: View {
         case 1: "\(RechargeEmail.monthName(awaiting[0].statement.month, language: .english)) awaiting payment"
         default: "\(awaiting.count) statements awaiting payment"
         }
-        let net = figures.net
+        let difference = figures.difference
         return [
             FigureTile(title: "Outstanding", value: .money(model.outstanding, currency, .neutral), caption: owedCaption,
                        pill: overdue > 0 ? StatusPill("\(overdue) overdue", tone: .warning, systemImage: "exclamationmark.triangle.fill") : nil),
-            FigureTile(title: "Recharged in \(year)", value: .money(figures.recharged, currency, .signed),
+            FigureTile(title: "Recharged in \(String(year))", value: .money(figures.recharged, currency, .signed),
                        caption: "\(figures.statements) statement\(figures.statements == 1 ? "" : "s") · \(Money.format(figures.received, currency: currency)) received"),
-            FigureTile(title: "Utilities paid in \(year)", value: .money(figures.paid, currency, .cost),
-                       caption: "\(figures.invoices) invoice\(figures.invoices == 1 ? "" : "s")"),
-            FigureTile(title: "Recharged − paid", value: .money(net, currency, .signed),
-                       caption: net < 0 ? "\(Money.format(-net, currency: currency)) still to recharge" : (net == 0 ? "Every invoice recharged" : "One-off lines included"),
-                       captionIsWarning: net < 0)
+            FigureTile(title: "Bills paid for those months", value: .money(figures.billsPaid, currency, .cost),
+                       caption: "What the bank paid for their bills"),
+            FigureTile(title: "Difference", value: .money(difference, currency, .signed),
+                       caption: difference == 0 ? "Every statement matches its bills"
+                           : difference > 0 ? "Recharged more than paid" : "Recharged less than paid")
         ]
+    }
+
+    /// A reason for the year's difference, over its statements.
+    private struct DifferenceReason {
+        let reason: RechargeYearFigures.GapReason
+        let gaps: [RechargeYearFigures.Gap]
+        var amount: Int { gaps.reduce(0) { $0 + $1.amountMinorUnits } }
+    }
+
+    private func differenceReasons(_ figures: RechargeYearFigures) -> [DifferenceReason] {
+        Dictionary(grouping: figures.gaps, by: \.reason).map { DifferenceReason(reason: $0.key, gaps: $0.value) }
+            .sorted { $0.reason < $1.reason }
+    }
+
+    /// "€0.08 rounding on January's statement", with a link to each statement behind it.
+    private func differenceLine(_ item: DifferenceReason) -> some View {
+        let amount = Money.format(abs(item.amount), currency: currency)
+        let months = item.gaps.map { RechargeEmail.monthName($0.month, language: .english) }
+        let on = item.gaps.count == 1 ? "on \(months[0])'s statement" : "on \(item.gaps.count) statements"
+        let lines = item.gaps.reduce(0) { $0 + $1.lines }
+        let text: String = switch item.reason {
+        case .rounding: "\(amount) rounding \(on)"
+        case .noPayment: "\(amount) from \(lines) bill\(lines == 1 ? "" : "s") with no bank payment linked, \(on)"
+        case .oneOff: "\(amount) from \(lines) one-off line\(lines == 1 ? "" : "s") with no bank movement, \(on)"
+        case .otherAmount: "\(amount) where the bank paid a different amount than recharged, \(on)"
+        }
+        return HStack(spacing: 6) {
+            Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(1).figureText()
+            ForEach(Array(item.gaps.enumerated()), id: \.offset) { _, gap in
+                if let row = model.rows.first(where: { $0.id == gap.statementId }) {
+                    Button("\(RechargeEmail.monthName(gap.month, language: .english)) ›") { showDetails(row) }
+                        .buttonStyle(.link).font(.callout)
+                        .help("Show the statement's charges and the bank payments")
+                }
+            }
+        }
     }
 
     // MARK: Charts
@@ -518,7 +551,7 @@ struct RechargesTenancyView: View {
 
     private var utilitiesPanel: some View {
         let items = model.byUtility(year)
-        let figures = model.figures(year)
+        let paid = model.invoicesPaid(year)
         let months = model.monthsWithInvoices(year)
         return Panel("By utility · \(String(year))", subtitle: "The tenancy's share of the invoices paid", fillsHeight: true) {
             if items.isEmpty {
@@ -528,11 +561,11 @@ struct RechargesTenancyView: View {
                     BreakdownBars(items: items, currency: currency, role: .neutral)
                     Divider()
                     PropertyFacts {
-                        PropertyFact("Invoices") { Text("\(figures.invoices)").monospacedDigit().figureText() }
+                        PropertyFact("Invoices") { Text("\(paid.count)").monospacedDigit().figureText() }
                         if months > 0 {
                             PropertyFact("A month") {
                                 HStack(spacing: 4) {
-                                    MoneyText(minorUnits: figures.paid / months, currency: currency, role: .neutral)
+                                    MoneyText(minorUnits: paid.minorUnits / months, currency: currency, role: .neutral)
                                     Text("on average, over \(months) month\(months == 1 ? "" : "s")").foregroundStyle(.secondary).figureText()
                                 }
                             }
