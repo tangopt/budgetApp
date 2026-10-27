@@ -124,7 +124,7 @@ public enum BalanceUpdates {
     }
 
     /// What Update balance did for one account.
-    public struct Outcome: Equatable {
+    public struct Outcome: Equatable, Sendable {
         public let accountId: Int64
         public let accountName: String
         public let currency: Currency

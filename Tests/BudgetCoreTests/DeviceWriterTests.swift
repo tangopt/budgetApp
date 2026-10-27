@@ -170,7 +170,7 @@ final class DeviceWriterTests: XCTestCase {
                 }
             }
             XCTAssertEqual(error as? DeviceWriteRefusal, .notLinkedYet)
-            XCTAssertEqual((error as? LocalizedError)?.errorDescription, "Mango hasn't linked this iPad to you yet. Sync, then try again.")
+            XCTAssertEqual((error as? LocalizedError)?.errorDescription, "Mango hasn't linked this device to you yet. Sync, then try again.")
             XCTAssertEqual(try syncRecords(), before)
             let actor = try await device.actor()
             XCTAssertNil(actor)
@@ -372,7 +372,7 @@ final class DeviceWriterTests: XCTestCase {
     // MARK: Copy
 
     func testCopyStrings() {
-        XCTAssertEqual(DeviceWriteCopy.notLinkedYet, "Mango hasn't linked this iPad to you yet. Sync, then try again.")
+        XCTAssertEqual(DeviceWriteCopy.notLinkedYet, "Mango hasn't linked this device to you yet. Sync, then try again.")
         XCTAssertEqual(DeviceWriteCopy.filedYear(years: ["2023/24"]),
                        "Not saved: this would change the filed 2023/24 return. To change it anyway, use the Mac.")
         XCTAssertEqual(DeviceWriteCopy.filedYear(years: ["2022/23", "2023/24"]),

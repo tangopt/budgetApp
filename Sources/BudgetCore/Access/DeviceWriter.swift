@@ -32,6 +32,12 @@ public struct DeviceWriter: Sendable {
         self.afterWrite = afterWrite
     }
 
+    /// The database it writes, for reads a write needs first (`PhoneQuickEdits`).
+    var reader: any DatabaseReader { db }
+
+    /// Whose device this is, as of now.
+    func viewerNow() -> PhoneViewer { viewer() }
+
     /// Who writes: nil before an app user is bound to this device's iCloud user.
     public func actor() async throws -> AccessActor? {
         let viewer = viewer()
@@ -122,8 +128,9 @@ public struct DeviceWriter: Sendable {
 /// The sync engine's write mode on a phone or tablet (step 8; the iPhone too since step 7b). Read-only unless the
 /// device may write (`canWrite`: an iPhone or iPad running sync, not demo data) and the app user bound to its iCloud
 /// user has Edit on some area. Then a member's device (`isMember`: it follows the admin's household through her
-/// shared database) pushes the household only; the admin's pushes the household and his own private zone. Anything else (no bound user, a member's user on the admin's own database, an admin with no
-/// person identity yet) is read-only: never a default writer.
+/// shared database) pushes the household only; the admin's pushes the household and his own private zone. Anything
+/// else (no bound user, a member's user on the admin's own database, an admin with no person identity yet) is
+/// read-only: never a default writer.
 public enum DeviceWriteMode {
     public static func decide(recordName: String?, isMember: Bool, canWrite: Bool, db: Database) throws -> SyncWriteMode {
         guard canWrite, let actor = try DeviceWriter.actor(.iCloudUser(recordName: recordName), db: db) else { return .readOnly }
