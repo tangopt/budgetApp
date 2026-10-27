@@ -139,6 +139,38 @@ final class SavedSiteSyncTests: XCTestCase {
         XCTAssertEqual(still, [kept])
     }
 
+    /// A view-only member's device that writes a site straight to its database (a modified client, past the writer)
+    /// and pushes it: the Mac re-validates, reverts it and logs it; her iPad converges to the household's strip.
+    func testForgedSiteFromViewOnlyMemberIsReverted() async throws {
+        let h = try await household()
+        let memberUser = try read(h.adminMac) { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [h.fixture.personB])!
+        }
+        try write(h.adminMac) { db in
+            try db.execute(sql: """
+                INSERT INTO memberPermission(appUserId, area, level) VALUES (?, 'property', 'view')
+                ON CONFLICT(appUserId, area) DO UPDATE SET level = 'view'
+                """, arguments: [memberUser])
+        }
+        try await h.syncAll()
+
+        let uuid = try write(h.memberDevice) { db -> String in
+            try db.execute(sql: "INSERT INTO savedSite(name, url, kind, sortOrder) VALUES ('Synthetic forged', 'https://forged.example.test', 'bank', 0)")
+            return try SyncRecordStore.uuid(for: "savedSite", localId: db.lastInsertedRowID, db: db)
+        }
+        try await h.memberDevice.engine.pushPending()
+        try await h.adminMac.engine.syncNow()
+        try await h.memberDevice.engine.pull()
+        try await h.adminPhone.engine.pull()
+
+        XCTAssertNil(try h.localId("savedSite", uuid: uuid, on: h.adminMac), "never kept on the Mac")
+        XCTAssertNil(try h.localId("savedSite", uuid: uuid, on: h.adminPhone))
+        XCTAssertNil(try h.localId("savedSite", uuid: uuid, on: h.memberDevice), "her iPad converges")
+        XCTAssertEqual(try sites(on: h.memberDevice), [])
+        XCTAssertEqual(try read(h.adminMac) { db in try AccessRevalidation.recentReverts(limit: 10, db: db) },
+                       ["Reverted a change by B: no permission for Property"])
+    }
+
     func testBadURLFromSyncIsSkipped() async throws {
         let h = try await household()
         // Another device (here the Mac, writing the table directly) sends addresses no iPad may open.
