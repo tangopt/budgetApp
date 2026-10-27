@@ -8,16 +8,16 @@ import BudgetCore
 /// on iPhone.
 ///
 /// Bills & recharges is one screen (`PadBillsAndRechargesView`, step 10 Task 11) and Tenancies another
-/// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the step 8 Missing evidence screen; Money,
-/// Calendar, Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's through
-/// `padDocumentWrite`.
+/// (`PadTenanciesScreen`, Task 13, rent receipts included), each with the document panel. Evidence is the tax year's (`PadEvidenceView`, Task 14); Money,
+/// Calendar, Checks and Profile are placeholders. Property's edits go through the tabs' `padWrite`, Documents' and Evidence's links through
+/// `padDocumentWrite` (Evidence's "Mark not available" through `padWrite`).
 ///
 /// The built-in browser (step 10, Task 5; `browser`, nil with demo data) is presented over everything when a screen
 /// asks for it (`\.padBrowser`) or a PDF is shared into Mango.
 public struct PadRootView: View {
     @ObservedObject var tabs: PhoneTabsModel
     @ObservedObject private var documents: PadDocumentsModel
-    @ObservedObject private var evidence: PadMissingEvidenceModel
+    @ObservedObject private var evidence: PadEvidenceModel
     let syncStatus: SyncStatus
     let lastSync: Date?
     let isDemo: Bool
@@ -38,7 +38,7 @@ public struct PadRootView: View {
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
         self.tabs = tabs
         documents = tabs.padDocuments
-        evidence = tabs.padMissingEvidence
+        evidence = tabs.padEvidence
         self.syncStatus = syncStatus
         self.lastSync = lastSync
         self.isDemo = isDemo
@@ -119,7 +119,8 @@ public struct PadRootView: View {
             PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .evidence:
-            PadMissingEvidenceView(model: tabs.padMissingEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus)
+            PadEvidenceView(model: tabs.padEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus,
+                            showBills: { selection = .billsAndRecharges })
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .money, .calendar, .checks, .profile:
             PlaceholderPadScreen(section: section)

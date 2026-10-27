@@ -35,10 +35,11 @@ public final class PhoneTabsModel: ObservableObject {
     public let padBills: PadBillsAndRechargesModel
     /// Tenancies (step 10, Task 13): the tenancy's details, its rent receipts and their actions.
     public let padTenancies: PadTenanciesModel
-    /// The iPad's Documents and Missing evidence edits (step 8, Task 10), through the device writer in Documents.
+    /// The iPad's Documents and Evidence edits (step 8, Task 10), through the device writer in Documents.
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
-    public let padMissingEvidence: PadMissingEvidenceModel
+    /// Evidence for the tax year (step 10, Task 14): links through `padDocumentWrite`, "Mark not available" through `padWrite`.
+    public let padEvidence: PadEvidenceModel
     /// The iPad's This-month checklist (step 10, Task 10); its edit (Confirm match) goes through `padWrite`.
     public let padThisMonth: PadThisMonthModel
     /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
@@ -72,7 +73,7 @@ public final class PhoneTabsModel: ObservableObject {
         padTenancies = PadTenanciesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
-        padMissingEvidence = PadMissingEvidenceModel(write: padDocumentWrite, dbQueue: dbQueue, today: today)
+        padEvidence = PadEvidenceModel(write: padDocumentWrite, propertyWrite: padWrite, dbQueue: dbQueue, today: today)
         padThisMonth = PadThisMonthModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         quickEdit = QuickEditModel(writer: writer, dbQueue: dbQueue, today: today)
         quickEdit.viewer = viewer

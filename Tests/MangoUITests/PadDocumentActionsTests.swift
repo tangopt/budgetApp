@@ -62,33 +62,36 @@ final class PadDocumentActionsTests: XCTestCase {
                                MissingEvidence.affectingTaxFigures(property), year.label)
             }
         }
-        // The iPad's model reads it for the selected year.
+        // The iPad's Evidence reads it with the tax-figures filter, utility bills left out.
         let tabs = await tabs()
-        let model = tabs.padMissingEvidence
+        let model = tabs.padEvidence
         model.year = UKTaxYear(startYear: 2025)
         await model.reload()
-        let expected = try await db.read { db in try MissingEvidence.checklist(db: db, period: UKTaxYear(startYear: 2025).interval) }
-        XCTAssertEqual(model.items, expected)
-        XCTAssertEqual(model.years.first, UKTaxYear.containing(today))
+        let expected = try await db.read { db in
+            try MissingEvidence.checklist(db: db, period: UKTaxYear(startYear: 2025).interval, taxFiguresOnly: true)
+                .filter { !TaxYearEvidence.isUtilityBill($0) }
+        }
+        XCTAssertEqual(Set(model.items.map(\.id)), Set(expected.map(\.id)))
+        XCTAssertEqual(model.years.last, UKTaxYear.containing(today))
     }
 
     /// A missing item's suggested document, linked from the side panel: the item is done, the document counts (no
     /// shortfall), the link is stamped as a document link, and the panel offers it no more.
     func testLinkFromPanelClearsShortfall() async throws {
         let tabs = await tabs()
-        let model = tabs.padMissingEvidence
+        let model = tabs.padEvidence
         XCTAssertTrue(model.canLink)
-        var found: (item: MissingEvidence.Item, suggestion: PadMissingEvidenceModel.Suggestion)?
+        var found: (item: EvidenceItem, suggestion: PadEvidenceModel.Suggestion)?
         for start in [2025, 2024, 2026] where found == nil {
             model.year = UKTaxYear(startYear: start)
             await model.reload()
-            for item in model.items where item.status == .missing && found == nil {
+            for item in model.items where item.state == .missing && found == nil {
                 model.selectedItemId = item.id
                 await model.loadPanel()
                 let panel = try XCTUnwrap(model.panel)
                 XCTAssertEqual(panel.itemId, item.id)
                 if let first = panel.suggestions.first(where: { suggestion in
-                    MissingEvidence.shortfall(of: Self.details(suggestion.document), for: item) == nil
+                    MissingEvidence.shortfall(of: Self.details(suggestion.document), for: item.item) == nil
                 }) { found = (item, first) }
             }
         }
@@ -98,7 +101,8 @@ final class PadDocumentActionsTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(after.value, 1)
         let now = try XCTUnwrap(model.items.first { $0.id == item.id })
-        XCTAssertEqual(now.status, .satisfied)
+        XCTAssertEqual(now.item.status, .satisfied)
+        XCTAssertEqual(now.state, .have)
         let attached = try XCTUnwrap(model.panel?.attached.first { $0.id == suggestion.id })
         XCTAssertTrue(attached.counts)
         XCTAssertNil(attached.explanation)
@@ -106,12 +110,12 @@ final class PadDocumentActionsTests: XCTestCase {
         let note = try XCTUnwrap(model.note(for: item.id))
         XCTAssertTrue(note.hasPrefix("Linked “\(suggestion.document.displayName)”."), note)
         XCTAssertFalse(note.contains("doesn't count"), note)
-        XCTAssertNil(tabs.padDocumentWrite.message(for: PadMissingEvidenceModel.itemRow(item.id)))
+        XCTAssertNil(tabs.padDocumentWrite.message(for: PadEvidenceModel.itemRow(item.id)))
         let origin = try await db.read { db in
             try String.fetchOne(db, sql: """
                 SELECT r.origin FROM syncRecord r JOIN documentLink l ON l.id = r.localId
                 WHERE r.tableName = 'documentLink' AND l.documentId = ? AND l.entityType = ? AND l.entityId = ?
-                """, arguments: [suggestion.id, item.target.entity.type.rawValue, item.target.entity.id])
+                """, arguments: [suggestion.id, item.item.target.entity.type.rawValue, item.item.target.entity.id])
         }
         XCTAssertEqual(origin, WriteOrigin.documentLink.rawValue)
     }
@@ -208,7 +212,7 @@ final class PadDocumentActionsTests: XCTestCase {
         XCTAssertEqual(write.viewOnlyMessage, DeviceWriteCopy.viewOnly(.documents))
         XCTAssertEqual(write.viewOnlyMessage, "View only: you don't have Edit on Documents.")
         XCTAssertFalse(tabs.padDocumentActions.canEdit)
-        XCTAssertFalse(tabs.padMissingEvidence.canLink)
+        XCTAssertFalse(tabs.padEvidence.canLink)
         // Nothing is written even if asked.
         let before = try linkRows()
         let linked = await tabs.padDocumentActions.link(documentId: bill, transactionId: paid)

@@ -118,22 +118,15 @@ public enum PadRoutes {
             }
             return AnyView(PrepareEmailSheet(model: model, write: tabs.padWrite))
         },
-        // Task 10: Missing evidence for 2025/26, its first missing item with suggestions in the side panel (Link offered).
-        DemoRoute(name: "pad-missing-evidence", sizes: DemoRoute.padSizes, minimumFigures: 3, pad: true) { context in
-            let tabs = editingTabs(context)
-            let model = tabs.padMissingEvidence
-            let year = UKTaxYear(startYear: 2025)
-            if let snapshot = PadMissingEvidenceModel.readNow(context.dbQueue, year: year, today: context.today) {
-                let catalog = snapshot.catalog
-                let panels = (try? context.dbQueue.read { db in
-                    try snapshot.items.filter { $0.status == .missing }.lazy
-                        .map { try PadMissingEvidenceModel.panel(db, item: $0, catalog: catalog) }
-                        .first { !$0.suggestions.isEmpty }
-                }) ?? nil
-                model.year = year
-                model.preload(snapshot, selecting: panels?.itemId ?? snapshot.items.first?.id, panel: panels)
-            }
-            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .evidence, columns: .doubleColumn))
+        // Step 10, Task 14: Evidence for the tax year by area (Open site and Link existing document on each item; utility
+        // bills pointed to Bills & recharges), then a missing item with a suggested document open in the panel.
+        DemoRoute(name: "pad-evidence", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .evidence,
+                                browser: sampleBrowser("pad-evidence", items: 0), columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-evidence-panel", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .evidence,
+                                browser: sampleBrowser("pad-evidence-panel", items: 0), columns: .doubleColumn))
         },
         // Step 10, Task 2: the shared document panel (thumbnail, buttons, details, Documents' edits) over the library, a
         // linked document selected, and the full-view modal with its details open.
@@ -244,6 +237,27 @@ public enum PadRoutes {
         let tabs = tabs(context, writer: DeviceWriter(db: context.dbQueue, viewer: { .demoAdmin }, afterWrite: {}))
         tabs.padWrite.preload(canEdit: true)
         tabs.padDocumentWrite.preload(canEdit: true)
+        return tabs
+    }
+
+    /// Editing tabs with Evidence read for the current tax year; `selecting`: its first missing item with a suggested
+    /// document, open in the panel.
+    @MainActor
+    static func evidenceTabs(_ context: PhoneDemoContext, selecting: Bool) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let model = tabs.padEvidence
+        guard let snapshot = PadEvidenceModel.readNow(context.dbQueue, year: model.year) else { return tabs }
+        guard selecting else {
+            model.preload(snapshot)
+            return tabs
+        }
+        let catalog = snapshot.catalog
+        let panel = (try? context.dbQueue.read { db in
+            try snapshot.areas.flatMap(\.items).filter { $0.state == .missing }.lazy
+                .map { try PadEvidenceModel.panel(db, item: $0.item, catalog: catalog) }
+                .first { !$0.suggestions.isEmpty }
+        }) ?? nil
+        model.preload(snapshot, selecting: panel?.itemId ?? snapshot.areas.flatMap(\.items).first?.id, panel: panel)
         return tabs
     }
 
