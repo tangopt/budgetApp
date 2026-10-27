@@ -87,6 +87,10 @@ public struct CheckAndLinkCheck: Equatable, Sendable {
     public var duplicateOf: String?
     /// Filed or paid years ("2022/23") saving it would change: Save is refused inline, the Mac can make it.
     public var filedYears: [String]
+    /// What Save counts as checked: the figures read by text recognition, from the file name or by the model, and a
+    /// recognition to check ("Amount", "Kind"). The sheet must show each of them (with its `needsCheck` field) before
+    /// Save: pressing Save is the user's tick, as "Check it" is on the Mac.
+    public var toCheck: [String]
     /// The user picked the kind (`chooseKind`).
     public var kindChosen: Bool
     var plan: ImportPlan
@@ -181,12 +185,15 @@ public enum CheckAndLinkProposal: Equatable, Sendable {
 
 /// What Save did.
 public struct CheckAndLinkResult: Equatable, Sendable {
-    /// The library document the file became (synced like any other).
-    public var documentId: Int64
+    /// The library document the file became (synced like any other); nil for a statement sent to the Mac.
+    public var documentId: Int64?
     /// The utility invoice recorded, or the recorded one it was attached to.
     public var invoiceId: Int64?
-    /// Bank rows a statement added.
-    public var transactionsAdded: Int
+    /// A bank statement: kept on the waiting list (its row, `ImportWaitingFile`) for the Mac to import with its lease
+    /// and import run. Nil when it was waiting already.
+    public var sentToMac: Bool
+    public var waitingFileId: Int64?
+    /// "Saved <title>", or "Sent to the Mac to import".
     public var summary: String
 }
 
@@ -198,6 +205,8 @@ public enum CheckAndLinkRefusal: Error, Equatable, LocalizedError {
     case outdated(String)
     case macOnly(String)
     case notInTray
+    /// A statement on a member's iPad: her kept files stay in her own zone, which the Mac doesn't import from.
+    case statementNeedsAdmin
 
     public var errorDescription: String? {
         switch self {
@@ -206,6 +215,7 @@ public enum CheckAndLinkRefusal: Error, Equatable, LocalizedError {
         case .outdated(let detail): CheckAndLinkCopy.outdated(detail)
         case .macOnly(let kind): CheckAndLinkCopy.macOnly(kind)
         case .notInTray: CheckAndLinkCopy.notInTray
+        case .statementNeedsAdmin: CheckAndLinkCopy.statementNeedsAdmin
         }
     }
 }
@@ -220,9 +230,14 @@ public enum CheckAndLinkRefusal: Error, Equatable, LocalizedError {
 /// The user's answers go through the pipeline too (`answer`, `choosePayment`, `chooseKind`). Save files the document
 /// and applies the item's records as the Mac's importer does (`ImportApplier.filing`/`fileDocument`,
 /// `ImportEffects.applyRecords`, the follow-on matching), in one write through `DeviceWriter.writeCheckingFiledYears`:
-/// a change to a filed return, a missing permission or a link guard refuses it whole, and the file stays in the tray.
-/// Unlike the Mac's Confirm import there is no import run (the iPad takes no import lease): the rows are the iPad's
-/// edits, synced and re-validated by the Mac like any other. The figures to check count as checked by Save.
+/// a change to a filed return, a missing permission (every area the save touches, checked before anything is
+/// written) or a link guard refuses it whole, and the file stays in the tray. There is no import run (the iPad takes
+/// no import lease): the rows are the iPad's edits, synced and re-validated by the Mac like any other.
+///
+/// A bank statement is never imported here: Save keeps it on the household's waiting list (`ImportWaitingList`, the
+/// files kept for later, synced with their sealed copy), and the Mac imports it with its lease and import run.
+///
+/// The figures still to check (`CheckAndLinkCheck.toCheck`) count as checked by Save: the sheet must show each one.
 ///
 /// One file at a time per engine (its pipeline keeps one planning copy).
 public struct CheckAndLink: @unchecked Sendable {
@@ -232,14 +247,21 @@ public struct CheckAndLink: @unchecked Sendable {
     private let pipeline: ImportPipeline
     /// Where a tray file is copied under its own name to be read (the tray stores it under its id).
     private let stagingRoot: URL
+    /// The files kept for later, where a bank statement goes for the Mac to import.
+    private let waiting: ImportWaitingList
+    #if DEBUG
     /// Test seam: runs in Save's write right after the document is filed.
     var afterDocumentFiled: (@Sendable () throws -> Void)?
+    #endif
 
-    public init(dbQueue: DatabaseQueue, library: EvidenceLibrary,
+    /// `waitingRoot`: nil, `Waiting` beside the library's folder (as `SyncDocumentFiles` syncs it).
+    public init(dbQueue: DatabaseQueue, library: EvidenceLibrary, waitingRoot: URL? = nil,
                 stagingRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoCheckAndLink", isDirectory: true)) {
         self.dbQueue = dbQueue
         self.library = library
         self.stagingRoot = stagingRoot
+        waiting = ImportWaitingList(root: waitingRoot ?? library.root.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true),
+                                    database: library.database)
         pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: CategorizationService(categorizer: ImportDryRun.NoSuggestions()))
     }
 
@@ -297,9 +319,10 @@ public struct CheckAndLink: @unchecked Sendable {
     // MARK: Save
 
     /// Saves the checked file: the document filed and its records applied as the Mac's importer does, in one write
-    /// through `writer` (`writeCheckingFiledYears`, every protected year checked); then the tray item is discarded.
-    /// Refused (`CheckAndLinkRefusal`, `DeviceWriteRefusal`, `AccessDenied`, `EvidenceLinkGuard.Failure`): nothing
-    /// is written, the library copy is removed and the item stays in the tray.
+    /// through `writer` (`writeCheckingFiledYears`, every protected year checked); a bank statement kept on the waiting
+    /// list for the Mac instead (`sendToMac`). Then the tray item is discarded. Refused (`CheckAndLinkRefusal`,
+    /// `DeviceWriteRefusal`, `AccessDenied`, `EvidenceLinkGuard.Failure`): nothing is written, the library copy is
+    /// removed and the item stays in the tray.
     public func save(_ proposal: CheckAndLinkProposal, item trayItem: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
                      now: Date = Date()) async throws -> CheckAndLinkResult {
         let check = proposal.check
@@ -308,12 +331,17 @@ public struct CheckAndLink: @unchecked Sendable {
         guard let root = items.first else { throw CheckAndLinkRefusal.notInTray }
         let reasons = items.flatMap(\.needsYouReasons)
         guard reasons.isEmpty else { throw CheckAndLinkRefusal.needsAnswer(reasons) }
-        let (area, origin, isStatement) = try Self.writeArea(root)
         let url = try stage(trayItem, from: tray)
         guard url.standardizedFileURL.path == root.file.url.standardizedFileURL.path else { throw CheckAndLinkRefusal.outdated("the file was read from elsewhere") }
+        if Self.isStatement(root) { return try await sendToMac(root, url: url, item: trayItem, tray: tray, writer: writer, now: now) }
+        let (area, origin) = try Self.writeArea(root)
 
         let library = library
+        #if DEBUG
         let hook = afterDocumentFiled
+        #else
+        let hook: (@Sendable () throws -> Void)? = nil
+        #endif
         let placed = PlacedFiles()
         let confirmedBy = try await writer.actor()?.appUserId
         do {
@@ -321,14 +349,8 @@ public struct CheckAndLink: @unchecked Sendable {
                                                                   scope: .everyYear) { db -> CheckAndLinkResult in
                 try ImportApplier.checkKinds(db: db, items, pending: [])
                 try ImportApplier.checkCurrent(db: db, items)
-                let filing = ImportApplier.filing(for: root, folders: [], newKinds: [:], kindsNow: try DocumentKindCatalog.load(db: db))
-                // The document and its links are Documents' (as on the Mac): checked as such whatever the record.
-                let documentId = try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .documentLink, db: db) {
-                    var files: [URL] = []
-                    defer { placed.append(files) }
-                    return try ImportApplier.fileDocument(db: db, item: root, url: url, filing: filing, library: library, now: now, placed: &files)
-                }
-                try hook?()
+                // Every area the save touches, before anything is written: its record's (checked by the writer), the
+                // document's, and Property when the follow-on matching runs (never skipped for want of it).
                 var touched: Set<Int64>? = []
                 for item in items {
                     if touched != nil, let more = try ImportEffects.touchedPropertyIds(db: db, item: item) {
@@ -336,11 +358,23 @@ public struct CheckAndLink: @unchecked Sendable {
                     } else {
                         touched = nil
                     }
+                }
+                for needed in Self.areas(area, touched: touched) {
+                    try ActorWrite.perform(orAdmin: nil, area: needed, db: db) {}
+                }
+                let filing = ImportApplier.filing(for: root, folders: [], newKinds: [:], kindsNow: try DocumentKindCatalog.load(db: db))
+                // The document and its links are Documents' (as on the Mac).
+                let documentId = try ActorWrite.perform(orAdmin: nil, area: .documents, origin: .documentLink, db: db) {
+                    var files: [URL] = []
+                    defer { placed.append(files) }
+                    return try ImportApplier.fileDocument(db: db, item: root, url: url, filing: filing, library: library, now: now, placed: &files)
+                }
+                try hook?()
+                for item in items {
                     try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: nil, confirmedBy: confirmedBy)
                 }
-                // Transfers are matched only after new rows (a statement); a document or invoice changes none.
-                let properties = try touched ?? (isStatement ? nil : Set(Property.fetchAll(db).compactMap(\.id)))
-                try ImportEffects.followOns(db: db, propertyIds: properties)
+                // Every property's matching where the Mac's would run all of it; transfers aren't matched (no new rows).
+                try ImportEffects.followOns(db: db, propertyIds: try touched ?? Set(Property.fetchAll(db).compactMap(\.id)))
                 return try Self.result(db: db, root: root, documentId: documentId)
             }
             tray.discard(trayItem)
@@ -353,6 +387,48 @@ public struct CheckAndLink: @unchecked Sendable {
             case ImportApplyError.notConfirmable: throw CheckAndLinkRefusal.outdated("its kind changed")
             default: throw error
             }
+        }
+    }
+
+    /// The areas Save needs Edit on, in the order they are checked: the record's, Documents (the document and its
+    /// links), then Property when follow-on matching runs (`touched` nil: every property; else those named).
+    static func areas(_ area: AccessArea, touched: Set<Int64>?) -> [AccessArea] {
+        var areas = [area]
+        if !areas.contains(.documents) { areas.append(.documents) }
+        if touched.map({ !$0.isEmpty }) ?? true, !areas.contains(.property) { areas.append(.property) }
+        return areas
+    }
+
+    /// A bank statement (BBVA or UK): never imported on the iPad (no import lease). Kept on the waiting list — the
+    /// copy placed, its row written through `writer` (Import's area) — for the Mac to import; only the household
+    /// admin's kept files reach the Mac (a member's stay in her own zone). The tray item goes once the row is written.
+    private func sendToMac(_ root: ImportItem, url: URL, item trayItem: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
+                           now: Date) async throws -> CheckAndLinkResult {
+        guard let actor = try await writer.actor() else { throw DeviceWriteRefusal.notLinkedYet }
+        guard actor.isAdmin else { throw CheckAndLinkRefusal.statementNeedsAdmin }
+        let file = SetAsideFile(url: url, fileName: root.file.fileName, sha256: root.file.sha256, byteCount: root.file.byteCount,
+                                text: root.file.text, textStatus: root.file.textStatus, reason: CheckAndLinkCopy.sentReason,
+                                recognisedAs: root.recognition.kind.displayName)
+        let edit = CheckAndLinkCopy.edit(root.title)
+        let kept = try await waiting.keep(file, now: now) { body in
+            try await writer.writeCheckingFiledYears(.import, origin: .edit, edit: edit, scope: FiledYearEditCheck.Scope(), body)
+        }
+        if let failure = kept.failed.first { throw CheckAndLinkRefusal.outdated(failure.reason) }
+        tray.discard(trayItem)
+        discard(trayItem)
+        return CheckAndLinkResult(documentId: nil, invoiceId: nil, sentToMac: true, waitingFileId: kept.kept.first?.id,
+                                  summary: CheckAndLinkCopy.sentToMac)
+    }
+
+    /// A bank statement, read (staged) or only recognised (no account yet).
+    static func isStatement(_ item: ImportItem) -> Bool {
+        switch item.effect {
+        case .bbvaStatement, .ukStatement: return true
+        default: break
+        }
+        switch item.recognition.kind {
+        case .bbvaStatement, .bankStatementPDF, .bankStatementCSV: return true
+        default: return false
         }
     }
 
@@ -373,28 +449,26 @@ public struct CheckAndLink: @unchecked Sendable {
         return item
     }
 
-    /// The area Save writes in (its record's), its origin, and whether it adds bank rows. Mac-only: a UK statement
-    /// (a layout to map), a payroll form (tax), a rent receipts export.
-    static func writeArea(_ item: ImportItem) throws -> (AccessArea, WriteOrigin, Bool) {
+    /// The area Save writes in (its record's) and its origin. Mac-only: a payroll form (tax), a rent receipts export.
+    /// (Statements go to the Mac before this.)
+    static func writeArea(_ item: ImportItem) throws -> (AccessArea, WriteOrigin) {
         switch item.effect {
-        case .utilityInvoice, .attachToInvoice: return (.property, .propertyMatching, false)
-        case .bbvaStatement: return (.budgetAndAccounts, .edit, true)
-        case .file, .none, .rentReceiptPDF, .transferAdvice: return (.documents, .documentLink, false)
-        case .ukStatement, .payrollForm, .rentReceiptsExport: throw CheckAndLinkRefusal.macOnly(item.recognition.kind.displayName)
+        case .utilityInvoice, .attachToInvoice: return (.property, .propertyMatching)
+        case .file, .none, .rentReceiptPDF, .transferAdvice: return (.documents, .documentLink)
+        case .bbvaStatement, .ukStatement, .payrollForm, .rentReceiptsExport: throw CheckAndLinkRefusal.macOnly(item.recognition.kind.displayName)
         }
     }
 
     private static func result(db: Database, root: ImportItem, documentId: Int64) throws -> CheckAndLinkResult {
         var invoiceId: Int64?
-        var rows = 0
         switch root.effect {
         case .utilityInvoice:
             invoiceId = try Int64.fetchOne(db, sql: "SELECT id FROM utilityInvoice WHERE documentId = ? ORDER BY id DESC", arguments: [documentId])
         case .attachToInvoice(let id): invoiceId = id
-        case .bbvaStatement(let effect): rows = effect.staged.count
         default: break
         }
-        return CheckAndLinkResult(documentId: documentId, invoiceId: invoiceId, transactionsAdded: rows, summary: CheckAndLinkCopy.saved(root.title))
+        return CheckAndLinkResult(documentId: documentId, invoiceId: invoiceId, sentToMac: false, waitingFileId: nil,
+                                  summary: CheckAndLinkCopy.saved(root.title))
     }
 
     /// The copies `fileDocument` placed, for removal when the write rolls back.
@@ -448,14 +522,26 @@ public struct CheckAndLink: @unchecked Sendable {
         let check = CheckAndLinkCheck(title: root.title, fileName: root.file.fileName,
                                       blockers: root.duplicate == nil ? confirmedItems.flatMap(\.needsYouReasons) : [],
                                       notes: root.notes, duplicateOf: root.duplicate?.of, filedYears: filedYears.sorted(),
-                                      kindChosen: kindChosen, plan: plan, itemId: itemId)
+                                      toCheck: toCheck(root), kindChosen: kindChosen, plan: plan, itemId: itemId)
         switch (root.effect, root.recognition.kind) {
-        case (.bbvaStatement, _), (_, .bbvaStatement):
+        case (.bbvaStatement, _), (.ukStatement, _), (_, .bbvaStatement), (_, .bankStatementPDF), (_, .bankStatementCSV):
             return .statement(try statement(db: db, root: root, children: children, check: check))
         case (.utilityInvoice, _), (.attachToInvoice, _), (_, .utilityInvoice):
             return .utilityBill(try utilityBill(db: db, root: root, check: check))
         default:
             return .document(try document(db: db, root: root, check: check))
+        }
+    }
+
+    /// The checks Save ticks on `item` (`confirmed`), by name.
+    static func toCheck(_ item: ImportItem) -> [String] {
+        var held = item
+        held.issues.removeAll { if case .filedYear = $0.kind { return true } else { return false } }
+        return ImportChecks.tickable(held).map { target in
+            switch target {
+            case .figure(let field): field.displayName
+            case .recognition: "Kind"
+            }
         }
     }
 
@@ -575,10 +661,16 @@ public struct CheckAndLink: @unchecked Sendable {
         var accountId: Int64?
         var rows = 0
         var already = 0
-        if case .bbvaStatement(let effect) = root.effect {
+        switch root.effect {
+        case .bbvaStatement(let effect):
             accountId = effect.currentAccountId
             rows = effect.staged.count
             already = effect.certainDuplicates.count
+        case .ukStatement(let effect):
+            accountId = effect.accountId
+            rows = effect.staged.count
+            already = effect.certainDuplicates.count
+        default: break
         }
         let account = try accountId.flatMap { try Account.fetchOne(db, key: $0) }
         let reference = root.facts.first { $0.field == .reference }

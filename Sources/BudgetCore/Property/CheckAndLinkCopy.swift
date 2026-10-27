@@ -23,13 +23,22 @@ public enum CheckAndLinkCopy {
         "Not saved: \(detail). Check the file again."
     }
 
-    /// A file the iPad doesn't import (a UK bank statement, a payroll form, a rent receipts export).
+    /// A file the iPad doesn't save (a payroll form, a rent receipts export).
     public static func macOnly(_ kind: String) -> String {
         "Not saved: a \(kind.lowercased()) is imported on the Mac. Keep it in the downloads, or share it to the Mac."
     }
 
     /// A file the tray no longer holds (discarded, or the downloads cleared).
     public static let notInTray = "Not saved: this download is no longer in the tray."
+
+    /// A bank statement saved on the iPad: kept for the Mac, which imports it.
+    public static let sentToMac = "Sent to the Mac to import"
+
+    /// Why the statement is on the waiting list (its row's reason, shown on the Mac).
+    public static let sentReason = "Sent from the iPad to import"
+
+    /// A statement on a member's iPad: her kept files don't reach the Mac's import.
+    public static let statementNeedsAdmin = "Not sent: statements are imported on the Mac. Share it to the Mac to import it there."
 
     /// After Save: the file is a normal document, linked or recorded.
     public static func saved(_ title: String) -> String { "Saved \(title)" }

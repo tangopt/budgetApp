@@ -307,19 +307,39 @@ final class CheckAndLinkTests: XCTestCase {
         XCTAssertTrue(summary.balanceMatches, "\(summary.checks)")
         XCTAssertTrue(summary.check.canSave, "\(summary.check.blockers)")
 
+        // Never imported on the iPad: kept on the waiting list for the Mac (its lease, its import run).
+        let before = try counts()
         let saved = try await engine.save(proposal, item: item, tray: tray, writer: writer())
-        XCTAssertEqual(saved.transactionsAdded, 3)
-        let rows = try await queue.read { db in try Transaction.filter(Column("accountId") == self.id("bbva")).fetchCount(db) }
-        XCTAssertEqual(rows, 3)
-        XCTAssertTrue(tray.items().isEmpty)
-        XCTAssertEqual(try counts()["importRun"], 0, "the iPad takes no import lease: no import run")
+        XCTAssertTrue(saved.sentToMac)
+        XCTAssertNil(saved.documentId)
+        XCTAssertEqual(saved.summary, "Sent to the Mac to import")
+        XCTAssertEqual(try counts()["transaction_"], before["transaction_"])
+        XCTAssertEqual(try counts()["importBatch"], before["importBatch"])
+        XCTAssertEqual(try counts()["importRun"], 0)
+        XCTAssertEqual(try counts()["document"], before["document"])
+        let waiting = ImportWaitingList(root: folder.appendingPathComponent("Waiting", isDirectory: true), database: queue)
+        let kept = try waiting.waiting()
+        XCTAssertEqual(kept.map(\.id), [saved.waitingFileId])
+        XCTAssertEqual(kept.first?.originalFileName, "extrato-2026-02.pdf")
+        XCTAssertEqual(kept.first?.sha256, item.sha256)
+        XCTAssertEqual(kept.first?.reason, CheckAndLinkCopy.sentReason)
+        XCTAssertNotNil(kept.first?.keptByAppUserId)
+        XCTAssertNotNil(try kept.first.flatMap(waiting.fileURL).map { try EvidenceLibrary.sha256(of: $0) })
+        try await queue.read { db in
+            XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.table == "importWaitingFile" }, "synced to the Mac")
+        }
+        XCTAssertTrue(tray.items().isEmpty, "gone from the tray once kept")
+    }
 
-        // The same statement again: every row is in Mango.
-        let again = try download(february() + ["Second download"], name: "extrato-2026-02 (1).pdf")
-        let repeated = try await engine.propose(again, in: tray)
-        guard case .statement(let second) = repeated else { return XCTFail("not a statement: \(repeated)") }
-        XCTAssertNotNil(second.check.duplicateOf, "\(second)")
-        XCTAssertEqual(second.alreadyImported, 3)
+    func testStatementOnMemberIPadIsNotSent() async throws {
+        try makeBBVA()
+        let item = try download(february(), name: "extrato-2026-02.pdf")
+        let proposal = try await engine.propose(item, in: tray)
+        let before = try counts()
+        let error = await thrown { _ = try await self.engine.save(proposal, item: item, tray: self.tray, writer: self.writer(Self.member)) }
+        XCTAssertEqual(error as? CheckAndLinkRefusal, .statementNeedsAdmin)
+        XCTAssertEqual(try counts(), before)
+        XCTAssertEqual(tray.items().map(\.id), [item.id])
     }
 
     func testStatementMismatchBlocksSaveWithReason() async throws {
@@ -374,9 +394,11 @@ final class CheckAndLinkTests: XCTestCase {
         let item = try invoice()
         let proposal = try await engine.propose(item, in: tray)
         let result = try await engine.save(proposal, item: item, tray: tray, writer: writer())
+        let documentId = try XCTUnwrap(result.documentId)
+        XCTAssertFalse(result.sentToMac)
 
         try await queue.read { db in
-            let document = try XCTUnwrap(try EvidenceDocument.fetchOne(db, key: result.documentId))
+            let document = try XCTUnwrap(try EvidenceDocument.fetchOne(db, key: documentId))
             XCTAssertEqual(document.originalFileName, "fatura-luz.pdf")
             XCTAssertEqual(document.kind, .utilityInvoice)
             XCTAssertEqual(document.amountMinorUnits, 10_000)
@@ -385,11 +407,11 @@ final class CheckAndLinkTests: XCTestCase {
             XCTAssertEqual(invoice.documentId, result.documentId)
             XCTAssertEqual(invoice.transactionId, paid)
             XCTAssertEqual(invoice.invoiceNumber, "FT 1/23")
-            let links = try EvidenceLinks.links(db: db, for: result.documentId).map(\.entity)
+            let links = try EvidenceLinks.links(db: db, for: documentId).map(\.entity)
             XCTAssertEqual(links, [.transaction(paid)])
             // A normal document, synced: its row is waiting to go up, written by the admin.
             let record = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT modifiedBy FROM syncRecord WHERE tableName = 'document' AND localId = ?",
-                                                        arguments: [result.documentId]))
+                                                        arguments: [documentId]))
             XCTAssertNotNil(record["modifiedBy"] as String?)
             XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.table == "document" })
         }
@@ -443,6 +465,50 @@ final class CheckAndLinkTests: XCTestCase {
         }
         let saved = try await engine.save(proposal, item: item, tray: tray, writer: writer(Self.member))
         XCTAssertNotNil(saved.invoiceId)
+    }
+
+    func testDocumentWithPropertyFollowOnsNeedsPropertyEdit() async throws {
+        let paid = try debit(Self.day(2023, 3, 20), -12_000, "SOME SHOP", category: nil)
+        try await queue.write { db in
+            try MemberPermissions.ensureDefaults(appUserId: self.id("memberUser"), db: db)
+            try db.execute(sql: "UPDATE memberPermission SET level = 'view' WHERE appUserId = ? AND area = 'property'",
+                           arguments: [self.id("memberUser")])
+        }
+        let item = try download(["Zxq note", "Nothing to recognise here"], name: "scan-0002.pdf")
+        var proposal = try await engine.propose(item, in: tray)
+        guard case .document(let fields) = proposal else { return XCTFail("not a document: \(proposal)") }
+        let certificate = try XCTUnwrap(fields.kindChoices.first { $0.kind == .evidence(.certificate) })
+        proposal = try await engine.chooseKind(certificate, in: proposal)
+        // Linked to a bank movement: the Mac's follow-ons rerun every property's matching.
+        proposal = try await engine.answer(.addTransactionLink(paid), in: proposal)
+        XCTAssertTrue(proposal.check.canSave, "\(proposal.check.blockers)")
+        let before = try counts()
+        let error = await thrown { _ = try await self.engine.save(proposal, item: item, tray: self.tray, writer: self.writer(Self.member)) }
+        XCTAssertEqual(error as? AccessDenied, AccessDenied(area: .property), "\(String(describing: error))")
+        XCTAssertEqual(try counts(), before)
+        XCTAssertTrue(storedFiles().isEmpty)
+        XCTAssertEqual(tray.items().map(\.id), [item.id])
+        XCTAssertEqual(CheckAndLink.areas(.documents, touched: []), [.documents], "nothing to match: Documents only")
+        XCTAssertEqual(CheckAndLink.areas(.property, touched: nil), [.property, .documents])
+    }
+
+    func testFiguresToCheckAreReported() async throws {
+        let fields = try bill(try await engine.propose(try invoice(), in: tray))
+        XCTAssertEqual(fields.check.toCheck, [], "read from the text layer: nothing to check")
+        // A figure read by text recognition: reported, and its field says so.
+        var plan = fields.check.plan
+        let index = try XCTUnwrap(plan.items.firstIndex { $0.id == fields.check.itemId })
+        let amount = try XCTUnwrap(plan.items[index].facts.firstIndex { $0.field == .amount })
+        plan.items[index].facts[amount].source = .ocr
+        plan.items[index].facts[amount].confidence = .needsReview
+        let proposal = try await queue.read { db in
+            try CheckAndLink.proposal(db: db, plan: plan, root: plan.items[index], itemId: plan.items[index].id, kindChosen: false)
+        }
+        let checked = try bill(proposal)
+        XCTAssertEqual(checked.check.toCheck, ["Amount"])
+        XCTAssertEqual(checked.amount?.needsCheck, true)
+        XCTAssertEqual(checked.amount?.origin, .read)
+        XCTAssertTrue(checked.check.canSave, "Save is the tick: \(checked.check.blockers)")
     }
 
     func testSaveIsOneTransaction() async throws {

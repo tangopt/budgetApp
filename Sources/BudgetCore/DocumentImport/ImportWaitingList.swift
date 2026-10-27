@@ -125,69 +125,107 @@ public struct ImportWaitingList: Sendable {
         var result = KeepResult()
         var seen: Set<String> = []
         for file in files {
-            let sha = file.sha256.lowercased()
-            guard seen.insert(sha).inserted else { continue }
-            let existing = try database.read { db in try Self.row(db: db, sha256: sha) }
-            if let existing, try database.read({ db in try Self.isListed(db: db, existing) }) {
-                result.alreadyWaiting.append(file.fileName)
-                continue
-            }
-            guard let path = Self.storedPath(sha256: sha, name: file.fileName) else {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Its name can't be used for Mango's copy", sha256: sha))
-                continue
-            }
-            let placed: Placed
+            guard seen.insert(file.sha256.lowercased()).inserted else { continue }
+            guard case .placed(let sha, let path, let placed) = try prepare(file, result: &result) else { continue }
+            let row: ImportWaitingFile
             do {
-                placed = try place(file, sha256: sha, path: path)
+                row = try database.write { db in try Self.writeRow(db: db, file, sha256: sha, path: path, now: now) }
             } catch {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
-                continue
-            }
-            afterPlacingForTesting?(sha)
-            do {
-                let row = try database.write { db -> ImportWaitingFile in
-                    if var row = try Self.row(db: db, sha256: sha) {
-                        // Imported by a run that stands, set aside again: listed again.
-                        row.originalFileName = file.fileName
-                        row.storedRelativePath = path
-                        row.reason = file.reason
-                        row.recognisedAs = file.recognisedAs
-                        row.keptAt = EvidenceLinks.wholeSeconds(now)
-                        row.importedRunId = nil
-                        row.keptByAppUserId = try Self.signedInAppUserId(db: db)
-                        if row.text == nil { row.text = file.text; row.textStatus = file.textStatus }
-                        try row.update(db)
-                        return row
-                    }
-                    var row = ImportWaitingFile(sha256: sha, originalFileName: file.fileName, byteCount: file.byteCount, storedRelativePath: path,
-                                                text: file.text, textStatus: file.textStatus, reason: file.reason, recognisedAs: file.recognisedAs,
-                                                keptAt: now, keptByAppUserId: try Self.signedInAppUserId(db: db))
-                    try row.insert(db)
-                    return row
-                }
-                result.kept.append(row)
-            } catch {
-                // No row: the copy placed for it goes too.
-                switch placed {
-                case .folder: try? FileManager.default.removeItem(at: root.appendingPathComponent(sha, isDirectory: true))
-                case .file: try? FileManager.default.removeItem(at: root.appendingPathComponent(path))
-                case .alreadyThere: break
-                }
+                undo(placed, sha256: sha, path: path)
                 throw error
             }
-            // A pull that deleted this hash's row (dismissed on another device) between the copy and the row
-            // removed the copy with it (`removeCopies` saw no row): placed again. From here on the row protects it.
-            if !Self.isRegularFile(root.appendingPathComponent(path)) {
-                do {
-                    _ = try place(file, sha256: sha, path: path)
-                } catch {
-                    result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
-                }
-            }
-            // Kept again under another name: the copy under the old name goes.
-            Self.removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
+            result.kept.append(row)
+            finish(file, sha256: sha, path: path, result: &result)
         }
         return result
+    }
+
+    /// `keep` for one file whose row is written by `write` (the iPad's `DeviceWriter`, which checks the actor may
+    /// edit Import): the copy is placed first, removed again when `write` throws.
+    public func keep(_ file: SetAsideFile, now: Date,
+                     writing write: (@escaping @Sendable (Database) throws -> ImportWaitingFile) async throws -> ImportWaitingFile) async throws -> KeepResult {
+        var result = KeepResult()
+        guard case .placed(let sha, let path, let placed) = try prepare(file, result: &result) else { return result }
+        let row: ImportWaitingFile
+        do {
+            row = try await write { db in try Self.writeRow(db: db, file, sha256: sha, path: path, now: now) }
+        } catch {
+            undo(placed, sha256: sha, path: path)
+            throw error
+        }
+        result.kept.append(row)
+        finish(file, sha256: sha, path: path, result: &result)
+        return result
+    }
+
+    /// What a keep does before its row: nothing (already waiting, or it failed: said in `result`), or its copy placed.
+    private enum Prepared { case skipped, placed(sha: String, path: String, Placed) }
+
+    private func prepare(_ file: SetAsideFile, result: inout KeepResult) throws -> Prepared {
+        let sha = file.sha256.lowercased()
+        let existing = try database.read { db in try Self.row(db: db, sha256: sha) }
+        if let existing, try database.read({ db in try Self.isListed(db: db, existing) }) {
+            result.alreadyWaiting.append(file.fileName)
+            return .skipped
+        }
+        guard let path = Self.storedPath(sha256: sha, name: file.fileName) else {
+            result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Its name can't be used for Mango's copy", sha256: sha))
+            return .skipped
+        }
+        let placed: Placed
+        do {
+            placed = try place(file, sha256: sha, path: path)
+        } catch {
+            result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
+            return .skipped
+        }
+        afterPlacingForTesting?(sha)
+        return .placed(sha: sha, path: path, placed)
+    }
+
+    /// The waiting row for `file`, in the caller's write: a row imported by a run that stands, set aside again, is listed again.
+    static func writeRow(db: Database, _ file: SetAsideFile, sha256 sha: String, path: String, now: Date) throws -> ImportWaitingFile {
+        if var row = try Self.row(db: db, sha256: sha) {
+            // Imported by a run that stands, set aside again: listed again.
+            row.originalFileName = file.fileName
+            row.storedRelativePath = path
+            row.reason = file.reason
+            row.recognisedAs = file.recognisedAs
+            row.keptAt = EvidenceLinks.wholeSeconds(now)
+            row.importedRunId = nil
+            row.keptByAppUserId = try Self.signedInAppUserId(db: db)
+            if row.text == nil { row.text = file.text; row.textStatus = file.textStatus }
+            try row.update(db)
+            return row
+        }
+        var row = ImportWaitingFile(sha256: sha, originalFileName: file.fileName, byteCount: file.byteCount, storedRelativePath: path,
+                                    text: file.text, textStatus: file.textStatus, reason: file.reason, recognisedAs: file.recognisedAs,
+                                    keptAt: now, keptByAppUserId: try Self.signedInAppUserId(db: db))
+        try row.insert(db)
+        return row
+    }
+
+    /// No row: the copy placed for it goes too.
+    private func undo(_ placed: Placed, sha256 sha: String, path: String) {
+        switch placed {
+        case .folder: try? FileManager.default.removeItem(at: root.appendingPathComponent(sha, isDirectory: true))
+        case .file: try? FileManager.default.removeItem(at: root.appendingPathComponent(path))
+        case .alreadyThere: break
+        }
+    }
+
+    private func finish(_ file: SetAsideFile, sha256 sha: String, path: String, result: inout KeepResult) {
+        // A pull that deleted this hash's row (dismissed on another device) between the copy and the row
+        // removed the copy with it (`removeCopies` saw no row): placed again. From here on the row protects it.
+        if !Self.isRegularFile(root.appendingPathComponent(path)) {
+            do {
+                _ = try place(file, sha256: sha, path: path)
+            } catch {
+                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
+            }
+        }
+        // Kept again under another name: the copy under the old name goes.
+        Self.removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
     }
 
     /// What `place` put there, to remove again if the row can't be written.
