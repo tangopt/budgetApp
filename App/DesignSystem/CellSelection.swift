@@ -45,23 +45,24 @@ struct SelectedCellOutline<Target>: View {
 /// content narrows, the panel slides in from the trailing edge.
 struct SidePanelHost<Target, Content: View, Panel: View>: View {
     @ObservedObject var selection: CellSelection<Target>
+    /// The remembered width's name (the panel is resizable, `ResizableDock`).
+    let kind: String
     let content: Content
     let panel: (Target) -> Panel
 
-    init(selection: CellSelection<Target>, @ViewBuilder content: () -> Content, @ViewBuilder panel: @escaping (Target) -> Panel) {
+    init(selection: CellSelection<Target>, kind: String, @ViewBuilder content: () -> Content, @ViewBuilder panel: @escaping (Target) -> Panel) {
         self.selection = selection
+        self.kind = kind
         self.content = content()
         self.panel = panel
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        ResizableDock(kind: kind, isOpen: selection.target != nil) {
             content
-                .frame(maxWidth: .infinity, alignment: .leading)
+        } panel: {
             if let target = selection.target {
-                Divider()
                 panel(target)
-                    .frame(width: 320)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }

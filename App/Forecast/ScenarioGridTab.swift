@@ -113,7 +113,7 @@ struct ScenarioGridTab: View {
                          percent: viewModel.gridYearEndChangePercent(year), isSelected: viewModel.gridSelectedYears.contains(year))
             }
             .padding(.bottom, 8)
-            SidePanelHost(selection: cellSelection) {
+            SidePanelHost(selection: cellSelection, kind: "forecastGrid") {
                 grid
             } panel: { target in
                 GridCellPanel(target: target, model: viewModel) { cellSelection.clear() }

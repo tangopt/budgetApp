@@ -64,7 +64,7 @@ struct MissingEvidenceView: View {
     var body: some View {
         // Selecting a row docks its panel beside the page, which narrows to make room (the list
         // keeps its scroll position, filters and search); ✕ or Escape closes it.
-        PropertyPanelDock(isOpen: panelItem != nil) {
+        PropertyPanelDock(kind: "missingEvidence", pageMinimum: embedded ? Self.embeddedBesidePanelMinimumWidth : 520, isOpen: panelItem != nil) {
             page
         } panel: {
             if let item = panelItem {

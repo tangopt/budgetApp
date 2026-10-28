@@ -114,22 +114,19 @@ struct CategoriesView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            HStack(spacing: 0) {
+            ResizableDock(kind: "categories") {
                 // The search field sits with the list, never over the side panel.
                 VStack(spacing: 0) {
                     listHeader
                     list
                 }
-                .frame(maxWidth: .infinity)
-                Divider()
+            } panel: {
                 if let subject = panelSubject {
                     CategoryTransactionsPanel(subject: subject, viewModel: viewModel, onClose: { selection = [] })
-                        .frame(width: 320)
                         .transition(.opacity)
                 } else {
                     // Nothing (or several categories) selected: where the money goes.
                     CategoryDistributionPanel(viewModel: viewModel, year: $distributionYear, drilledGroupId: $distributionGroupId)
-                        .frame(width: 320)
                         .transition(.opacity)
                 }
             }
