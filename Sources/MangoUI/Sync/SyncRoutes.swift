@@ -66,11 +66,29 @@ public enum SyncRoutes {
                                          onLockNow: {}, onSyncNow: {}, outputs: .constant(PhoneOutputSettings())))
         },
         // The three widgets' tiles from a demo snapshot (step 7b Task 7).
-        DemoRoute(name: "widgets-preview", minimumFigures: 3) { context in
+        DemoRoute(name: "widgets-preview", minimumFigures: 2) { context in
             let today = context.today
             let snapshot = WidgetSnapshot(generatedAt: today, netWorthMinorUnits: 1_234_500, leftToSpendMinorUnits: 45_600,
                                           paydayDate: today.addingTimeInterval(12 * 86_400), showFiguresOnLockScreen: false)
             return AnyView(WidgetsPreview(snapshot: snapshot, today: today))
+        },
+        // Step 18's two widgets in every family, from the demo's own figures (the first tenancy's pipeline made unfinished).
+        DemoRoute(name: "widgets-month-spend", minimumFigures: 8) { context in
+            let figures = (try? context.dbQueue.read { db in
+                try WidgetSnapshot.make(db: db, viewer: .demoAdmin, today: context.today, settings: PhoneOutputSettings())?.monthSpend
+            }) ?? nil
+            return AnyView(MonthSpendFamiliesPreview(figures: figures ?? MonthSpendFigures(start: context.today, spentMinorUnits: 0, budgetMinorUnits: 0, dayOfMonth: 1,
+                                                                                          daysInMonth: 30, cumulativeSpent: [0], overBudget: [])))
+        },
+        DemoRoute(name: "widgets-property-month", minimumFigures: 4) { context in
+            let months = (try? context.dbQueue.read { db in
+                try WidgetSnapshot.make(db: db, viewer: .demoAdmin, today: context.today, settings: PhoneOutputSettings())?.propertyMonths
+            }) ?? nil
+            let sample = RechargePipelineFigures(tenancyName: "Tenancy 1", month: context.today,
+                                                 utilities: [.init(name: "Example Power", kind: "electricity", isIn: true), .init(name: "Example Gas", kind: "gas", isIn: true),
+                                                             .init(name: "Example Water", kind: "water", isIn: false)],
+                                                 statementSent: false, paidByTenant: false, outstandingMinorUnits: 12_345, currencyCode: "EUR")
+            return AnyView(PropertyMonthFamiliesPreview(figures: months?.first ?? sample))
         },
     ]
 

@@ -40,4 +40,53 @@ public enum WidgetPresentation {
     public static func text(_ s: WidgetSnapshot?, _ figure: (WidgetSnapshot) -> String) -> String {
         s.map(figure) ?? emptyText
     }
+
+    // MARK: Step 18
+
+    private static func currency(code: String) -> Currency {
+        Currency(rawValue: code.lowercased()) ?? .gbp
+    }
+
+    /// An amount in whole units ("£1,235"): the small tiles have no room for pence. Rounded to the nearest unit.
+    public static func wholeText(_ minorUnits: Int, currencyCode: String) -> String {
+        let rounded = (minorUnits.magnitude + 50) / 100 * 100
+        let body = String(Money.format(Int(rounded), currency: currency(code: currencyCode)).dropLast(3))
+        return minorUnits < 0 && rounded != 0 ? "-\(body)" : body
+    }
+
+    /// "+£120" for an amount over a budget.
+    public static func overText(_ minorUnits: Int, currencyCode: String) -> String {
+        "+" + wholeText(minorUnits, currencyCode: currencyCode)
+    }
+
+    /// The share of the budget spent, "62%" (0% without a budget).
+    public static func percentText(_ fraction: Double) -> String {
+        "\(Int((fraction * 100).rounded()))%"
+    }
+
+    /// How the spending sits against the pace: "£120 over pace", "£80 under pace", "On pace".
+    public static func paceText(_ figures: MonthSpendFigures) -> String {
+        let delta = figures.overPaceMinorUnits
+        if abs(delta) < 100 { return "On pace" }
+        let amount = wholeText(abs(delta), currencyCode: figures.currencyCode)
+        return delta > 0 ? "\(amount) over pace" : "\(amount) under pace"
+    }
+
+    /// "Bills in" count, "2 of 3".
+    public static func billsText(_ figures: RechargePipelineFigures) -> String {
+        figures.billsExpected == 0 ? "None due" : "\(figures.billsIn) of \(figures.billsExpected)"
+    }
+
+    public static func sentText(_ figures: RechargePipelineFigures) -> String {
+        figures.statementSent ? "Yes" : "Not yet"
+    }
+
+    public static func paidText(_ figures: RechargePipelineFigures) -> String {
+        figures.paidByTenant ? "Paid" : "Waiting"
+    }
+
+    /// What the tenant still owes, whole units.
+    public static func outstandingText(_ figures: RechargePipelineFigures) -> String {
+        wholeText(figures.outstandingMinorUnits, currencyCode: figures.currencyCode)
+    }
 }

@@ -5,7 +5,8 @@ import SwiftUI
 struct MangoWidgetsBundle: WidgetBundle {
     var body: some Widget {
         NetWorthWidget()
-        LeftThisMonthWidget()
+        MonthSpendWidget()
+        PropertyMonthWidget()
         PaydayWidget()
     }
 }

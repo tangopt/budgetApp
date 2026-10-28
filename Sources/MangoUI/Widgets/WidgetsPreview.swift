@@ -1,7 +1,7 @@
 import SwiftUI
 import BudgetCore
 
-/// The three widgets' tiles from a snapshot, in the app's own frame (the snapshot harness's `widgets-preview` route; the
+/// The Net worth and Payday widgets' tiles from a snapshot, in the app's own frame (the snapshot harness's `widgets-preview` route; the
 /// extension draws the real ones, with the same `WidgetPresentation` words). Figures sit in tiles of the widgets' size.
 public struct WidgetsPreview: View {
     let snapshot: WidgetSnapshot
@@ -16,7 +16,6 @@ public struct WidgetsPreview: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 16) {
                 tile("Net worth", WidgetPresentation.netWorthText(snapshot))
-                tile("Left this pay month", WidgetPresentation.leftText(snapshot))
             }
             HStack(spacing: 16) {
                 Circle().fill(.fill.tertiary).frame(width: 76, height: 76)

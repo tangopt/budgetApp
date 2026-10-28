@@ -66,8 +66,8 @@ final class WidgetSnapshotTests: XCTestCase {
         for name in names { XCTAssertFalse(json.contains(name), "no account name: \(name)") }
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["version", "generatedAt", "netWorthMinorUnits", "currencyCode", "leftToSpendMinorUnits",
-                                          "paydayDate", "showFiguresOnLockScreen"],
-                       "the three figures and nothing else")
+                                          "paydayDate", "showFiguresOnLockScreen", "monthSpend", "propertyMonths"],
+                       "Home's figures and the two step 18 widgets' figures, nothing else")
     }
 
     // MARK: Settings
