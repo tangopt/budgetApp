@@ -73,7 +73,7 @@ public struct DashboardReview: Equatable, Sendable {
         /// Documents waiting for their payment (`WaitingDocuments`), lapsed ones left out.
         public var waitingForPayment: Int
         /// Documents the waiting-documents job linked after a sync since the last visit (`WaitingDocuments.recentAutoLinks`,
-        /// all of them without a last visit). Nil when not derivable.
+        /// all of them without a last visit). Nil when none, so the row is hidden.
         public var linkedSinceLastVisit: Int?
     }
 
@@ -156,12 +156,18 @@ extension DashboardReview {
             where rows.contains(where: { $0.person.id == personId && $0.year.startYear == earlier }) {
                 results.append(SelfAssessmentOverview.selfAssessment(db: db, startYear: earlier, personId: personId).0)
             }
+            let recorded = try HMRCPayment.filter(Column("personId") == personId).fetchAll(db)
             for case let result? in results where result.calculation.nextPaymentOnAccount > 0 {
                 let deadlines = result.taxYear.deadlines
-                let towards = UKTaxYear(startYear: result.taxYear.startYear + 1).label
+                let towardsYear = result.taxYear.startYear + 1
+                let towards = UKTaxYear(startYear: towardsYear).label
                 let amount = result.calculation.nextPaymentOnAccount
-                payments.append((deadlines.onlineReturnAndBalancingPayment, amount, "1st payment on account for \(towards)"))
-                payments.append((deadlines.secondPaymentOnAccount, amount, "2nd payment on account for \(towards)"))
+                // What's already recorded with HMRC for that payment comes off; nothing left, nothing due.
+                for (date, kind, name) in [(deadlines.onlineReturnAndBalancingPayment, HMRCPaymentKind.firstPaymentOnAccount, "1st"),
+                                           (deadlines.secondPaymentOnAccount, .secondPaymentOnAccount, "2nd")] {
+                    let left = amount - TaxPaymentCoverage.recorded(recorded, kind: kind, startYear: towardsYear)
+                    if left > 0 { payments.append((date, left, "\(name) payment on account for \(towards)")) }
+                }
             }
         }
         guard !people.isEmpty else { return nil }
@@ -216,7 +222,7 @@ extension DashboardReview {
     /// pays a receipt whose period covers it) — or, for a property's only tenancy this month, once the month's cash
     /// flow has a rent line (`PropertyFinance.monthBreakdown`, as `PropertyGlance` reads it). Otherwise due on the
     /// tenancy's rent day: the day of the month its last linked rent credit came (in the three months before), else
-    /// the day of the month it started, never before it starts; late after that day, not due yet until then. Not
+    /// the day of the month it started, never before it starts; late once the receipt matching window (`RentReceiptMatching.Options.windowDays`) has passed since that day, not due yet until then. Not
     /// applicable when the tenancy ends before its rent day.
     static func rentState(db: Database, tenancy: Tenancy, month: DateInterval, today: Date, onlyTenancy: Bool) throws -> PropertyRow.Rent {
         guard let tenancyId = tenancy.id else { return .notApplicable }
@@ -245,7 +251,9 @@ extension DashboardReview {
         let rentDay = min(calendar.component(.day, from: lastCredit ?? tenancy.startDate), length)
         let due = max(calendar.date(byAdding: .day, value: rentDay - 1, to: month.start)!, PropertyDates.day(tenancy.startDate))
         if let end = tenancy.endDate, PropertyDates.day(end) < due { return .notApplicable }
-        return today > due ? .late : .notDueYet
+        // Late once the receipt matching window has passed since the due day, as the iPhone's `PropertyGlance` reads it.
+        let lateAfter = calendar.date(byAdding: .day, value: RentReceiptMatching.Options().windowDays, to: due)!
+        return today > lateAfter ? .late : .notDueYet
     }
 
     // MARK: Mortgage
@@ -279,7 +287,7 @@ extension DashboardReview {
         let missing = try MissingEvidence.items(db: db, taxYear: year).filter { !$0.isForRecharges && !$0.isDone }.count
         let waiting = try WaitingDocuments.states(db: db, now: today).values.filter { $0 == .waiting }.count
         let linked = try WaitingDocuments.recentAutoLinks(db: db).filter { link in lastVisit.map { link.linkedAt > $0 } ?? true }.count
-        return EvidenceSummary(taxYear: year, missingCount: missing, waitingForPayment: waiting, linkedSinceLastVisit: linked)
+        return EvidenceSummary(taxYear: year, missingCount: missing, waitingForPayment: waiting, linkedSinceLastVisit: linked > 0 ? linked : nil)
     }
 
     // MARK: Needs attention

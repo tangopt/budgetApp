@@ -270,6 +270,16 @@ final class DashboardReviewTests: XCTestCase {
                        .init(date: UKTaxYear(startYear: 2025).deadlines.secondPaymentOnAccount, amountMinorUnits: pounds(1_216),
                              label: "2nd payment on account for 2026/27"))
 
+        // A first payment on account already recorded with HMRC comes off; the second is still due in full.
+        try db.write { db in
+            var paid = HMRCPayment(personId: personId, startYear: 2026, date: Self.date(2026, 1, 20), amountMinorUnits: pounds(1_216), kind: .firstPaymentOnAccount)
+            try paid.insert(db)
+        }
+        XCTAssertEqual(try load(Self.date(2026, 3, 1)).tax?.nextPaymentOnAccount,
+                       .init(date: UKTaxYear(startYear: 2025).deadlines.secondPaymentOnAccount, amountMinorUnits: pounds(1_216),
+                             label: "2nd payment on account for 2026/27"))
+        try db.write { db in try db.execute(sql: "DELETE FROM hmrcPayment") }
+
         // After the last deadline: none.
         XCTAssertNil(try load(Self.date(2027, 8, 15)).tax?.nextPaymentOnAccount)
 
@@ -323,8 +333,9 @@ final class DashboardReviewTests: XCTestCase {
         func rent(_ today: Date, _ key: String = "tenancy") throws -> DashboardReview.PropertyRow.Rent? {
             try load(today).property?.first { $0.tenancyId == ids[key] }?.rent
         }
-        // Due on the 1st (the day it started); today the 10th, nothing in: late. On the day itself: not due yet.
-        XCTAssertEqual(try rent(Self.date(2026, 10, 10)), .late)
+        // Due on the 1st (the day it started); late only after the 10-day matching window, as the iPhone reads it.
+        XCTAssertEqual(try rent(Self.date(2026, 10, 12)), .late)
+        XCTAssertEqual(try rent(Self.date(2026, 10, 11)), .notDueYet)
         XCTAssertEqual(try rent(Self.date(2026, 10, 1)), .notDueYet)
 
         // The property's only tenancy: a rent credit in the month's cash flow counts.
@@ -333,15 +344,16 @@ final class DashboardReviewTests: XCTestCase {
 
         // Two tenancies: only a credit linked to the tenancy's receipt counts; Room B is due on the 15th.
         try tenancy("roomB", "Room B", from: Self.date(2025, 1, 15))
-        XCTAssertEqual(try rent(Self.date(2026, 10, 10)), .late)
-        XCTAssertEqual(try rent(Self.date(2026, 10, 10), "roomB"), .notDueYet)
-        XCTAssertEqual(try rent(Self.date(2026, 10, 20), "roomB"), .late)
+        XCTAssertEqual(try rent(Self.date(2026, 10, 12)), .late)
+        XCTAssertEqual(try rent(Self.date(2026, 10, 12), "roomB"), .notDueYet)
+        XCTAssertEqual(try rent(Self.date(2026, 10, 26), "roomB"), .late)
         try linkRent("tenancy", month: Self.date(2026, 10, 1), transactionId: credit)
         XCTAssertEqual(try rent(Self.date(2026, 10, 10)), .received)
 
         // Last month's linked credit came on the 3rd: next month it's due on the 3rd.
         XCTAssertEqual(try rent(Self.date(2026, 11, 2)), .notDueYet)
-        XCTAssertEqual(try rent(Self.date(2026, 11, 4)), .late)
+        XCTAssertEqual(try rent(Self.date(2026, 11, 4)), .notDueYet)
+        XCTAssertEqual(try rent(Self.date(2026, 11, 14)), .late)
 
         // Ended before its rent day: not applicable.
         try db.write { db in try db.execute(sql: "UPDATE tenancy SET endDate = ? WHERE id = ?", arguments: [Self.date(2026, 11, 1), ids["roomB"]!]) }
@@ -376,7 +388,7 @@ final class DashboardReviewTests: XCTestCase {
         XCTAssertEqual(try db.read { db in try WaitingDocuments.state(db: db, documentId: lapsed, now: today) }, .lapsed)
         let evidence = try XCTUnwrap(try load(today).evidence)
         XCTAssertEqual(evidence.waitingForPayment, 2)
-        XCTAssertEqual(evidence.linkedSinceLastVisit, 0)
+        XCTAssertNil(evidence.linkedSinceLastVisit)
     }
 
     func testLinkedSinceLastVisit() throws {
@@ -392,7 +404,7 @@ final class DashboardReviewTests: XCTestCase {
         let today = Self.date(2026, 10, 20)
         XCTAssertEqual(try load(today).evidence?.linkedSinceLastVisit, 1)
         XCTAssertEqual(try load(today, lastVisit: Self.date(2026, 10, 5)).evidence?.linkedSinceLastVisit, 1)
-        XCTAssertEqual(try load(today, lastVisit: Self.date(2026, 10, 15)).evidence?.linkedSinceLastVisit, 0)
+        XCTAssertEqual(try load(today, lastVisit: Self.date(2026, 10, 15)).evidence?.linkedSinceLastVisit, nil)
         XCTAssertEqual(try load(today, lastVisit: Self.date(2026, 10, 5)).attention.first { $0.kind == .documentsWaiting }?.text,
                        "1 document linked automatically since your last visit")
     }
