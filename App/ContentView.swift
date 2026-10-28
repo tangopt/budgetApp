@@ -256,6 +256,8 @@ struct ContentView: View {
             // The sidebar column is hosted apart from the window's root, so the lock overlay's own hiding
             // doesn't reach it: it hides itself while covered, and takes no clicks, focus or VoiceOver.
             .lockCoverHidden(lockCovered)
+            // Wide enough for "UK Salary Calculator" and "Missing documents" with its badge.
+            .navigationSplitViewColumnWidth(min: 200, ideal: 210)
         } detail: {
             Group {
                 switch selection {
