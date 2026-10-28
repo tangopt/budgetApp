@@ -142,12 +142,14 @@ struct ScenarioChipPrompts {
         case new
         case rename(Scenario)
         case duplicate(Scenario)
+        case saveCombination(defaultName: String)
 
         var id: String {
             switch self {
             case .new: return "new"
             case .rename(let scenario): return "rename-\(scenario.id ?? -1)"
             case .duplicate(let scenario): return "duplicate-\(scenario.id ?? -1)"
+            case .saveCombination: return "save-combination"
             }
         }
     }
@@ -168,6 +170,10 @@ extension View {
             case .rename(let scenario):
                 ScenarioNameSheet(title: "Rename scenario", message: nil, actionLabel: "Rename", initialName: scenario.name) { name in
                     viewModel.rename(scenario, to: name)
+                }
+            case .saveCombination(let defaultName):
+                ScenarioNameSheet(title: "Save combination as a scenario", message: "The ticked scenarios applied together, as a new scenario you can edit.", actionLabel: "Save", initialName: defaultName) { name in
+                    viewModel.saveCombination(name: name)
                 }
             case .duplicate(let scenario):
                 ScenarioNameSheet(title: "Duplicate “\(scenario.name)”", message: "Copies the scenario with all its changes.", actionLabel: "Duplicate", initialName: "\(scenario.name) copy") { name in

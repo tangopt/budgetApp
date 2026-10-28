@@ -97,6 +97,44 @@ public enum Scenarios {
         return scenario
     }
 
+    /// A new scenario holding the budget with `scenarioIds`' changes applied together
+    /// (`ScenarioCombinator`, in list order: the later scenario wins where two change the same
+    /// budget entry). It is an ordinary scenario afterwards: every budget entry is there as an
+    /// unchanged copy, except those a change took the place of, and the changes carry their
+    /// `scenarioChange` and exceptions. Needs at least two scenarios (`notFound` otherwise, as
+    /// for an id that doesn't exist). Nothing in the budget or the source scenarios changes.
+    @discardableResult
+    public static func createCombined(db: Database, name: String, from scenarioIds: [Int64], now: Date = Date()) throws -> Scenario {
+        guard scenarioIds.count >= 2 else { throw ScenarioError.notFound }
+        let groups = try ForecastGroup.fetchAll(db)
+        let exceptions = Dictionary(grouping: try PlannedOccurrenceException.fetchAll(db), by: \.entryId)
+        func plan(_ entries: [ForecastEntry]) -> PlanInput {
+            PlanInput(entries: entries, exceptions: entries.flatMap { exceptions[$0.id!] ?? [] }, groups: groups)
+        }
+        var plans: [ScenarioPlan] = []
+        for id in scenarioIds {
+            guard let scenario = try Scenario.fetchOne(db, key: id) else { throw ScenarioError.notFound }
+            plans.append(ScenarioPlan(id: id, name: scenario.name, plan: plan(try ForecastEntry.inScenario(db, id: id))))
+        }
+        let combined = ScenarioCombinator.combine(budget: plan(try ForecastEntry.budget(db)), scenarios: plans)
+        var created = Scenario(name: try validatedName(db: db, name), createdAt: now)
+        try db.inSavepoint {
+            try created.insert(db)
+            let newId = created.id!
+            // The combined plan's entries in order: the budget's standing entries become unchanged
+            // copies, the ones a scenario changed (or added) are copied with their change marker.
+            for entry in combined.plan.entries {
+                if let id = entry.id, combined.contributions[id] != nil {
+                    try copy(db: db, entry, scenarioId: newId, sourceEntryId: entry.sourceEntryId, change: entry.scenarioChange)
+                } else {
+                    try copy(db: db, entry, scenarioId: newId, sourceEntryId: entry.id, change: nil)
+                }
+            }
+            return .commit
+        }
+        return created
+    }
+
     public static func rename(db: Database, scenarioId: Int64, to name: String) throws {
         try db.inSavepoint {
             guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }

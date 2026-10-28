@@ -25,6 +25,11 @@ struct CompareTab: View {
                 Toggle("Combined", isOn: $viewModel.showCombined)
                     .disabled(!viewModel.canCombine)
                     .help(viewModel.canCombine ? "Draw the ticked scenarios applied together" : "Tick at least two scenarios")
+                Button("Save combination as a scenario…") {
+                    chipPrompts.nameSheet = .saveCombination(defaultName: viewModel.combinationName)
+                }
+                .disabled(!(viewModel.showCombined && viewModel.canCombine))
+                .help("Keep the combined line as a scenario of its own")
                 if let note = viewModel.tickLimitNote {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }

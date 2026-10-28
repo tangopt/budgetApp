@@ -585,6 +585,31 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         return outcome
     }
 
+    /// The ticked scenarios' ids in list order: the order a saved combination applies them in.
+    private var combinableIds: [Int64] { scenarios.compactMap(\.id).filter { compareSelection.contains($0) } }
+
+    /// "A + B": the suggested name for a saved combination.
+    var combinationName: String {
+        scenarios.filter { $0.id.map(compareSelection.contains) ?? false }.map(\.name).joined(separator: " + ")
+    }
+
+    /// "Save combination as a scenario…": the ticked scenarios combined into one new scenario,
+    /// then shown alone on Compare with Combined switched off.
+    func saveCombination(name: String) -> SaveOutcome {
+        let ids = combinableIds
+        guard ids.count >= 2 else { return .failed("Tick at least two scenarios to combine.") }
+        var created: Scenario?
+        let outcome = perform { db in created = try Scenarios.createCombined(db: db, name: name, from: ids) }
+        if case .failed(let message) = outcome { errorMessage = message; return outcome }
+        if let id = created?.id {
+            showCombined = false
+            compareSelection = [id]
+            differencesSelection.insert(id)
+            tab = .compare
+        }
+        return outcome
+    }
+
     /// "Try in Forecast…" saved: the offer as a new scenario, shown ticked on the Compare tab.
     func createOffer(name: String, spec: OfferScenarioSpec) -> SaveOutcome {
         var created: Scenario?
