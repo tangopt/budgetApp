@@ -139,6 +139,53 @@ public struct ImportApplier: Sendable {
         }
     }
 
+    /// Step 19: the same import on a device (the iPad), its one transaction run through `writer`
+    /// (`DeviceWriter.writeWithActor`): as the app user bound to the device, with Import's permission and origin, and
+    /// every protected year checked (`FiledYearEditCheck`, no resolution: a change to a filed or paid return throws
+    /// `DeviceWriteRefusal.filedYear` and writes nothing), besides the run's own backstop. No backup and no source
+    /// folders (the files are the device's staged copies). `edit`: what the filed-year question calls it.
+    public func apply(_ plan: ImportPlan, entryPoint: String, writer: DeviceWriter, edit: String, reasons: [UUID: String] = [:],
+                      now: Date = Date()) async throws -> ImportRunSummary {
+        guard plan.canConfirm else { throw ImportApplyError.notConfirmable }
+        let applied = Self.appliedItems(plan)
+        guard !applied.isEmpty, !applied.contains(where: ImportResolutions.isUnreadable) else { throw ImportApplyError.notConfirmable }
+        try await dbQueue.read { db in
+            try SyncImportGate.check(db: db, now: now)
+            try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
+            try Self.checkCurrent(db: db, applied)
+        }
+        let placed = PlacedCopies()
+        let applier = self
+        do {
+            return try await writer.writeWithActor(.import, origin: .import, edit: edit, scope: .everyYear) { db, actor in
+                var files: [URL] = []
+                defer { placed.append(files) }
+                do {
+                    return try applier.applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons,
+                                                appUserId: actor.appUserId, backupPath: nil, folderRoots: [:], now: now, placed: &files)
+                } catch {
+                    try? ImportChangeCapture.cancel(db: db)
+                    throw error
+                }
+            }
+        } catch {
+            do {
+                try library.removeOrphanedFiles(placedFiles: placed.urls)
+            } catch let cleanup {
+                Self.log.error("Import rolled back; removing the copies it placed failed: \(String(describing: cleanup), privacy: .public)")
+            }
+            throw error
+        }
+    }
+
+    /// The copies a device's import placed, for removal when its write rolls back.
+    private final class PlacedCopies: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [URL] = []
+        func append(_ urls: [URL]) { lock.withLock { stored += urls } }
+        var urls: [URL] { lock.withLock { stored } }
+    }
+
     private static let log = Logger(subsystem: "com.personal.budget", category: "DocumentImport")
 
     /// Runs `body` inside the security scope of each source folder in `folderIds`, with where
@@ -325,6 +372,7 @@ public struct ImportApplier: Sendable {
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
         try Self.checkCurrent(db: db, applied)
+        try Self.checkRowsStillNew(db: db, applied)
         try SyncImportGate.require(db: db, now: now)
         // Everything the run writes from here on is one sync batch (sync spec §5.2).
         let syncMark = try SyncBatch.mark(db: db)
@@ -459,6 +507,31 @@ public struct ImportApplier: Sendable {
         try run.update(db)
         try SyncBatch.open(runId: runId, since: syncMark, db: db)
         return summary
+    }
+
+    /// `ImportApplyError.planOutdated`'s detail when rows the review counted as new are in Mango now.
+    public static let rowsChangedDetail = "rows it counted as new are in Mango now"
+
+    /// Step 19: the duplicate check again, inside the write. Two devices import now, so between the review and the
+    /// write another device's import of the same rows may have arrived (a pull): a statement row the review staged as
+    /// new whose fingerprint its account now holds refuses the whole plan (`planOutdated(rowsChangedDetail)`).
+    static func checkRowsStillNew(db: Database, _ items: [ImportItem]) throws {
+        for item in items {
+            let account: Int64?
+            let staged: [StagedTransaction]
+            switch item.effect {
+            case .bbvaStatement(let effect): (account, staged) = (effect.currentAccountId, effect.staged)
+            case .ukStatement(let effect): (account, staged) = (effect.accountId, effect.staged)
+            default: continue
+            }
+            guard let account, !staged.isEmpty else { continue }
+            let fingerprints = staged.map(\.fingerprint)
+            let marks = Array(repeating: "?", count: fingerprints.count).joined(separator: ", ")
+            let found = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM \(Transaction.databaseTableName) WHERE accountId = ? AND fingerprint IN (\(marks))
+                """, arguments: StatementArguments([account]) + StatementArguments(fingerprints)) ?? 0
+            if found > 0 { throw ImportApplyError.planOutdated(rowsChangedDetail) }
+        }
     }
 
     /// The library metadata an applied item is filed with (`metadata`), a custom kind's as it is

@@ -22,7 +22,8 @@ enum PhoneBrowser {
     /// The strip's sites once the database is open: the household's (step 10 Task 6: synced, each add and remove written
     /// through the device writer as Property), with the sites saved on this device before moved into them once. With
     /// demo data (read-only, never synced), demo data's own, apart from this device's (never adopted; cleared on purge).
-    static func attach(_ environment: PhoneEnvironment) async {
+    /// `leases`: the import lease of the sync engine running now (step 19: a statement imported on the iPad).
+    static func attach(_ environment: PhoneEnvironment, leases: @escaping @Sendable () async -> (any ImportLeasing)?) async {
         guard let browser = shared else { return }
         if environment.isDemo {
             await browser.useDemoSites()
@@ -31,8 +32,15 @@ enum PhoneBrowser {
             // device writer into this iPad's library.
             if let folder = try? PhoneDatabase.libraryFolder() {
                 let library = EvidenceLibrary(root: folder, database: environment.dbQueue)
+                // Step 19: a bank statement imported here under the household's import lease (the engine's device id).
+                var statements: PadStatementImport?
+                if let deviceId = try? await environment.dbQueue.write({ db in try LocalSetting.phoneDeviceId(db) }) {
+                    let device = SyncDevice(id: deviceId, name: UIDevice.current.name)
+                    statements = PadStatementImport(dbQueue: environment.dbQueue, library: library,
+                                                    leases: CurrentEngineLeasing(device: device, current: leases))
+                }
                 browser.checkSource = CheckAndLinkSource(engine: CheckAndLink(dbQueue: environment.dbQueue, library: library),
-                                                         writer: environment.writer)
+                                                         writer: environment.writer, statements: statements)
             }
             await browser.use(GRDBSavedSiteStore(writer: environment.writer, reader: environment.dbQueue), adopting: LocalSavedSiteStore())
         }

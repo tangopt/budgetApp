@@ -11,6 +11,16 @@ public protocol CheckAndLinking: Sendable {
     func save(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
               now: Date) async throws -> CheckAndLinkResult
     func discard(_ item: TrayItem?)
+    /// Step 19: the checked bank statement imported here (`CheckAndLink.importStatement`).
+    func importStatement(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
+                         importer: PadStatementImport, now: Date) async throws -> CheckAndLinkResult
+}
+
+extension CheckAndLinking {
+    public func importStatement(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
+                                importer: PadStatementImport, now: Date) async throws -> CheckAndLinkResult {
+        throw CheckAndLinkRefusal.macOnly("Bank statement")
+    }
 }
 
 extension CheckAndLink: CheckAndLinking {}
@@ -19,10 +29,13 @@ extension CheckAndLink: CheckAndLinking {}
 public struct CheckAndLinkSource: Sendable {
     public var engine: any CheckAndLinking
     public var writer: DeviceWriter
+    /// Step 19: imports bank statements here under the household's import lease; nil: statements only go to the Mac.
+    public var statements: PadStatementImport?
 
-    public init(engine: any CheckAndLinking, writer: DeviceWriter) {
+    public init(engine: any CheckAndLinking, writer: DeviceWriter, statements: PadStatementImport? = nil) {
         self.engine = engine
         self.writer = writer
+        self.statements = statements
     }
 
     /// Check is offered with Edit on Property and Documents (a utility bill is recorded in the one and filed in the other).
@@ -46,6 +59,13 @@ public enum CheckAndLinkSheetCopy {
     public static let noPaymentToLink = "Don't link a payment"
     public static let statementsOnTheMac = "Statements are imported on the Mac for now. Share this one to the Mac to import it there."
     public static let statementNote = "Save sends this statement to the Mac, which imports it."
+    /// Step 19: the statement can be imported here.
+    public static func importNote(rows: Int, skipped: Int) -> String {
+        let added = "Import adds \(rows) new \(rows == 1 ? "row" : "rows") to this account"
+        return skipped > 0 ? added + "; \(skipped) already in Mango \(skipped == 1 ? "is" : "are") skipped." : added + "."
+    }
+    public static let finishOnMacNote = "Finish on the Mac puts it on the Mac’s waiting list to import there."
+    public static let sendToMacNote = "Send to the Mac sends this statement to the Mac, which imports it."
 
     /// Above the fields Save will count as checked.
     public static func checkBeforeSave(_ names: [String]) -> String {
@@ -104,34 +124,47 @@ public final class CheckAndLinkModel {
     /// Why Save didn't save, in plain words (shown with `PadRefusalBanner`); nil when it hasn't been refused.
     public var refusal: String?
     public private(set) var isWorking = false
+    /// Step 19: what the sheet offers for a bank statement (nil: statements only go to the Mac, Save sends it).
+    public private(set) var route: PadImportRoute?
+    /// The household's admin, who may hand a statement to the Mac ("Finish on the Mac").
+    public private(set) var canFinishOnMac = false
+    /// The run a statement imported here made (Undo import).
+    public private(set) var importedRunId: Int64?
 
     @ObservationIgnored private let engine: (any CheckAndLinking)?
     @ObservationIgnored private let tray: DownloadsTray
     @ObservationIgnored private let writer: DeviceWriter?
     @ObservationIgnored private let propertyId: Int64?
+    @ObservationIgnored private let statements: PadStatementImport?
     @ObservationIgnored private let now: () -> Date
 
     /// `propertyId`: the property the file was fetched for (a provider of another property is then asked about).
+    /// `statements`: imports a bank statement here (step 19); nil: Save sends it to the Mac.
     public init(item: TrayItem, tray: DownloadsTray, engine: any CheckAndLinking, writer: DeviceWriter, propertyId: Int64? = nil,
-                now: @escaping () -> Date = { Date() }) {
+                statements: PadStatementImport? = nil, now: @escaping () -> Date = { Date() }) {
         self.item = item
         self.tray = tray
         self.engine = engine
         self.writer = writer
         self.propertyId = propertyId
+        self.statements = statements
         self.now = now
     }
 
-    /// For the snapshot routes: a proposal, and a refusal, as given.
-    public init(item: TrayItem, tray: DownloadsTray, proposal: CheckAndLinkProposal, refusal: String? = nil) {
+    /// For the snapshot routes: a proposal, a refusal and (a statement) its route, as given.
+    public init(item: TrayItem, tray: DownloadsTray, proposal: CheckAndLinkProposal, refusal: String? = nil,
+                route: PadImportRoute? = nil, canFinishOnMac: Bool = false) {
         self.item = item
         self.tray = tray
         engine = nil
         writer = nil
         propertyId = nil
+        statements = nil
         now = { Date() }
         self.proposal = proposal
         self.refusal = refusal
+        self.route = route
+        self.canFinishOnMac = canFinishOnMac
         phase = .ready
     }
 
@@ -152,6 +185,7 @@ public final class CheckAndLinkModel {
         defer { isWorking = false }
         do {
             proposal = try await engine.propose(item, in: tray, propertyId: propertyId)
+            await refreshRoute()
             phase = .ready
         } catch {
             phase = .failed(Self.text(for: error))
@@ -177,6 +211,72 @@ public final class CheckAndLinkModel {
             proposal = try await body()
             if !edits.contains(edit) { edits.append(edit) }
             refusal = nil
+        } catch {
+            refusal = Self.text(for: error)
+        }
+    }
+
+    /// Step 19: for a bank statement, what the sheet offers (import here, waiting for another device, offline, send to
+    /// the Mac); read again after a refused import. Reads the lease; writes nothing.
+    public func refreshRoute() async {
+        guard let statements, let writer, case .statement(let statement)? = proposal else { return }
+        route = await statements.route(accountId: statement.accountId, writer: writer)
+        canFinishOnMac = (try? await writer.actor())?.isAdmin ?? false
+    }
+
+    /// Whether Import is offered as ready: a statement that may be imported here, read, nothing left to answer.
+    public var canImport: Bool { route == .importHere && canSave }
+
+    /// Why Import waits ("Mac is importing (started 10:42)…", "Connect to the internet to import"); nil otherwise.
+    public var importWaitMessage: String? {
+        switch route {
+        case .heldBy(let name, let since): return PadStatementImportCopy.heldBy(name, since: since)
+        case .offline: return PadStatementImportCopy.offline
+        default: return nil
+        }
+    }
+
+    /// Imports the statement here (step 19). True when it imported; a refusal stays in `refusal` (and a lease another
+    /// device took, or a lost connection, updates the route).
+    @discardableResult
+    public func importStatement() async -> Bool {
+        guard canImport, let engine, let writer, let statements, let proposal else { return false }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let result = try await engine.importStatement(proposal, item: item, tray: tray, writer: writer, importer: statements, now: now())
+            refusal = nil
+            importedRunId = result.importRunId
+            phase = .saved(result.summary)
+            return true
+        } catch {
+            refusal = Self.text(for: error)
+            switch error as? PadImportRefusal {
+            case .heldBy(let name, let since)?: route = .heldBy(deviceName: name, since: since)
+            case .offline?: route = .offline
+            case .noImportAccess?: route = .sendToMac
+            case .foundChanges?:
+                // Another device's import arrived: the statement is read again, the refusal kept above it.
+                isWorking = false
+                phase = .reading
+                await start()
+                refusal = PadStatementImportCopy.foundChanges
+            case .stillSyncing?, nil: break
+            }
+            return false
+        }
+    }
+
+    /// Undoes the import just made here (its run), under the lease. A refusal stays in `refusal`.
+    public func undoImport() async {
+        guard let runId = importedRunId, let writer, let statements, !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let result = try await statements.undo(runId: runId, writer: writer, now: now())
+            refusal = nil
+            importedRunId = nil
+            phase = .saved(PadStatementImportCopy.undone(result))
         } catch {
             refusal = Self.text(for: error)
         }
