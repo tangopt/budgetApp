@@ -688,12 +688,23 @@ enum SnapshotCatalog {
             },
             screen("budget", "main", "Budget grid", .budgetGrid, settle: 1.5),
             screen("forecast", "compare", "Forecast: Compare", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .compare },
-            // Four scenarios ticked (two added to the demo's two, one with a long name) and Combined on.
-            screen("forecast", "compare_combined", "Forecast: Compare, four scenarios and Combined", .forecast, settle: 1.5) { models, _ in
-                _ = models.scenarioLab.createScenario(name: "A scenario with a rather long name to truncate in the middle")
-                _ = models.scenarioLab.createScenario(name: "Second extra")
-                models.scenarioLab.tab = .compare
-                models.scenarioLab.showCombined = true
+            // Four scenarios ticked and Combined on: the demo's two, and two job offers that both change the
+            // salary and the pension (one with a long name), so the overlap notices show, as in the 2026-10-28 report.
+            screen("forecast", "compare_combined", "Forecast: Compare, four scenarios and Combined", .forecast, settle: 3) { models, _ in
+                let lab = models.scenarioLab
+                if let choices = try? lab.offerChoices(),
+                   let salary = choices.salaries.max(by: { $0.amountMinorUnits < $1.amountMinorUnits })?.id {
+                    func offer(_ gross: Int, gap: Int) -> OfferScenarioSpec {
+                        OfferScenarioSpec(current: SalaryInputs(grossAnnual: 5_000_000, taxYearStart: 2026),
+                                          offer: SalaryInputs(grossAnnual: gross, taxYearStart: 2026),
+                                          salaryEntryId: salary, pensionEntryId: choices.pensions.first?.id,
+                                          startMonth: MonthRange.of(year: 2027, month: 1).start, noticeGapMonths: gap)
+                    }
+                    _ = lab.createOffer(name: "Offer at 60k", spec: offer(6_000_000, gap: 0))
+                    _ = lab.createOffer(name: "An offer with a rather long name to truncate in the middle", spec: offer(6_600_000, gap: 1))
+                }
+                lab.tab = .compare
+                lab.showCombined = true
             },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
             screen("forecast", "grid", "Forecast: Grid", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .grid },
