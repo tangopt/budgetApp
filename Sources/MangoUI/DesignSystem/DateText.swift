@@ -28,10 +28,11 @@ public enum PhoneDateFormat {
 /// the wrap probe.
 public struct DateText: View {
     public let date: Date?
-    public var font: Font
+    public var font: PhoneTextStyle
     public var fit: FigureFit
+    @Environment(\.phoneTypeface) private var face
 
-    public init(_ date: Date?, font: Font = .body, fit: FigureFit = .natural) {
+    public init(_ date: Date?, font: PhoneTextStyle = .body, fit: FigureFit = .natural) {
         self.date = date
         self.font = font
         self.fit = fit
@@ -40,7 +41,7 @@ public struct DateText: View {
     public var body: some View {
         let text = PhoneDateFormat.day(date)
         Text(text)
-            .font(font.monospacedDigit())
+            .font(TypefaceResolver.font(face, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
             .foregroundStyle(date == nil ? Color.secondary : Color.primary)
             .modifier(FigureFitModifier(fit: fit, kind: "DateText", text: text, source: nil))
             .accessibilityLabel(PhoneDateFormat.spoken(date))

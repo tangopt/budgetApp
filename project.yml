@@ -48,7 +48,14 @@ targets:
     type: application
     platform: iOS
     deploymentTarget: "26.0"
-    sources: [Phone]
+    sources:
+      - path: Phone
+        excludes: ["Fonts/**"]
+      # The bundled typefaces (step 16) as one folder, Mango.app/Fonts/<Family>/ with each family's OFL.txt beside
+      # its files; BundledFonts.register() registers them at launch.
+      - path: Phone/Fonts
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: BudgetCore
         product: BudgetCore

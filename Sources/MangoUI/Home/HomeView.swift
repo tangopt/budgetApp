@@ -44,7 +44,7 @@ public struct HomeView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onSettings) {
                         Image(systemName: "person.crop.circle")
-                            .font(.title2)
+                            .mangoFont(.title2)
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .accessibilityLabel("Settings")

@@ -54,7 +54,7 @@ struct PadBillsGridView: View {
                     Text("No bills in \(String(model.year)).").foregroundStyle(.secondary)
                 } else {
                     table(grid, rows: rows, months: shown, all: months)
-                    Text(grid.summaryText).font(.subheadline).foregroundStyle(.secondary)
+                    Text(grid.summaryText).mangoFont(.subheadline).foregroundStyle(.secondary)
                 }
             }
         }
@@ -66,10 +66,10 @@ struct PadBillsGridView: View {
             ForEach(UtilityBillStage.padLegend, id: \.self) { stage in
                 HStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 4, style: .continuous).fill(stage.padColor(theme).opacity(0.25))
-                        .overlay(Image(systemName: stage.padSymbol).font(.caption2.weight(.bold)).foregroundStyle(stage.padColor(theme)))
+                        .overlay(Image(systemName: stage.padSymbol).mangoFont(.caption2, weight: .bold).foregroundStyle(stage.padColor(theme)))
                         .frame(width: 22, height: 22)
                         .accessibilityHidden(true)
-                    Text(stage.padName).font(.footnote).lineLimit(1)
+                    Text(stage.padName).mangoFont(.footnote).lineLimit(1)
                 }
             }
         }
@@ -101,7 +101,7 @@ struct PadBillsGridView: View {
                 VStack(alignment: .leading, spacing: Self.spacing) {
                     Color.clear.frame(width: Self.providerWidth, height: Self.headerHeight)
                     ForEach(rows) { row in
-                        Text(row.name).font(.subheadline.weight(.medium))
+                        Text(row.name).mangoFont(.subheadline, weight: .medium)
                             .lineLimit(1).truncationMode(.middle)
                             .frame(width: Self.providerWidth, height: Self.cellHeight, alignment: .leading)
                     }
@@ -109,7 +109,7 @@ struct PadBillsGridView: View {
                 VStack(alignment: .leading, spacing: Self.spacing) {
                     HStack(spacing: Self.spacing) {
                         ForEach(months, id: \.self) { month in
-                            Text(Self.monthTitle(month)).font(.subheadline.weight(.semibold))
+                            Text(Self.monthTitle(month)).mangoFont(.subheadline, weight: .semibold)
                                 .frame(width: Self.cellWidth, height: Self.headerHeight, alignment: .leading)
                         }
                     }
@@ -134,9 +134,9 @@ struct PadBillsGridView: View {
             Button { model.select(cell) } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
-                        Image(systemName: stage.padSymbol).font(.caption2.weight(.bold)).foregroundStyle(color)
+                        Image(systemName: stage.padSymbol).mangoFont(.caption2, weight: .bold).foregroundStyle(color)
                         Spacer(minLength: 0)
-                        if cell.bills.count > 1 { Text("×\(cell.bills.count)").font(.caption2).foregroundStyle(.secondary) }
+                        if cell.bills.count > 1 { Text("×\(cell.bills.count)").mangoFont(.caption2).foregroundStyle(.secondary) }
                     }
                     MoneyText(minorUnits: total, currency: model.currency, role: .neutral, fit: .shrink(), font: .subheadline)
                 }

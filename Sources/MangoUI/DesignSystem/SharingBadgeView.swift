@@ -24,7 +24,7 @@ public struct SharingBadgeView: View {
             Image(systemName: "lock.fill")
                 .accessibilityHidden(true)
         }
-        .font(.footnote)
+        .mangoFont(.footnote)
         .foregroundStyle(.secondary)
         .labelStyle(.titleAndIcon)
     }

@@ -73,7 +73,7 @@ struct TransactionEditForm: View {
                     MoneyText(minorUnits: shown.amount.minorUnits, currency: shown.currency, role: shown.amount.role,
                               fit: .shrink(), font: .title.weight(.semibold))
                     Text(shown.description)
-                        .font(.headline)
+                        .mangoFont(.headline)
                         .lineLimit(3)
                         .truncationMode(.middle)
                     (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(spacing: 6))) {
@@ -82,7 +82,7 @@ struct TransactionEditForm: View {
                             .truncationMode(.middle)
                         DateText(shown.date, font: .subheadline)
                     }
-                    .font(.subheadline)
+                    .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)

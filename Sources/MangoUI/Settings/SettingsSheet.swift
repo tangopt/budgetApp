@@ -74,6 +74,7 @@ public enum SettingsDemoRow {
 public struct SettingsSheet: View {
     @Binding var appearance: PhoneAppearance
     @Binding var themeId: String
+    @Binding var fontId: String
     let iCloud: ICloudAccountState
     /// Whether this iPhone holds the household key (nil: sync is off here).
     let keyHeld: Bool?
@@ -97,7 +98,7 @@ public struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var syncing = false
 
-    public init(appearance: Binding<PhoneAppearance>, themeId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
+    public init(appearance: Binding<PhoneAppearance>, themeId: Binding<String>, fontId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
                 onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil,
                 outputs: Binding<PhoneOutputSettings>? = nil, notificationAccess: NotificationAuthorization = .notDetermined,
@@ -110,6 +111,7 @@ public struct SettingsSheet: View {
         self.outputs = outputs
         _appearance = appearance
         _themeId = themeId
+        _fontId = fontId
         self.iCloud = iCloud
         self.keyHeld = keyHeld
         self.status = status
@@ -155,6 +157,7 @@ public struct SettingsSheet: View {
                         ForEach(PhoneTheme.all) { Text($0.name).tag($0.id) }
                     }
                     .frame(minHeight: 44)
+                    FontPickerSection(fontId: $fontId)
                 }
                 if let sharing {
                     SharingSection(state: sharing)
@@ -180,11 +183,13 @@ public struct SettingsSheet: View {
                 Section("About") {
                     LabeledContent("Version", value: version)
                         .frame(minHeight: 44)
+                    NavigationLink("Font licences") { FontLicencesView() }
+                        .frame(minHeight: 44)
                     VStack(alignment: .leading, spacing: 4) {
                         SyncStatusLine(status: status, now: now())
                         if let detail = SyncStatusCopy.detail(status) {
                             Text(detail)
-                                .font(.caption)
+                                .mangoFont(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }

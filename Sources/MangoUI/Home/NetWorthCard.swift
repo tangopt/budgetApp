@@ -16,7 +16,7 @@ struct NetWorthCard: View {
         Card(title: "Net worth") {
             if let current = netWorth.currentNetWorthMinorUnits {
                 MoneyText(minorUnits: current, currency: .gbp, role: .balance, fit: .shrink())
-                    .font(.largeTitle.weight(.semibold))
+                    .mangoFont(.largeTitle, weight: .semibold)
                 if let change = netWorth.changeVsPreviousMonthMinorUnits {
                     FigureRow(label: "Since last month") {
                         MoneyText(minorUnits: change, currency: .gbp, role: .income)

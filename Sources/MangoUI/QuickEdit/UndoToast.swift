@@ -22,13 +22,13 @@ struct UndoToastView: View {
     var body: some View {
         HStack(spacing: 12) {
             Text(message)
-                .font(.callout)
+                .mangoFont(.callout)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if canUndo {
                 Button("Undo", action: onUndo)
-                    .font(.callout.weight(.semibold))
+                    .mangoFont(.callout, weight: .semibold)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("undo-button")
             }

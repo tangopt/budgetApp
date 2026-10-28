@@ -85,7 +85,7 @@ public struct BrowserView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Sites & downloads").font(.title3.weight(.semibold)).lineLimit(1)
+            Text("Sites & downloads").mangoFont(.title3, weight: .semibold).lineLimit(1)
             Spacer(minLength: 8)
             Button {
                 showsTray.toggle()
@@ -109,12 +109,12 @@ public struct BrowserView: View {
             }
         } else {
             VStack(spacing: 10) {
-                Image(systemName: RowAction.openSite.systemImage).font(.largeTitle).foregroundStyle(.secondary)
+                Image(systemName: RowAction.openSite.systemImage).mangoFont(.largeTitle).foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text(model.sites.isEmpty ? "Add the sites you fetch bills and statements from." : "Choose a site above.")
-                    .font(.headline).multilineTextAlignment(.center)
+                    .mangoFont(.headline).multilineTextAlignment(.center)
                 Text("Sign in on the site by typing or pasting; Mango never keeps your password. Every PDF you download lands in Downloads.")
-                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .mangoFont(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                 if model.sites.isEmpty, model.canEditSites {
                     Button("Add site") { addingSite = true }.buttonStyle(.pad(.primary))
@@ -129,8 +129,8 @@ public struct BrowserView: View {
             iconButton("chevron.backward", label: "Back", enabled: model.canGoBack) { model.goBack() }
             iconButton("chevron.forward", label: "Forward", enabled: model.canGoForward) { model.goForward() }
             HStack(spacing: 6) {
-                Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
-                Text(model.currentHost ?? "").font(.subheadline).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "lock.fill").mangoFont(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+                Text(model.currentHost ?? "").mangoFont(.subheadline).lineLimit(1).truncationMode(.middle)
                 if model.isLoading { ProgressView().controlSize(.small) }
             }
             .padding(.horizontal, 10).frame(minHeight: 36)
@@ -179,14 +179,14 @@ public struct BrowserView: View {
     private var placeholder: some View {
         Rectangle().fill(Color.secondary.opacity(0.06))
             .overlay {
-                Text(model.currentSite?.name ?? "").font(.title3).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(model.currentSite?.name ?? "").mangoFont(.title3).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     .padding()
             }
     }
 
     private func iconButton(_ symbol: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.body.weight(.semibold))
+            Image(systemName: symbol).mangoFont(.body, weight: .semibold)
                 .frame(width: PadButtonSize.small.minimumTapTarget, height: PadButtonSize.small.minimumTapTarget)
                 .contentShape(Rectangle())
         }

@@ -78,7 +78,7 @@ public struct SharingSection: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.footnote)
+                        .mangoFont(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }

@@ -11,7 +11,9 @@
 # This script copies them to <outDir>, prints the report's first two lines and uninstalls the snapshot build.
 # Never the phone's real data, the Keychain or iCloud: the snapshot build is unsigned and has no entitlements.
 #
-#   scripts/render-phone-snapshots.sh <outDir> [--device ipad] [--only gallery,home]
+#   scripts/render-phone-snapshots.sh <outDir> [--device ipad] [--only gallery,home] [--font <id>]
+#
+# --font <id> (step 16): renders in that FontCatalog typeface (sf-pro by default; lexend, ibm-plex-mono, …).
 #
 # --device ipad (step 8): boots IOS_SIM_DEVICE (default "iPad Pro 13-inch (M5)") and renders the iPad routes
 # (DemoRoute.pad) at 834×1194, 1194×834, 1032×1376 and 1376×1032, light and dark, at .large and .xxxLarge, as
@@ -26,11 +28,18 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -* ]]; then
-    echo "usage: $0 <outDir> [--device ipad] [--only a,b]" >&2
+    echo "usage: $0 <outDir> [--device ipad] [--only a,b] [--font id]" >&2
     exit 2
 fi
 OUT_ARG="$1"
 shift
+# --font <id> goes to the runner through an environment variable (SIMCTL_CHILD_ passes it into the app).
+FONT_ID="sf-pro"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--font" && $# -ge 2 ]]; then FONT_ID="$2"; shift 2; else ARGS+=("$1"); shift; fi
+done
+set -- "${ARGS[@]}"
 [[ "$OUT_ARG" == /* ]] || OUT_ARG="$PWD/$OUT_ARG"
 OUT="${OUT_ARG:A}"
 MARKER="$OUT/.mango-phone-snapshots"
@@ -92,7 +101,7 @@ xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 xcrun simctl install "$UDID" "$APP"
 # --console-pty waits for the app to exit.
 RUN_LOG="$SCRATCH/render-run.log"
-xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" --render-snapshots "$@" > "$RUN_LOG" 2>&1 || true
+SIMCTL_CHILD_MANGO_SNAPSHOT_FONT="$FONT_ID" xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" --render-snapshots "$@" > "$RUN_LOG" 2>&1 || true
 
 CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)"
 SNAPS="$CONTAINER/Documents/snapshots"

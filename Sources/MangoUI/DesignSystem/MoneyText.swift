@@ -80,11 +80,12 @@ public struct MoneyText: View {
     public let currency: Currency
     public let role: MoneyRole
     public let fit: FigureFit
-    public var font: Font
+    public var font: PhoneTextStyle
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.phoneTypeface) private var face
 
     public init(minorUnits: Int, currency: Currency, role: MoneyRole, fit: FigureFit = .natural,
-                font: Font = .body) {
+                font: PhoneTextStyle = .body) {
         self.minorUnits = minorUnits
         self.currency = currency
         self.role = role
@@ -92,17 +93,17 @@ public struct MoneyText: View {
         self.font = font
     }
 
-    /// The same amount in another font (a card's headline figure).
-    public func font(_ font: Font) -> MoneyText {
+    /// The same amount at another style (a card's headline figure), in the typeface's figures.
+    public func mangoFont(_ style: Font.TextStyle, weight: Font.Weight? = nil) -> MoneyText {
         var copy = self
-        copy.font = font
+        copy.font = PhoneTextStyle(style, weight: weight)
         return copy
     }
 
     public var body: some View {
         let shown = MoneyPresentation(minorUnits: minorUnits, currency: currency, role: role)
         Text(shown.text)
-            .font(font.monospacedDigit())
+            .font(TypefaceResolver.font(face, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
             .foregroundStyle(theme.color(shown.tone))
             .modifier(FigureFitModifier(fit: fit, kind: "MoneyText", text: shown.text, source: nil))
             .accessibilityLabel(shown.spoken)

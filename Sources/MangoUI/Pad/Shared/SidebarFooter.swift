@@ -55,10 +55,10 @@ struct SidebarFooter: View {
             HStack(spacing: 10) {
                 avatarView
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(userName).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    Text(userName).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
                     HStack(spacing: 5) {
                         Circle().fill(dotColor).frame(width: 7, height: 7).accessibilityHidden(true)
-                        Text(line.figuresUnbroken).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(line.figuresUnbroken).mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 4)
@@ -73,7 +73,7 @@ struct SidebarFooter: View {
             if let avatar {
                 avatar.resizable().scaledToFill()
             } else {
-                Text(Self.initials(userName)).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                Text(Self.initials(userName)).mangoFont(.subheadline, weight: .semibold).foregroundStyle(.white)
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(theme.accent)
             }
         }
@@ -83,7 +83,7 @@ struct SidebarFooter: View {
 
     private var settingsButton: some View {
         Button(action: onSettings) {
-            Image(systemName: "gearshape").font(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
+            Image(systemName: "gearshape").mangoFont(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Settings").help("Settings")

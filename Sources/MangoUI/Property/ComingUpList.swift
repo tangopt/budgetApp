@@ -21,7 +21,7 @@ struct ComingUpList: View {
                         MoneyText(minorUnits: amount, currency: obligation.currency ?? currency, role: .due)
                     } else {
                         Text(PropertyCopy.amountNotKnown)
-                            .font(.subheadline)
+                            .mangoFont(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }

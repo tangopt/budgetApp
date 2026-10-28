@@ -119,7 +119,7 @@ public struct MonthView: View {
                         HStack(spacing: 8) {
                             CategoryRow(row: row)
                             Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
+                                .mangoFont(.footnote, weight: .semibold)
                                 .foregroundStyle(.tertiary)
                                 .accessibilityHidden(true)
                         }
@@ -162,10 +162,10 @@ struct MonthHeader: View {
             arrow("chevron.left", label: "Previous month", enabled: canShowPrevious, action: onPrevious)
             VStack(spacing: 2) {
                 Text(MonthCopy.title(page.review.month).figuresUnbroken)
-                    .font(.title3.weight(.semibold))
+                    .mangoFont(.title3, weight: .semibold)
                     .accessibilityAddTraits(.isHeader)
                 Text(MonthCopy.range(page.review.range).figuresUnbroken)
-                    .font(.subheadline)
+                    .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .multilineTextAlignment(.center)
@@ -179,7 +179,7 @@ struct MonthHeader: View {
     private func arrow(_ symbol: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.title3.weight(.semibold))
+                .mangoFont(.title3, weight: .semibold)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -224,7 +224,7 @@ struct MonthSummaryGrid: View {
     private func cell(_ tile: MonthSummaryTile) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(tile.label)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             MoneyText(minorUnits: tile.minorUnits, currency: .gbp, role: tile.role, fit: .shrink(),

@@ -42,10 +42,10 @@ struct PadTenancyDetailView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(tenancy.referenceLabel).font(.title3.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                Text(tenancy.referenceLabel).mangoFont(.title3, weight: .semibold).lineLimit(1).truncationMode(.middle)
                     .accessibilityAddTraits(.isHeader)
                 if let number = tenancy.contractNumber, !number.isEmpty {
-                    Text("Contract \(number)".figuresUnbroken).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Text("Contract \(number)".figuresUnbroken).mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
             Spacer(minLength: 8)
@@ -77,7 +77,7 @@ struct PadTenancyDetailView: View {
 
     private var tenantTile: some View {
         tile("Tenant") {
-            Text(tenancy.tenantName.flatMap { $0.isEmpty ? nil : $0 } ?? "—").font(.title3.weight(.semibold))
+            Text(tenancy.tenantName.flatMap { $0.isEmpty ? nil : $0 } ?? "—").mangoFont(.title3, weight: .semibold)
                 .lineLimit(1).truncationMode(.middle)
         } caption: {
             if let email = tenancy.tenantEmail, !email.isEmpty { Text(email).lineLimit(1).truncationMode(.middle) }
@@ -89,7 +89,7 @@ struct PadTenancyDetailView: View {
             if let rent = model.rentInForce {
                 MoneyText(minorUnits: rent.monthlyAmountMinorUnits, currency: currency, role: .neutral, fit: .shrink(), font: .title3.weight(.semibold))
             } else {
-                Text("—").font(.title3.weight(.semibold))
+                Text("—").mangoFont(.title3, weight: .semibold)
             }
         } caption: {
             if let rent = model.rentInForce {
@@ -102,7 +102,7 @@ struct PadTenancyDetailView: View {
 
     private var depositTile: some View {
         tile("Deposit") {
-            Text(Self.months(tenancy.depositMonths)).font(.title3.weight(.semibold)).lineLimit(1)
+            Text(Self.months(tenancy.depositMonths)).mangoFont(.title3, weight: .semibold).lineLimit(1)
         } caption: {
             Text("+ \(Self.months(tenancy.advanceRentMonths)) advance rent")
         }
@@ -110,7 +110,7 @@ struct PadTenancyDetailView: View {
 
     private var datesTile: some View {
         tile("From") {
-            Text(PhoneDateFormat.day(tenancy.startDate).unbroken).font(.title3.weight(.semibold)).lineLimit(1)
+            Text(PhoneDateFormat.day(tenancy.startDate).unbroken).mangoFont(.title3, weight: .semibold).lineLimit(1)
         } caption: {
             if let end = tenancy.endDate { Text("Until \(PhoneDateFormat.day(end))".figuresUnbroken) } else { Text("Ongoing") }
         }
@@ -118,9 +118,9 @@ struct PadTenancyDetailView: View {
 
     private func tile<Value: View, Caption: View>(_ title: String, @ViewBuilder value: () -> Value, @ViewBuilder caption: () -> Caption) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
             value()
-            caption().font(.footnote).foregroundStyle(.secondary)
+            caption().mangoFont(.footnote).foregroundStyle(.secondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -134,13 +134,13 @@ struct PadTenancyDetailView: View {
 
     private var rentHistory: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Rent history").font(.subheadline.weight(.semibold))
+            Text("Rent history").mangoFont(.subheadline, weight: .semibold)
             if model.detail.rents.isEmpty {
-                Text("No rent history yet.").font(.callout).foregroundStyle(.secondary)
+                Text("No rent history yet.").mangoFont(.callout).foregroundStyle(.secondary)
             } else {
                 ForEach(model.detail.rents.reversed()) { rent in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(PhoneDateFormat.day(rent.fromDate).unbroken).font(.subheadline).lineLimit(1)
+                        Text(PhoneDateFormat.day(rent.fromDate).unbroken).mangoFont(.subheadline).lineLimit(1)
                         if rent.id == model.rentInForce?.id { PadStatusPill(text: "In force", tone: .accent) }
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: rent.monthlyAmountMinorUnits, currency: currency, role: .neutral, font: .subheadline)
@@ -157,7 +157,7 @@ struct PadTenancyDetailView: View {
     private var contract: some View {
         let count = model.detail.contractDocumentIds.count
         return VStack(alignment: .leading, spacing: 8) {
-            Text("Contract").font(.subheadline.weight(.semibold))
+            Text("Contract").mangoFont(.subheadline, weight: .semibold)
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("Number").foregroundStyle(.secondary)
@@ -169,7 +169,7 @@ struct PadTenancyDetailView: View {
                     Text(tenancy.contractNumber.flatMap { $0.isEmpty ? nil : $0 } ?? "—")
                 }
             }
-            .font(.subheadline)
+            .mangoFont(.subheadline)
             HStack(alignment: .center, spacing: 8) {
                 if count == 0 {
                     PadStatusPill(text: "None yet", tone: .warning)
@@ -184,7 +184,7 @@ struct PadTenancyDetailView: View {
                 }
             }
             if let notes = tenancy.notes, !notes.isEmpty {
-                Text(notes).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                Text(notes).mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
         }
         .padding(14)

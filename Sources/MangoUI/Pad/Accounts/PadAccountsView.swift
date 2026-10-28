@@ -127,7 +127,7 @@ struct PadAccountsView: View {
             FigureRow(label: section.title) {
                 MoneyText(minorUnits: section.subtotalGBP, currency: .gbp, role: .balance, font: .headline)
             }
-            .font(.headline)
+            .mangoFont(.headline)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(section.title)
             .accessibilityValue(section.spokenSubtotal)
@@ -151,7 +151,7 @@ struct PadAccountsView: View {
         HStack(spacing: 8) {
             AccountRowView(row: row)
             Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
+                .mangoFont(.footnote, weight: .semibold)
                 .foregroundStyle(.tertiary)
                 .accessibilityHidden(true)
         }
@@ -201,7 +201,7 @@ struct PadAccountTransactionSheet: View {
                 Text("No document is linked to this transaction.").foregroundStyle(.secondary)
             }
             Card(title: "Transaction") {
-                Text(row.description).font(.subheadline.weight(.semibold)).lineLimit(3).truncationMode(.middle)
+                Text(row.description).mangoFont(.subheadline, weight: .semibold).lineLimit(3).truncationMode(.middle)
                 PadAccountDetailLine(label: "Date", value: PhoneDateFormat.day(row.date))
                 Divider()
                 FigureRow(label: "Amount") { MoneyText(minorUnits: amount.minorUnits, currency: row.currency, role: amount.role) }

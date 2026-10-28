@@ -216,12 +216,12 @@ struct PadReceiptPanelExtra: View {
         let lines = receipt.paidLines
         if lines.isEmpty {
             Text(receipt.status == .cancelled ? "Cancelled: no payment expected." : "No payment linked yet.")
-                .font(.subheadline).foregroundStyle(.secondary)
+                .mangoFont(.subheadline).foregroundStyle(.secondary)
         } else {
             ForEach(lines, id: \.transactionId) { line in
                 VStack(alignment: .leading, spacing: 2) {
                     Button { run(.showCredit, line.transactionId) } label: {
-                        Text(line.text.figuresUnbroken).font(.subheadline).multilineTextAlignment(.leading)
+                        Text(line.text.figuresUnbroken).mangoFont(.subheadline).multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
@@ -297,9 +297,9 @@ struct PadReceiptPlainPanel<Extra: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Receipt \(receipt.receipt.receiptNumber)").font(.headline).lineLimit(2).truncationMode(.middle)
+                Text("Receipt \(receipt.receipt.receiptNumber)").mangoFont(.headline).lineLimit(2).truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary) }
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
                     .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
             }
             .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
@@ -343,6 +343,6 @@ struct PadReceiptPlainPanel<Extra: View>: View {
                 value.fixedSize(horizontal: false, vertical: true)
             }
         }
-        .font(.subheadline)
+        .mangoFont(.subheadline)
     }
 }

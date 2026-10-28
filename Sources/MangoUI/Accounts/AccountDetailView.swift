@@ -226,16 +226,16 @@ struct BalanceCard: View {
                           font: .largeTitle.weight(.semibold))
                 if let gbp = row.gbpMinorUnits {
                     Text(MoneyPresentation.format(gbp, currency: .gbp))
-                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .figureText(.shrink())
+                        .mangoFont(.subheadline)
                 }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Balance")
             .accessibilityValue(row.spoken)
             Text(row.caption.figuresUnbroken)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHidden(true)

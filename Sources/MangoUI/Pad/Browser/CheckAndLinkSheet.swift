@@ -73,7 +73,7 @@ struct CheckAndLinkSheet: View {
             Button("Cancel") { close() }
                 .buttonStyle(.pad(.textLink))
             Spacer(minLength: 8)
-            Text(CheckAndLinkSheetCopy.title).font(.headline).lineLimit(1)
+            Text(CheckAndLinkSheetCopy.title).mangoFont(.headline).lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             if case .saved = model.phase {
@@ -106,7 +106,7 @@ struct CheckAndLinkSheet: View {
                     DocumentThumbnailImage(url: model.fileURL).padding(12)
                 }
                 #else
-                Image(systemName: "doc.text").font(.largeTitle).foregroundStyle(.secondary)
+                Image(systemName: "doc.text").mangoFont(.largeTitle).foregroundStyle(.secondary)
                 #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -116,8 +116,8 @@ struct CheckAndLinkSheet: View {
                 Image(systemName: "hand.pinch").accessibilityHidden(true)
                 Text(CheckAndLinkSheetCopy.pinchToZoom)
             }
-            .font(.caption).foregroundStyle(.secondary)
-            Text(model.item.fileName).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            .mangoFont(.caption).foregroundStyle(.secondary)
+            Text(model.item.fileName).mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
         }
         .padding(16)
     }
@@ -171,7 +171,7 @@ struct CheckAndLinkSheet: View {
             InlineBanner(tone: .amber, text: CheckAndLinkSheetCopy.checkBeforeSave(check.toCheck))
         }
         ForEach(check.notes, id: \.self) { note in
-            Text(note.figuresUnbroken).font(.subheadline).foregroundStyle(.secondary)
+            Text(note.figuresUnbroken).mangoFont(.subheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -179,7 +179,7 @@ struct CheckAndLinkSheet: View {
     private func documentCard(_ proposal: CheckAndLinkProposal) -> some View {
         Card(title: "The document") {
             Text("Fields marked “\(CheckAndLinkSheetCopy.readBadge)” were read from the PDF.")
-                .font(.caption).foregroundStyle(.secondary)
+                .mangoFont(.caption).foregroundStyle(.secondary)
             ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
                 if index > 0 { Divider() }
                 CheckRowView(row: row)
@@ -211,7 +211,7 @@ struct CheckAndLinkSheet: View {
             if let paid = bill.paidBy {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(paid.description).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                        Text(paid.description).mangoFont(.body, weight: .semibold).lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         linkedBadge
                     }
@@ -227,7 +227,7 @@ struct CheckAndLinkSheet: View {
                     }
                     .foregroundStyle(.secondary)
                     if let reason = paid.reasons.first {
-                        Text(reason.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
+                        Text(reason.figuresUnbroken).mangoFont(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -243,7 +243,7 @@ struct CheckAndLinkSheet: View {
 
     private var linkedBadge: some View {
         Label(CheckAndLinkSheetCopy.linked, systemImage: "link")
-            .font(.caption.weight(.semibold)).foregroundStyle(theme.accent)
+            .mangoFont(.caption, weight: .semibold).foregroundStyle(theme.accent)
             .lineLimit(1).fixedSize()
     }
 
@@ -279,9 +279,9 @@ struct CheckAndLinkSheet: View {
                             }
                         }
                         if let note = line.note {
-                            Text(note.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
+                            Text(note.figuresUnbroken).mangoFont(.caption).foregroundStyle(.secondary)
                         }
-                        Text(line.goes).font(.subheadline).foregroundStyle(.secondary)
+                        Text(line.goes).mangoFont(.subheadline).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -295,15 +295,15 @@ struct CheckAndLinkSheet: View {
         Card(title: "Checks") {
             if statement.checks.isEmpty && statement.balanceMatches {
                 Label(CheckAndLinkCopy.balanceMatches, systemImage: "checkmark.circle")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                    .mangoFont(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(statement.checks, id: \.self) { check in
                 Label { Text(check.figuresUnbroken).fixedSize(horizontal: false, vertical: true) } icon: {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.pending)
                 }
-                .font(.subheadline)
+                .mangoFont(.subheadline)
             }
-            Text(CheckAndLinkSheetCopy.statementNote).font(.subheadline).foregroundStyle(.secondary)
+            Text(CheckAndLinkSheetCopy.statementNote).mangoFont(.subheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -354,13 +354,13 @@ struct CheckMarkBadge: View {
             EmptyView()
         case .read:
             Text(CheckAndLinkSheetCopy.readBadge)
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .mangoFont(.caption2, weight: .semibold).foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize()
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Capsule().fill(Color.secondary.opacity(0.12)))
         case .toCheck:
             Label(CheckAndLinkSheetCopy.toCheckBadge, systemImage: "exclamationmark.circle")
-                .font(.caption2.weight(.semibold)).foregroundStyle(.primary)
+                .mangoFont(.caption2, weight: .semibold).foregroundStyle(.primary)
                 .lineLimit(1).fixedSize()
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Capsule().fill(theme.pending.opacity(0.2)))

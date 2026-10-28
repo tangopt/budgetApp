@@ -76,7 +76,7 @@ public struct AccountsView: View {
             FigureRow(label: section.title) {
                 MoneyText(minorUnits: section.subtotalGBP, currency: .gbp, role: .balance, font: .headline)
             }
-            .font(.headline)
+            .mangoFont(.headline)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(section.title)
             .accessibilityValue(section.spokenSubtotal)
@@ -87,7 +87,7 @@ public struct AccountsView: View {
                     HStack(spacing: 8) {
                         AccountRowView(row: row)
                         Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
+                            .mangoFont(.footnote, weight: .semibold)
                             .foregroundStyle(.tertiary)
                             .accessibilityHidden(true)
                     }

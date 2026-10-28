@@ -107,19 +107,19 @@ struct PadCalendarView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(model.range == .upcoming ? "The next twelve months" : "The last twelve months")
-                    .font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    .mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
             }
-            Text("≈ an estimate from the property's history").font(.footnote).foregroundStyle(.secondary)
+            Text("≈ an estimate from the property's history").mangoFont(.footnote).foregroundStyle(.secondary)
         }
         if months.isEmpty {
             Text(model.selectedDay == nil ? "Nothing in this range." : "Nothing is due that day.")
-                .font(.callout).foregroundStyle(.secondary)
+                .mangoFont(.callout).foregroundStyle(.secondary)
         }
         ForEach(months) { month in
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(month.start.formatted(Self.monthTitle)).font(.headline).lineLimit(1)
+                    Text(month.start.formatted(Self.monthTitle)).mangoFont(.headline).lineLimit(1)
                     Spacer(minLength: 8)
                     ForEach(month.totals, id: \.currency) { total in
                         HStack(spacing: 3) {
@@ -142,11 +142,11 @@ struct PadCalendarView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary)
                         .frame(width: 22).accessibilityHidden(true)
-                    Text(PadCalendarModel.shortTitle(obligation)).font(.headline).lineLimit(1).truncationMode(.middle)
+                    Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 HStack(alignment: .center, spacing: 8) {
-                    Text(PhoneDateFormat.day(obligation.date).unbroken).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(PhoneDateFormat.day(obligation.date).unbroken).mangoFont(.subheadline, figures: true).foregroundStyle(.secondary)
                     PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: pillTone(obligation.kind))
                     Spacer(minLength: 4)
                     PadObligationAmount(obligation: obligation, font: .headline)
@@ -178,7 +178,7 @@ struct PadCalendarView: View {
     private var monthGrid: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text(model.shownMonth.formatted(Self.monthTitle)).font(.title3.weight(.semibold)).lineLimit(1)
+                Text(model.shownMonth.formatted(Self.monthTitle)).mangoFont(.title3, weight: .semibold).lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 Button { model.shiftMonth(by: -1) } label: { Image(systemName: "chevron.left") }
@@ -192,7 +192,7 @@ struct PadCalendarView: View {
                 VStack(spacing: 6) {
                     HStack(spacing: 4) {
                         ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
-                            Text(symbol).font(.footnote.weight(.semibold)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            Text(symbol).mangoFont(.footnote, weight: .semibold).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                         }
                     }
                     .accessibilityHidden(true)
@@ -206,9 +206,9 @@ struct PadCalendarView: View {
             }
             let items = model.shownMonthItems
             Text(model.selectedDay.map { PhoneDateFormat.day($0).unbroken } ?? model.shownMonth.formatted(Self.monthTitle))
-                .font(.headline)
+                .mangoFont(.headline)
             if items.isEmpty {
-                Text("Nothing is due.").font(.callout).foregroundStyle(.secondary)
+                Text("Nothing is due.").mangoFont(.callout).foregroundStyle(.secondary)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
                 ForEach(items) { row($0) }
@@ -230,7 +230,7 @@ struct PadCalendarView: View {
         let isSelected = model.selectedDay.map { calendar.isDate($0, inSameDayAs: day.date) } ?? false
         return Button { model.tap(day) } label: {
             VStack(spacing: 3) {
-                Text("\(number)").font(.body.monospacedDigit().weight(isToday ? .bold : .regular))
+                Text("\(number)").mangoFont(.body, weight: isToday ? .bold : .regular, figures: true)
                     .foregroundStyle(day.isInMonth ? Color.primary : Color.secondary.opacity(0.6))
                 HStack(spacing: 3) {
                     ForEach(Array(day.items.prefix(3).enumerated()), id: \.offset) { _, item in
@@ -256,7 +256,7 @@ struct PadCalendarView: View {
 /// says what it is).
 struct PadObligationAmount: View {
     let obligation: PropertyObligation
-    var font: Font = .body
+    var font: PhoneTextStyle = .body
 
     var body: some View {
         if let amount = obligation.expectedMinorUnits, let currency = obligation.currency {
@@ -264,7 +264,7 @@ struct PadObligationAmount: View {
                 if obligation.isEstimate { Text("≈").foregroundStyle(.secondary).accessibilityHidden(true) }
                 MoneyText(minorUnits: amount, currency: currency, role: .neutral, font: font)
             }
-            .font(font)
+            .mangoFont(font)
             .fixedSize()
             .accessibilityElement(children: .combine)
             .accessibilityLabel((obligation.isEstimate ? "about " : "") + Money.format(amount, currency: currency))
@@ -282,9 +282,9 @@ struct PadObligationCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary).accessibilityHidden(true)
-                    Text(PadCalendarModel.shortTitle(obligation)).font(.headline).lineLimit(3).truncationMode(.middle)
+                    Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(3).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary) }
+                    Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
                         .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
                 }
                 HStack(spacing: 8) {
@@ -295,15 +295,15 @@ struct PadObligationCard: View {
                 if obligation.expectedMinorUnits != nil {
                     fact("Expected", PadObligationAmount(obligation: obligation, font: .subheadline))
                 } else {
-                    Text("A deadline: no amount is expected.").font(.subheadline).foregroundStyle(.secondary)
+                    Text("A deadline: no amount is expected.").mangoFont(.subheadline).foregroundStyle(.secondary)
                 }
                 if obligation.title != PadCalendarModel.shortTitle(obligation) {
-                    Text(obligation.title).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(obligation.title).mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text(PadCalendarModel.explanation(obligation)).font(.subheadline).foregroundStyle(.secondary)
+                Text(PadCalendarModel.explanation(obligation)).mangoFont(.subheadline).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if obligation.isEstimate {
-                    Text("An estimate from the property's history, not an invoice.").font(.footnote).foregroundStyle(.secondary)
+                    Text("An estimate from the property's history, not an invoice.").mangoFont(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -316,6 +316,6 @@ struct PadObligationCard: View {
             Spacer(minLength: 12)
             value.lineLimit(1).fixedSize()
         }
-        .font(.subheadline)
+        .mangoFont(.subheadline)
     }
 }

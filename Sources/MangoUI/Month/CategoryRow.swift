@@ -89,9 +89,9 @@ struct CategoryRow: View {
                 }
                 if let status = shown.status {
                     Text(status)
-                        .font(.subheadline)
                         .foregroundStyle(shown.isOverPlan ? theme.expense : Color.secondary)
                         .figureText(.shrink())
+                        .mangoFont(.subheadline)
                 }
             }
         }

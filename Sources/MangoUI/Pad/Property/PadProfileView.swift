@@ -101,7 +101,7 @@ struct PadProfileView: View {
                 Menu {
                     Button("Delete property…", role: .destructive) { confirmingDelete = true }
                 } label: {
-                    Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
+                    Image(systemName: "ellipsis.circle").mangoFont(.title3).frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("More actions for the property")
             }
@@ -135,7 +135,7 @@ struct PadProfileView: View {
         } content: {
             if address.isEmpty {
                 Text("No address yet: add it with Edit, and Apple Maps finds it on the map.")
-                    .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 ProfileFact("Street") {
                     Text(address.streetLines.isEmpty ? "—" : address.streetLines.joined(separator: "\n"))
@@ -158,16 +158,16 @@ struct PadProfileView: View {
             }
         } content: {
             if model.snapshot.owners.isEmpty {
-                Text("No owners yet.").font(.subheadline).foregroundStyle(.secondary)
+                Text("No owners yet.").mangoFont(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(model.snapshot.owners, id: \.id) { owner in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(model.personName(owner.personId)).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                        Text(Self.ownedFrom(owner).figuresUnbroken).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        Text(model.personName(owner.personId)).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
+                        Text(Self.ownedFrom(owner).figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Text(PadProfileModel.percent(owner.shareBasisPoints)).font(.subheadline.monospacedDigit()).figureText()
+                    Text(PadProfileModel.percent(owner.shareBasisPoints)).figureText().mangoFont(.subheadline, figures: true)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -192,12 +192,12 @@ struct PadProfileView: View {
             }
         } content: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Rate").font(.subheadline).foregroundStyle(.secondary)
-                Text(facts.rate).font(.subheadline.monospacedDigit()).foregroundStyle(facts.rateIsSet ? .primary : .secondary)
+                Text("Rate").mangoFont(.subheadline).foregroundStyle(.secondary)
+                Text(facts.rate).mangoFont(.subheadline, figures: true).foregroundStyle(facts.rateIsSet ? .primary : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             ProfileFact("Next revision") { Text(facts.nextRevision.unbroken).monospacedDigit() }
-            Text(facts.schedule).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(facts.schedule).mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             ProfileFact("Next instalment") { Text((facts.nextInstalment ?? "—").figuresUnbroken).monospacedDigit() }
             ProfileFact("Instalments") { Text((facts.instalments ?? "—").figuresUnbroken).monospacedDigit() }
             ProfileFact("Final instalment") { Text((facts.finalInstalment ?? "—").unbroken).monospacedDigit() }
@@ -221,12 +221,12 @@ struct PadProfileView: View {
         } content: {
             if model.snapshot.propertyAccounts.isEmpty {
                 Text("Link the account rent arrives in (current), the mortgage and the deposit account.")
-                    .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(model.snapshot.propertyAccounts, id: \.accountId) { link in
                 let name = model.accountName(link.accountId)
                 HStack(spacing: 8) {
-                    Text(name).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    Text(name).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if offers(.changeRole, on: .accounts) {
                         Picker("Role of \(name)", selection: Binding(get: { link.role }, set: { role in
@@ -237,7 +237,7 @@ struct PadProfileView: View {
                         .labelsHidden()
                         .fixedSize()
                     } else {
-                        Text(PadProfileModel.role(link.role)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(PadProfileModel.role(link.role)).mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     if offers(.unlinkAccount, on: .accounts) {
                         RowIconButton(.unlink, item: name, size: .small) { Task { await model.unlinkAccount(link.accountId) } }
@@ -263,12 +263,12 @@ struct PadProfileView: View {
             }
         } content: {
             if model.snapshot.groupIds.isEmpty {
-                Text("Add the category group holding the property's income and costs.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Add the category group holding the property's income and costs.").mangoFont(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(model.snapshot.groupIds, id: \.self) { id in
                 let name = model.groupName(id)
                 HStack(spacing: 8) {
-                    Text(name).font(.subheadline).lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(name).mangoFont(.subheadline).lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
                     if offers(.removeGroup, on: .groups) {
                         RowIconButton(.unlink, item: name, size: .small) { Task { await model.removeGroup(id) } }
                     }
@@ -286,17 +286,17 @@ struct PadProfileView: View {
             }
         } content: {
             if model.snapshot.documents.isEmpty {
-                Text("No documents yet: link the deeds and certificates from the library.").font(.subheadline).foregroundStyle(.secondary)
+                Text("No documents yet: link the deeds and certificates from the library.").mangoFont(.subheadline).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(model.snapshot.documents, id: \.id) { document in
                 HStack(spacing: 8) {
                     Image(systemName: "doc").foregroundStyle(.secondary).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(document.displayName).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                        Text(document.displayName).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
                         Text(([document.id.flatMap { model.snapshot.documentKinds[$0] }, document.docDate.map { PhoneDateFormat.day($0) }]
                             .compactMap { $0 }.joined(separator: " · ")).figuresUnbroken)
-                            .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            .mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     if let id = document.id {
@@ -345,9 +345,9 @@ private struct ProfileCard<Actions: View, Content: View>: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
+                        Text(title).mangoFont(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
                         if let subtitle {
-                            Text(subtitle).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text(subtitle).mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -376,7 +376,7 @@ private struct ProfileFact<Value: View>: View {
             Spacer(minLength: 12)
             value()
         }
-        .font(.subheadline)
+        .mangoFont(.subheadline)
         .accessibilityElement(children: .combine)
     }
 }
@@ -727,7 +727,7 @@ struct PadPropertyMapCard: View {
             .overlay {
                 if !adjusting, property.location == nil, locator.state != .searching {
                     Text(property.postalAddress.isEmpty ? "Add the address to find it on the map" : "No location yet")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .mangoFont(.callout).foregroundStyle(.secondary)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(.regularMaterial, in: Capsule())
                 }
@@ -769,13 +769,13 @@ struct PadPropertyMapCard: View {
         case .searching:
             HStack(spacing: 6) {
                 ProgressView()
-                Text("Finding the address with Apple Maps…").font(.callout).foregroundStyle(.secondary)
+                Text("Finding the address with Apple Maps…").mangoFont(.callout).foregroundStyle(.secondary)
             }
         case .notFound:
-            Label("Location not found — place it on the map", systemImage: "mappin.slash").font(.callout).foregroundStyle(.secondary)
+            Label("Location not found — place it on the map", systemImage: "mappin.slash").mangoFont(.callout).foregroundStyle(.secondary)
         case .choices(let candidates):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Several places match the address: pick one").font(.callout).foregroundStyle(.secondary)
+                Text("Several places match the address: pick one").mangoFont(.callout).foregroundStyle(.secondary)
                 ForEach(candidates.prefix(5)) { candidate in
                     Button {
                         Task {
@@ -792,16 +792,16 @@ struct PadPropertyMapCard: View {
 
     @ViewBuilder private var note: some View {
         if adjusting {
-            Text("Tap the map or drag the pin, then Save location.").font(.footnote).foregroundStyle(.secondary)
+            Text("Tap the map or drag the pin, then Save location.").mangoFont(.footnote).foregroundStyle(.secondary)
         } else if let location = property.location {
             HStack(spacing: 6) {
                 Text(property.locationSource == .adjusted ? "Placed by hand" : "Found with Apple Maps").lineLimit(1)
                 Text("·")
                 Text(Self.coordinate(location)).monospacedDigit().figureText()
             }
-            .font(.footnote).foregroundStyle(.secondary)
+            .mangoFont(.footnote).foregroundStyle(.secondary)
         } else {
-            Text("Apple Maps finds it from the address text only").font(.footnote).foregroundStyle(.secondary)
+            Text("Apple Maps finds it from the address text only").mangoFont(.footnote).foregroundStyle(.secondary)
         }
     }
 

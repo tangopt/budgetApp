@@ -74,7 +74,7 @@ struct RowIconButton: View {
     var body: some View {
         Button(action: perform) {
             Image(systemName: action.systemImage)
-                .font(.body.weight(.semibold))
+                .mangoFont(.body, weight: .semibold)
                 .foregroundStyle(action.isDestructive ? Color.red : theme.accent)
                 .frame(width: Self.targetSize(size), height: Self.targetSize(size))
                 .contentShape(Rectangle())

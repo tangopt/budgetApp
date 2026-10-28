@@ -27,11 +27,11 @@ public struct ICloudUnavailableView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text(Self.title)
-                    .font(.title2.weight(.semibold))
+                    .mangoFont(.title2, weight: .semibold)
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 Text(state == .restricted ? Self.restrictedMessage : Self.noAccountMessage)
-                    .font(.body)
+                    .mangoFont(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button(action: onOpenSettings) {

@@ -30,10 +30,10 @@ public struct LockScreen: View {
                     mark
                     VStack(spacing: 8) {
                         Text(copy.title)
-                            .font(.title2.bold())
+                            .mangoFont(.title2, weight: .bold)
                             .accessibilityAddTraits(.isHeader)
                         Text(copy.body)
-                            .font(.body)
+                            .mangoFont(.body)
                             .foregroundStyle(.secondary)
                     }
                     .multilineTextAlignment(.center)

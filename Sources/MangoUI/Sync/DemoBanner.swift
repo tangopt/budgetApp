@@ -14,7 +14,7 @@ public struct DemoBanner: View {
             Image(systemName: "theatermasks.fill")
                 .accessibilityHidden(true)
             Text(Self.text)
-                .font(.callout.weight(.semibold))
+                .mangoFont(.callout, weight: .semibold)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(.white)

@@ -22,7 +22,7 @@ struct PadSidebar: View {
                 VStack(alignment: .leading, spacing: state.isCollapsed ? 4 : 2) {
                     ForEach(Array(PadSection.groups(hasProperty: hasProperty).enumerated()), id: \.offset) { index, group in
                         if let title = group.title, !state.isCollapsed {
-                            Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text(title.uppercased()).mangoFont(.caption, weight: .semibold).foregroundStyle(.secondary)
                                 .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
                         } else if index > 0 {
                             Divider().padding(.horizontal, 14).padding(.vertical, 8)
@@ -50,7 +50,7 @@ struct PadSidebar: View {
             } else {
                 HStack {
                     MangoGlyph().frame(width: 34, height: 34)
-                    Text("Mango").font(.title3.weight(.semibold))
+                    Text("Mango").mangoFont(.title3, weight: .semibold)
                     Spacer()
                     toggle
                 }
@@ -74,7 +74,7 @@ struct PadSidebar: View {
         let selected = selection == section
         Button { selection = section } label: {
             if state.isCollapsed {
-                Image(systemName: section.systemImage).font(.title3)
+                Image(systemName: section.systemImage).mangoFont(.title3)
                     .frame(width: 44, height: 44)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? theme.accent.opacity(0.18) : .clear))
                     .frame(maxWidth: .infinity)

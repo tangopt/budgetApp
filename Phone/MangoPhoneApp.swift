@@ -12,6 +12,7 @@ enum PhoneMain {
     static func main() {
         #if SNAPSHOTS
         // Phone/Snapshots/PhoneSnapshotRunner.swift: the demo database, every route, then exit.
+        BundledFonts.register()
         PhoneSnapshotRunner.main()
         #else
         MangoPhoneApp.main()
@@ -26,6 +27,11 @@ struct MangoPhoneApp: App {
     @ObservedObject private var lock = PhoneLockModel.shared
     /// Sync: the scheduler, its status, the iCloud account (Task 12).
     @StateObject private var sync = PhoneSyncController()
+
+    init() {
+        // The bundled typefaces (Phone/Fonts, the app's Fonts folder), before any text is drawn.
+        BundledFonts.register()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -70,6 +76,8 @@ struct PhoneRoot: View {
     @State private var sharing: SharingSectionState?
     @AppStorage("phone.appearance") private var appearanceValue = PhoneAppearance.system.rawValue
     @AppStorage("phone.theme") private var themeId = PhoneTheme.classic.id
+    /// The typeface app text is drawn in (step 16): this device's own choice, never synced.
+    @AppStorage("phone.font") private var fontId = FontCatalog.defaultID
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
 
@@ -104,6 +112,7 @@ struct PhoneRoot: View {
         }
         .lockCover(lock)
         .environment(\.phoneTheme, PhoneTheme.named(themeId))
+        .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
         .tint(PhoneTheme.named(themeId).accent)
         .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
         .onChange(of: lock.state) { _, state in
@@ -300,7 +309,7 @@ struct PhoneRoot: View {
     /// while demo data is shown.
     private func settings(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
-        return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
+        return SettingsSheet(appearance: appearance, themeId: $themeId, fontId: $fontId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
                              outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
@@ -310,6 +319,7 @@ struct PhoneRoot: View {
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))
+            .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
             .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 
@@ -320,6 +330,7 @@ struct PhoneRoot: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSalary = false } } }
         }
         .environment(\.phoneTheme, PhoneTheme.named(themeId))
+        .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
         .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 

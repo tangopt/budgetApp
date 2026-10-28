@@ -82,13 +82,13 @@ public struct PropertyView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(glance.property.name)
                                 Text(PropertyCopy.tenancyLine(glance).figuresUnbroken)
-                                    .font(.subheadline)
+                                    .mangoFont(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
+                                .mangoFont(.footnote, weight: .semibold)
                                 .foregroundStyle(.tertiary)
                                 .accessibilityHidden(true)
                         }
@@ -114,7 +114,7 @@ struct PropertyDetailContent: View {
 
     var body: some View {
         Text(PropertyCopy.tenancyLine(glance).figuresUnbroken)
-            .font(.subheadline)
+            .mangoFont(.subheadline)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         ThisMonthCard(glance: glance)

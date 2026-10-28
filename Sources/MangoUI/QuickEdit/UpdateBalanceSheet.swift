@@ -37,7 +37,7 @@ public struct UpdateBalanceSheet: View {
                 }
                 Section {
                     Text(accountName)
-                        .font(.headline)
+                        .mangoFont(.headline)
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }

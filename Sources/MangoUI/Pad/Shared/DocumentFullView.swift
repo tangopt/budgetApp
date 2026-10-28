@@ -97,7 +97,7 @@ public struct DocumentFullView: View {
     /// "Page 2 of 5" and the zoom buttons, over the pages' foot.
     private var controls: some View {
         HStack(spacing: 12) {
-            Text("Page \(pdf.page) of \(pdf.pageCount)").figureText().font(.subheadline)
+            Text("Page \(pdf.page) of \(pdf.pageCount)").figureText().mangoFont(.subheadline)
             Divider().frame(height: 20)
             Button { pdf.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }
                 .accessibilityLabel("Zoom out")

@@ -55,6 +55,12 @@ enum PhoneSnapshotRunner {
         return arguments[index + 1] == "ipad"
     }
 
+    /// `--font <id>` (scripts/render-phone-snapshots.sh passes it as MANGO_SNAPSHOT_FONT): the typeface to render in
+    /// (a `FontCatalog` id); SF Pro by default.
+    static var fontId: String {
+        ProcessInfo.processInfo.environment["MANGO_SNAPSHOT_FONT"].flatMap { $0.isEmpty ? nil : $0 } ?? FontCatalog.defaultID
+    }
+
     /// `--only a,b`: just those routes (by name).
     static var only: Set<String> {
         let arguments = CommandLine.arguments
@@ -70,6 +76,10 @@ enum PhoneSnapshotRunner {
         } catch {
             fail("couldn't create \(outDir.path): \(error.localizedDescription)")
         }
+
+        // Every catalogue font name resolves on iOS and every font and licence file is in this app bundle.
+        let fontProblems = FontBundleCheck.problems()
+        if !fontProblems.isEmpty { fail("fonts: " + fontProblems.joined(separator: "; ")) }
 
         // The demo database, in the temporary folder: never the phone's own (Application Support/Mango).
         let demoFolder = fileManager.temporaryDirectory.appendingPathComponent("snapshot-demo-\(UUID().uuidString)", isDirectory: true)
@@ -141,6 +151,7 @@ enum PhoneSnapshotRunner {
                         let root = route.make(context)
                             .environment(\.dynamicTypeSize, size)
                             .environment(\.phoneTheme, .classic)
+                            .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
                         window.frame = CGRect(origin: .zero, size: frameSize)
                         window.rootViewController = UIHostingController(rootView: root)
                         window.layoutIfNeeded()

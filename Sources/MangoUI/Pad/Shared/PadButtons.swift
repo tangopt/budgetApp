@@ -25,7 +25,7 @@ struct PadButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         configuration.label
-            .font(size == .small ? .subheadline.weight(.semibold) : .body.weight(.semibold))
+            .mangoFont(size == .small ? .subheadline : .body, weight: .semibold)
             .lineLimit(1)
             .padding(.horizontal, role == .textLink ? 4 : (size == .small ? 12 : 16))
             .frame(minWidth: size.minimumTapTarget, minHeight: size.minimumTapTarget)

@@ -57,7 +57,7 @@ struct PadDocumentsView: View {
                             ForEach(group.documents) { document in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(document.displayName).lineLimit(2).truncationMode(.middle)
-                                    Text(PhoneDateFormat.day(document.docDate)).font(.footnote).foregroundStyle(.secondary)
+                                    Text(PhoneDateFormat.day(document.docDate)).mangoFont(.footnote).foregroundStyle(.secondary)
                                 }
                                 .tag(document.id)
                             }

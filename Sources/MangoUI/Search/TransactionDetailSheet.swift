@@ -85,7 +85,7 @@ struct TransactionDetailContent: View {
                     MoneyText(minorUnits: shown.amount.minorUnits, currency: shown.currency, role: shown.amount.role,
                               fit: .shrink(), font: .largeTitle.weight(.semibold))
                     Text(shown.description)
-                        .font(.title3.weight(.semibold))
+                        .mangoFont(.title3, weight: .semibold)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
                 }
@@ -121,7 +121,7 @@ struct TransactionDetailContent: View {
                 }
                 if showsFooter {
                     Label(SearchCopy.detailFooter, systemImage: "ipad.and.iphone")
-                        .font(.footnote)
+                        .mangoFont(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -144,7 +144,7 @@ private struct DetailField<Value: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
             value
         }

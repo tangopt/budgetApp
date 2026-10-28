@@ -12,7 +12,7 @@ struct PadStatusPill: View {
 
     var body: some View {
         Text(text)
-            .font(.footnote.weight(.semibold))
+            .mangoFont(.footnote, weight: .semibold)
             .lineLimit(1)
             .fixedSize()
             .padding(.horizontal, 10).padding(.vertical, 4)
@@ -59,7 +59,7 @@ struct PadStatementsList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Statements").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Text("Statements").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
             if model.statements.isEmpty {
                 Text("No statements yet.").foregroundStyle(.secondary)
             } else {
@@ -82,7 +82,7 @@ struct PadStatementsList: View {
             HStack(spacing: 8) {
                 Button { open(statement) } label: {
                     HStack(spacing: 12) {
-                        Text(name.figuresUnbroken).font(.body.weight(.medium)).lineLimit(1)
+                        Text(name.figuresUnbroken).mangoFont(.body, weight: .medium).lineLimit(1)
                         PadStatusPill(text: pill.text, tone: pill.tone)
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: statement.statement.totalMinorUnits, currency: model.currency, role: .neutral)
@@ -97,7 +97,7 @@ struct PadStatementsList: View {
             }
             if statement.statement.status == .sent {
                 HStack(spacing: 8) {
-                    Text("Still owed").font(.footnote).foregroundStyle(.secondary)
+                    Text("Still owed").mangoFont(.footnote).foregroundStyle(.secondary)
                     MoneyText(minorUnits: statement.row.outstandingMinorUnits, currency: model.currency, role: .neutral, font: .footnote)
                 }
             }
@@ -172,11 +172,11 @@ struct PadStatementSheet: View {
         }
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Charges").font(.headline)
+                Text("Charges").mangoFont(.headline)
                 if statement.lines.isEmpty { Text("No charges yet.").foregroundStyle(.secondary) }
                 ForEach(statement.lines, id: \.line.id) { detail in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(detail.provider?.name ?? detail.line.lineDescription ?? "Line").font(.subheadline)
+                        Text(detail.provider?.name ?? detail.line.lineDescription ?? "Line").mangoFont(.subheadline)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: detail.line.amountMinorUnits, currency: currency, role: .neutral, font: .subheadline)
@@ -185,7 +185,7 @@ struct PadStatementSheet: View {
                 if statement.statement.status == .sent {
                     Divider()
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("Still owed").font(.subheadline).foregroundStyle(.secondary)
+                        Text("Still owed").mangoFont(.subheadline).foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: statement.row.outstandingMinorUnits, currency: currency, role: .neutral, font: .subheadline)
                     }
@@ -196,12 +196,12 @@ struct PadStatementSheet: View {
         if !statement.row.payments.isEmpty {
             Card {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Paid by the tenant").font(.headline)
+                    Text("Paid by the tenant").mangoFont(.headline)
                     ForEach(statement.row.payments) { payment in
                         HStack(alignment: .center, spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(statement.credits[payment.transactionId]?.rawDescription ?? "Bank credit")
-                                    .font(.subheadline).lineLimit(1).truncationMode(.middle)
+                                    .mangoFont(.subheadline).lineLimit(1).truncationMode(.middle)
                                 if let date = statement.credits[payment.transactionId]?.date { DateText(date, font: .footnote).foregroundStyle(.secondary) }
                             }
                             Spacer(minLength: 8)

@@ -19,7 +19,7 @@ struct UpcomingCard: View {
                         MoneyText(minorUnits: amount, currency: item.currency, role: .due)
                     } else {
                         Text("Amount not known")
-                            .font(.subheadline)
+                            .mangoFont(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }

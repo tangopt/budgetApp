@@ -11,7 +11,7 @@ struct DesignSystemGallery: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Design system")
-                    .font(.largeTitle.bold())
+                    .mangoFont(.largeTitle, weight: .bold)
                 InlineBanner(tone: .amber, text: "Offline · showing data from 09:41. Your 3 changes will sync when you're back online.")
                 InlineBanner(tone: .neutral, text: "Waiting for the household key from iCloud Keychain")
                 Card(title: "Figures") {
@@ -23,10 +23,10 @@ struct DesignSystemGallery: View {
                     tiles {
                         tile("Net worth") {
                             MoneyText(minorUnits: 123_456_789, currency: .gbp, role: .balance, fit: .shrink())
-                                .font(.title2.weight(.semibold))
+                                .mangoFont(.title2, weight: .semibold)
                         }
                         tile("Held") {
-                            Text("1,234 days").figureText(.shrink()).font(.title2.weight(.semibold))
+                            Text("1,234 days").figureText(.shrink()).mangoFont(.title2, weight: .semibold)
                         }
                     }
                 }
@@ -69,7 +69,7 @@ struct DesignSystemGallery: View {
 
     private func tile<Figure: View>(_ label: String, @ViewBuilder figure: () -> Figure) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.subheadline).foregroundStyle(.secondary)
+            Text(label).mangoFont(.subheadline).foregroundStyle(.secondary)
             figure()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

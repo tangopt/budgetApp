@@ -56,7 +56,7 @@ public struct SalarySimulatorScreen: View {
                             column(side)
                         }
                         Text("An estimate from published UK rates, not tax advice.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .mangoFont(.caption).foregroundStyle(.secondary)
                     }
                     .padding(16)
                     .padding(.top, pinned ? 0 : 0)
@@ -78,7 +78,7 @@ public struct SalarySimulatorScreen: View {
         let comparison = viewModel.comparison
         return Card {
             HStack {
-                Text("Offer against current").font(.headline).accessibilityAddTraits(.isHeader)
+                Text("Offer against current").mangoFont(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 Button(viewModel.resetTitle) { viewModel.reset() }.frame(minHeight: 44)
             }
@@ -88,7 +88,7 @@ public struct SalarySimulatorScreen: View {
                 AmountRow(label: "Take-home a year",
                           amount: MoneyText(minorUnits: comparison.annualDifference, currency: .gbp, role: .income))
                 FigureRow(label: "Of each extra £1 gross you keep") {
-                    Text(Self.pence(comparison.keepPerExtraPound)).font(.body).figureText()
+                    Text(Self.pence(comparison.keepPerExtraPound)).figureText().mangoFont(.body)
                 }
             }
         }
@@ -102,7 +102,7 @@ public struct SalarySimulatorScreen: View {
     private var prefillCard: some View {
         Card {
             Button("Use my latest payslip/P60") { viewModel.usePrefill() }.frame(minHeight: 44)
-            Text(SalaryComparisonViewModel.prefillNote).font(.caption).foregroundStyle(.secondary)
+            Text(SalaryComparisonViewModel.prefillNote).mangoFont(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -157,7 +157,7 @@ struct SalaryResultsCard: View {
                     percent("Effective rate", result.effectiveRateBP)
                     percent("Marginal rate", result.marginalRateBP)
                     if let caption = SalaryResult.marginalPensionCaption(result) {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                        Text(caption).mangoFont(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -174,7 +174,7 @@ struct SalaryResultsCard: View {
 
     private func percent(_ label: String, _ basisPoints: Int) -> some View {
         FigureRow(label: label) {
-            Text(String(format: "%.1f%%", Double(basisPoints) / 100)).font(.body).figureText()
+            Text(String(format: "%.1f%%", Double(basisPoints) / 100)).figureText().mangoFont(.body)
         }
     }
 
@@ -186,7 +186,7 @@ struct SalaryResultsCard: View {
         let segments = SalaryBarSegments.segments(result).enumerated().filter { $0.element.pence > 0 }
         let total = max(1, segments.reduce(0) { $0 + $1.element.pence })
         return VStack(alignment: .leading, spacing: 8) {
-            Text("Where a year of gross pay goes").font(.subheadline).foregroundStyle(.secondary)
+            Text("Where a year of gross pay goes").mangoFont(.subheadline).foregroundStyle(.secondary)
             GeometryReader { proxy in
                 HStack(spacing: 2) {
                     ForEach(segments, id: \.offset) { index, segment in
@@ -202,7 +202,7 @@ struct SalaryResultsCard: View {
                 ForEach(segments, id: \.offset) { index, segment in
                     HStack(spacing: 8) {
                         Circle().fill(colors[index % colors.count]).frame(width: 10, height: 10)
-                        Text(segment.label).font(.caption)
+                        Text(segment.label).mangoFont(.caption)
                     }
                 }
             }
@@ -212,10 +212,10 @@ struct SalaryResultsCard: View {
 
     @ViewBuilder private var notices: some View {
         ForEach(result.notices.filter { $0 != TaxCode.unreadableNotice }, id: \.self) { notice in
-            Text(notice).font(.caption).foregroundStyle(.secondary)
+            Text(notice).mangoFont(.caption).foregroundStyle(.secondary)
         }
         if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
-            Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").font(.caption).foregroundStyle(.secondary)
+            Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").mangoFont(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -257,7 +257,7 @@ struct SalaryFormCard: View {
                         .frame(minWidth: 80)
                 }
                 if let notice = TaxCode.parse(inputs.taxCode).notice {
-                    Text(notice).font(.caption).foregroundStyle(.orange)
+                    Text(notice).mangoFont(.caption).foregroundStyle(.orange)
                 }
                 Divider().padding(.vertical, 4)
                 stacked("Pension") { PensionInput(label: "Pension", amount: $inputs.pension) }
