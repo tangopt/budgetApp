@@ -12,6 +12,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case search = "Search"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
+    case salary = "Salary simulator"
     case accounts = "Accounts"
     /// One sidebar row per property (`ContentView.sidebarRows`); "Property" while there is none.
     case property = "Property"
@@ -31,6 +32,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .budgetGrid: return "tablecells"
         case .forecast: return "chart.line.uptrend.xyaxis"
+        case .salary: return "sterlingsign.circle"
         case .rules: return "wand.and.stars"
         case .categories: return "tag"
         case .accounts: return "building.columns"
@@ -52,7 +54,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .imports, .uncategorized: return "Workflow"
-        case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
+        case .dashboard, .search, .budgetGrid, .forecast, .salary, .accounts, .property: return "Overview"
         case .taxYears, .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
         }
@@ -257,6 +259,8 @@ struct ContentView: View {
                 case .forecast:
                     ScenarioLabView(viewModel: scenarioLabViewModel)
                         .onAppear { scenarioLabViewModel.load() }
+                case .salary:
+                    SalarySimulatorView()
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }

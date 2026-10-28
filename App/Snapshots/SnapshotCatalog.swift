@@ -681,6 +681,7 @@ enum SnapshotCatalog {
             screen("forecast", "compare", "Forecast: Compare", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .compare },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
             screen("forecast", "grid", "Forecast: Grid", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .grid },
+            screen("salary", "main", "Salary simulator", .salary),
             screen("accounts", "main", "Accounts", .accounts),
             screen("accounts", "euro_current", "Accounts: Euro Current", .accounts) { models, context in
                 models.accounts.selectedAccountId = context.accountId("Euro Current")
