@@ -671,6 +671,15 @@ enum SnapshotCatalog {
     static var screens: [SnapshotRoute] {
         [
             screen("dashboard", "main", "Dashboard", .dashboard, settle: 1.5),
+            // A customised layout: net worth three columns wide, Tall rows in Money, 2 columns in Tax & documents.
+            screen("dashboard", "layout_custom", "Dashboard: net worth 3 wide, Tall rows, 2 columns in Tax & documents", .dashboard, settle: 1.5) { _, _ in
+                var layout = DashboardLayout()
+                layout.setSpan(DashboardTile.netWorth, in: .money, to: .init(columns: 3, rows: 1))
+                layout.setSpan(DashboardTile.upcomingBills, in: .money, to: .init(columns: 1, rows: 2))
+                layout.setRowHeight(.tall, in: .money)
+                layout.setColumns(2, in: .tax)
+                SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
+            },
             screen("search", "main", "Search", .search),
             screen("search", "query", "Search: “greenleaf”", .search) { models, _ in models.search.queryText = "greenleaf" },
             // Show in Search from another screen: the latest rent credit, its row selected.

@@ -17,7 +17,7 @@ struct NetWorthTile: View {
                 Text("No history yet — record a balance on the Accounts screen.").font(.callout).foregroundStyle(.secondary)
                     .lineLimit(2)
             } else {
-                HStack(alignment: .top, spacing: 12) {
+                ChartBeside {
                     VStack(alignment: .leading, spacing: 4) {
                         // The headline is the current net worth, not the last chart point: a typed snapshot dated after the
                         // data-through month makes the two differ.
@@ -37,11 +37,9 @@ struct NetWorthTile: View {
                                 .help("\(behind.accountCount) balance\(behind.accountCount == 1 ? " was" : "s were") last updated \(DashboardFormat.day(behind.oldestSnapshotDate)), so the forecast restarts from \(behind.accountCount == 1 ? "it" : "them"). Update balances to correct it.")
                         }
                     }
-                    .frame(width: 168, alignment: .leading)
-                    if series.actual.isEmpty && series.forecast.isEmpty {
-                        Spacer()
-                    } else {
-                        NetWorthLineChart(actual: series.actual, forecast: series.forecast, today: content.today, height: 84)
+                } chart: { height in
+                    if !(series.actual.isEmpty && series.forecast.isEmpty) {
+                        NetWorthLineChart(actual: series.actual, forecast: series.forecast, today: content.today, height: height)
                     }
                 }
             }
@@ -119,15 +117,15 @@ struct YearTile: View {
             }
             .buttonStyle(.borderless)
         }, content: {
-            HStack(alignment: .top, spacing: 12) {
+            ChartBeside {
                 VStack(alignment: .leading, spacing: 4) {
                     TileFigure(value: DashboardFormat.pounds(net), caption: isFuture ? "net saved, projected" : "net saved",
                                tint: net < 0 ? theme.expense : .primary)
                     Text("In \(DashboardFormat.pounds(totals.incomeProjected))").font(.caption).foregroundStyle(theme.income).figureText(.shrink(minimumScale: 0.8))
                     Text("Out \(DashboardFormat.pounds(totals.expenseProjected))").font(.caption).foregroundStyle(theme.series(1)).figureText(.shrink(minimumScale: 0.8))
                 }
-                .frame(width: 168, alignment: .leading)
-                YearAtAGlanceChart(flows: viewModel.flows, height: 88)
+            } chart: { height in
+                YearAtAGlanceChart(flows: viewModel.flows, height: height)
             }
             Text(footnote(isFuture: isFuture)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
         })

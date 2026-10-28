@@ -5,95 +5,221 @@ import BudgetCore
 // The Dashboard's building blocks: titled sections of compact tiles. A tile leads with one big figure and
 // a small chart; its other text is one line. Tiles in a row share the row's height (`TileGrid`).
 
-/// How many columns of the grid a tile takes (1 by default).
-private struct TileSpanKey: LayoutValueKey {
-    static let defaultValue = 1
+/// The tile's id in a saved layout (`DashboardTile`), read by `TileGrid`.
+private struct TileIDKey: LayoutValueKey {
+    static let defaultValue = ""
+}
+
+/// What the Dashboard's grids need to lay tiles out and edit them: the saved layout, and (while editing) a way
+/// to change it. Absent outside the Dashboard: the default layout, no editing.
+struct DashboardLayoutContext {
+    var layout = DashboardLayout()
+    var isEditing = false
+    var change: (@MainActor (DashboardLayout.Section, (inout DashboardLayout) -> Void) -> Void)?
+    /// The width the current section's grid has (set by `DashboardSection`).
+    var sectionWidth: CGFloat = 0
+    /// The ids of the tiles the current section shows, in their natural order.
+    var naturalIDs: [String] = []
+}
+
+private struct DashboardLayoutContextKey: EnvironmentKey {
+    static let defaultValue = DashboardLayoutContext()
+}
+
+extension EnvironmentValues {
+    var dashboardLayoutContext: DashboardLayoutContext {
+        get { self[DashboardLayoutContextKey.self] }
+        set { self[DashboardLayoutContextKey.self] = newValue }
+    }
 }
 
 extension View {
-    /// The tile takes this many columns of its `TileGrid` (fewer when the window has fewer).
-    func tileSpan(_ columns: Int) -> some View { layoutValue(key: TileSpanKey.self, value: columns) }
+    /// Makes this view the tile `id` of `section`'s grid: sized and placed by the saved layout, and (in edit mode)
+    /// resizable by its corner and draggable to reorder.
+    func dashSlot(_ section: DashboardLayout.Section, _ id: String) -> some View {
+        modifier(DashSlot(section: section, id: id))
+    }
 }
 
-/// Tiles in columns of at least `minimumColumnWidth` (as many as fit, up to three), filled in order; every tile
-/// in a row has that row's height. Always exactly full rows of its columns' width: no gaps on a wide window.
+/// Tiles on a grid of columns whose count and rows' least height come from the saved layout (`DashboardLayout`).
+/// Tiles take their spans in the user's order; a row is as tall as its tallest single-row tile needs (and at least
+/// the section's row height), and a tile spanning two rows takes both. Always full rows of columns: no gaps at the
+/// right edge.
 struct TileGrid: Layout {
-    var minimumColumnWidth: CGFloat = 236
+    var section: DashboardLayout.Section
+    var layout: DashboardLayout
     var spacing: CGFloat = 12
-    var maximumColumns = 3
 
-    private func columnCount(_ width: CGFloat) -> Int {
-        max(1, min(maximumColumns, Int(((width + spacing) / (minimumColumnWidth + spacing)).rounded(.down))))
+    private struct Laid {
+        var placements: [DashboardLayout.Placement]
+        var indexOf: [String: Int]
+        var columnWidth: CGFloat
+        var rowHeights: [CGFloat]
     }
 
-    /// The rows as (subview index, columns taken).
-    private func rows(_ subviews: Subviews, columns: Int) -> [[(index: Int, span: Int)]] {
-        var rows: [[(index: Int, span: Int)]] = [[]]
-        var used = 0
+    private func laid(_ subviews: Subviews, width: CGFloat) -> Laid {
+        var ids: [String] = []
+        var indexOf: [String: Int] = [:]
         for (index, subview) in subviews.enumerated() {
-            let span = min(max(1, subview[TileSpanKey.self]), columns)
-            if used + span > columns, used > 0 { rows.append([]); used = 0 }
-            rows[rows.count - 1].append((index, span))
-            used += span
+            var id = subview[TileIDKey.self]
+            if id.isEmpty || indexOf[id] != nil { id = "tile\(index)" }
+            ids.append(id)
+            indexOf[id] = index
         }
-        // A row that doesn't fill the columns gives the rest to its last tile.
-        return rows.filter { !$0.isEmpty }.map { row in
-            var row = row
-            let spare = columns - row.reduce(0) { $0 + $1.span }
-            if spare > 0 { row[row.count - 1].span += spare }
-            return row
-        }
-    }
-
-    private func layout(_ subviews: Subviews, width: CGFloat) -> (heights: [CGFloat], rows: [[(index: Int, span: Int)]], columnWidth: CGFloat) {
-        let columns = columnCount(width)
+        let placements = layout.placements(section, natural: ids, width: Double(width), spacing: Double(spacing))
+        let columns = max(1, layout.columnCount(section, width: Double(width), spacing: Double(spacing)))
         let columnWidth = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
-        let rows = rows(subviews, columns: columns)
-        let heights = rows.map { row in
-            row.map { item in
-                subviews[item.index].sizeThatFits(ProposedViewSize(width: columnWidth * CGFloat(item.span) + spacing * CGFloat(item.span - 1), height: nil)).height
-            }.max() ?? 0
+        let minimum = CGFloat(layout.layout(section).rowHeight.minimumHeight)
+        var heights = [CGFloat](repeating: minimum, count: (placements.map { $0.row + $0.rows }.max() ?? 0))
+        func tileWidth(_ placement: DashboardLayout.Placement) -> CGFloat {
+            columnWidth * CGFloat(placement.columns) + spacing * CGFloat(placement.columns - 1)
         }
-        return (heights, rows, columnWidth)
+        func ideal(_ placement: DashboardLayout.Placement) -> CGFloat {
+            subviews[indexOf[placement.tile]!].sizeThatFits(ProposedViewSize(width: tileWidth(placement), height: nil)).height
+        }
+        for placement in placements where placement.rows == 1 { heights[placement.row] = max(heights[placement.row], ideal(placement)) }
+        for placement in placements where placement.rows > 1 {
+            let have = (placement.row..<(placement.row + placement.rows)).reduce(0) { $0 + heights[$1] } + spacing * CGFloat(placement.rows - 1)
+            let need = ideal(placement)
+            if need > have { heights[placement.row + placement.rows - 1] += need - have }
+        }
+        return Laid(placements: placements, indexOf: indexOf, columnWidth: columnWidth, rowHeights: heights)
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? minimumColumnWidth * 3
-        let laid = layout(subviews, width: width)
-        let height = laid.heights.reduce(0, +) + spacing * CGFloat(max(0, laid.heights.count - 1))
-        return CGSize(width: width, height: height)
+        let width = proposal.width ?? 236 * 3
+        let laid = laid(subviews, width: width)
+        return CGSize(width: width, height: laid.rowHeights.reduce(0, +) + spacing * CGFloat(max(0, laid.rowHeights.count - 1)))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let laid = layout(subviews, width: bounds.width)
+        let laid = laid(subviews, width: bounds.width)
+        var rowTops: [CGFloat] = []
         var y = bounds.minY
-        for (rowIndex, row) in laid.rows.enumerated() {
-            var x = bounds.minX
-            for item in row {
-                let width = laid.columnWidth * CGFloat(item.span) + spacing * CGFloat(item.span - 1)
-                subviews[item.index].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                                           proposal: ProposedViewSize(width: width, height: laid.heights[rowIndex]))
-                x += width + spacing
-            }
-            y += laid.heights[rowIndex] + spacing
+        for height in laid.rowHeights { rowTops.append(y); y += height + spacing }
+        for placement in laid.placements {
+            let width = laid.columnWidth * CGFloat(placement.columns) + spacing * CGFloat(placement.columns - 1)
+            let height = (placement.row..<(placement.row + placement.rows)).reduce(0) { $0 + laid.rowHeights[$1] } + spacing * CGFloat(placement.rows - 1)
+            subviews[laid.indexOf[placement.tile]!].place(
+                at: CGPoint(x: bounds.minX + (laid.columnWidth + spacing) * CGFloat(placement.column), y: rowTops[placement.row]),
+                anchor: .topLeading, proposal: ProposedViewSize(width: width, height: height))
         }
     }
 }
 
-/// A titled section: its name, a rule, then its tiles.
+/// A titled section: its name, a rule, then its tiles. In edit mode a menu sets the section's columns and row height.
 struct DashboardSection<Content: View>: View {
-    let title: String
+    let section: DashboardLayout.Section
+    /// The ids of the tiles shown, in their natural order.
+    let tiles: [String]
     @ViewBuilder let content: Content
+    @Environment(\.dashboardLayoutContext) private var context
+    @State private var width: CGFloat = 0
 
     var body: some View {
+        let layout = context.layout.layout(section)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Text(title).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                Text(section.title).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Rectangle().fill(Color(nsColor: .separatorColor)).frame(height: 1)
+                if context.isEditing {
+                    Menu {
+                        Picker("Columns", selection: Binding(get: { layout.columns ?? 0 }, set: { value in
+                            context.change?(section) { $0.setColumns(value == 0 ? nil : value, in: section) }
+                        })) {
+                            Text("Auto").tag(0)
+                            ForEach(Array(DashboardLayout.SectionLayout.columnChoices), id: \.self) { Text("\($0) columns").tag($0) }
+                        }
+                        Picker("Row height", selection: Binding(get: { layout.rowHeight }, set: { value in
+                            context.change?(section) { $0.setRowHeight(value, in: section) }
+                        })) {
+                            ForEach(DashboardLayout.RowHeight.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                    } label: {
+                        Label("\(layout.columns.map { "\($0) columns" } ?? "Auto columns") · \(layout.rowHeight.title) rows", systemImage: "slider.horizontal.3")
+                            .font(.caption).lineLimit(1).fixedSize()
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .accessibilityLabel("\(section.title) layout")
+                }
             }
-            TileGrid { content }
+            TileGrid(section: section, layout: context.layout) { content }
+                .environment(\.dashboardLayoutContext, { var inner = context; inner.sectionWidth = width; inner.naturalIDs = tiles; return inner }())
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         }
     }
+}
+
+/// Edit mode for one tile: a layer over it that takes the clicks, drags the tile to reorder, and a corner handle that
+/// resizes it in whole grid cells.
+private struct DashSlot: ViewModifier {
+    let section: DashboardLayout.Section
+    let id: String
+    @Environment(\.dashboardLayoutContext) private var context
+    @State private var dragged: DashboardLayout.Span?
+    @State private var dropTargeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay { if context.isEditing { editLayer } }
+            .zIndex(dragged == nil ? 0 : 1)
+            .layoutValue(key: TileIDKey.self, value: id)
+    }
+
+    private var editLayer: some View {
+        GeometryReader { proxy in
+            let spacing = 12.0
+            let columns = max(1, context.layout.columnCount(section, width: Double(context.sectionWidth), spacing: spacing))
+            let columnPitch = (Double(context.sectionWidth) + spacing) / Double(columns)
+            let stored = context.layout.span(id, in: section)
+            let shownColumns = max(1, Int(((Double(proxy.size.width) + spacing) / columnPitch).rounded()))
+            let start = DashboardLayout.Span(columns: shownColumns, rows: stored.rows)
+            let rowPitch = (Double(proxy.size.height) + spacing) / Double(start.rows)
+            let shape = RoundedRectangle(cornerRadius: Panel<EmptyView, EmptyView>.cornerRadius)
+            ZStack(alignment: .bottomTrailing) {
+                shape.fill(Color.accentColor.opacity(dropTargeted ? 0.25 : 0.06))
+                shape.strokeBorder(Color.accentColor.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                if let dragged {
+                    shape.strokeBorder(Color.accentColor, lineWidth: 2)
+                        .frame(width: columnPitch * Double(dragged.columns) - spacing, height: rowPitch * Double(dragged.rows) - spacing)
+                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                        .allowsHitTesting(false)
+                }
+                Text("\(dragged?.columns ?? start.columns) × \(dragged?.rows ?? start.rows)")
+                    .font(.caption.monospacedDigit().weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor)).foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(6)
+                    .allowsHitTesting(false)
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .frame(width: 22, height: 22).background(Circle().fill(Color.accentColor)).padding(6)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                        .onChanged { value in
+                            dragged = DashboardLayout.draggedSpan(from: start, dx: Double(value.translation.width), dy: Double(value.translation.height),
+                                                                  cellWidth: columnPitch, cellHeight: rowPitch, maximumColumns: columns)
+                        }
+                        .onEnded { value in
+                            let span = DashboardLayout.draggedSpan(from: start, dx: Double(value.translation.width), dy: Double(value.translation.height),
+                                                                   cellWidth: columnPitch, cellHeight: rowPitch, maximumColumns: columns)
+                            dragged = nil
+                            if span != start { context.change?(section) { $0.setSpan(id, in: section, to: span) } }
+                        })
+                    .help("Drag to resize")
+                    .accessibilityLabel("Resize tile")
+            }
+            .contentShape(Rectangle())
+            .draggable(id) {
+                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.5)).frame(width: 120, height: 60)
+            }
+            .dropDestination(for: String.self) { items, _ in
+                guard let other = items.first, other != id else { return false }
+                context.change?(section) { $0.move(other, onto: id, in: section, natural: context.naturalIDs) }
+                return true
+            } isTargeted: { dropTargeted = $0 }
+        }
+    }
+
 }
 
 /// One tile: a small title (with an optional "Name ›" link and accessory), then its content, filling the height
@@ -188,5 +314,26 @@ struct TileRing: View {
         .frame(width: size, height: size)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
+    }
+}
+
+/// A tile's figures on the left and its chart on the right. The chart fills the height the tile gives it (at least
+/// `minimumHeight`) and needs `minimumChartWidth`; a tile too narrow for both shows the figures alone.
+struct ChartBeside<Figures: View, Chart: View>: View {
+    var minimumHeight: CGFloat = 84
+    var minimumChartWidth: CGFloat = 110
+    @ViewBuilder let figures: Figures
+    @ViewBuilder let chart: (CGFloat) -> Chart
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                figures.frame(width: 168, alignment: .leading)
+                GeometryReader { proxy in chart(max(minimumHeight, proxy.size.height)) }
+                    .frame(minWidth: minimumChartWidth, minHeight: minimumHeight, maxHeight: .infinity)
+            }
+            figures.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
