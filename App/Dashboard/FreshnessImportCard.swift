@@ -12,6 +12,8 @@ struct FreshnessImportCard: View {
     @ObservedObject var importCenter: ImportCenterModel
     let accounts: [Account]
     @Binding var selectedAccountId: Int64?
+    /// Files waiting for the Mac to import (`DashboardReview.importsWaiting`).
+    var importsWaiting: Int = 0
     let navigate: (AppScreen) -> Void
 
     private var tint: Color {
@@ -135,6 +137,12 @@ struct FreshnessImportCard: View {
                 }
             }
             importStatus
+            if importsWaiting > 0 {
+                HStack {
+                    Text("\(importsWaiting) waiting for the Mac to import").font(.callout)
+                    Button("Import") { navigate(.imports) }.buttonStyle(.link).fixedSize()
+                }
+            }
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
             NonGBPImportCaption(account: selectedAccount, eurToGbpRate: eurToGbpRate)

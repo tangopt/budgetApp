@@ -26,6 +26,9 @@ struct DashboardContent {
     /// Some account reaches the person signed in only as its summaries, or not at all: net worth says it
     /// "Includes everything you can see" (`SharingCopy.netWorthNote`).
     var showsNetWorthNote = false
+    /// The review cards' read model (tax year, property month, evidence, mortgages, files waiting), as the person
+    /// signed in may see it.
+    var review = DashboardReview(tax: nil, property: nil, evidence: nil, mortgages: nil, importsWaiting: 0, attention: [])
 }
 
 @MainActor
@@ -56,9 +59,11 @@ final class DashboardViewModel: ObservableObject {
             let today = todayProvider()
             // As the person signed in sees it (`SharedActualsSource`): the other person's accounts below Everything as
             // their summaries, their Hidden ones not at all.
-            let (loaded, partial) = try dbQueue.read { db in
+            let lastVisit = Self.lastVisit
+            let (loaded, partial, review) = try dbQueue.read { db in
                 let actuals = try SignedInActor.actuals(db: db, today: today)
-                return (try DashboardInput.load(db: db, today: today, actuals: actuals), actuals.viewer.seesOnlyPart(of: try Account.fetchAll(db)))
+                return (try DashboardInput.load(db: db, today: today, actuals: actuals), actuals.viewer.seesOnlyPart(of: try Account.fetchAll(db)),
+                        try DashboardReview.load(db: db, today: today, lastVisit: lastVisit, viewer: try SignedInActor.actor(db: db)))
             }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
             let thisYear = MonthRange.components(of: today).year
@@ -79,7 +84,8 @@ final class DashboardViewModel: ObservableObject {
                 accounts: DashboardCalculator.accountSummaries(loaded),
                 yearRange: range,
                 eurToGbpRate: loaded.rate.eurToGbpRate,
-                showsNetWorthNote: partial
+                showsNetWorthNote: partial,
+                review: review
             )
             if !range.contains(selectedYear) { selectedYear = thisYear }
             flows = DashboardCalculator.monthlyFlows(loaded, year: selectedYear)
@@ -88,6 +94,18 @@ final class DashboardViewModel: ObservableObject {
         } catch {
             errorMessage = "Couldn't load the dashboard: \(error.localizedDescription)"
         }
+    }
+
+    /// When the Dashboard was last seen on this device (`UserDefaults` `dashboardLastVisit`); nil before the first visit.
+    static let lastVisitKey = "dashboardLastVisit"
+    static var lastVisit: Date? {
+        let seconds = UserDefaults.standard.double(forKey: lastVisitKey)
+        return seconds > 0 ? Date(timeIntervalSince1970: seconds) : nil
+    }
+
+    /// The Dashboard disappeared: what changed since is measured from now.
+    func markVisited() {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastVisitKey)
     }
 
     /// Pay-month boundaries of the last successful load.
