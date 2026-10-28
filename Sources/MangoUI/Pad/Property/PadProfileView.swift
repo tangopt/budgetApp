@@ -31,7 +31,7 @@ struct PadProfileView: View {
                     PadWriteNotices(write: write)
                     if let property = model.snapshot.property {
                         // Cards two (or more) to a row, each row's cards as tall as its tallest.
-                        PadTileGrid(minimumColumnWidth: 380, balanced: false) {
+                        PadGrid(minimumColumnWidth: 380, balanced: false) {
                             detailsCard(property)
                             addressCard(property)
                             PadPropertyMapCard(model: model, locator: locator, property: property)

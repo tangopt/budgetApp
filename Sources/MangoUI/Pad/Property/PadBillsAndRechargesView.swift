@@ -154,7 +154,7 @@ struct PadBillsAndRechargesView: View {
         let summary = model.summary(year: model.year)
         let currency = model.currency
         return VStack(alignment: .leading, spacing: 10) {
-            PadTileGrid(minimumColumnWidth: 190) {
+            PadGrid(minimumColumnWidth: 190) {
                 tile("Outstanding", caption: summary.outstandingCaption, pill: summary.overdue > 0 ? "\(summary.overdue) overdue" : nil) {
                     MoneyText(minorUnits: summary.outstandingMinorUnits, currency: currency, role: .neutral, fit: .shrink(), font: .title2.weight(.semibold))
                 }

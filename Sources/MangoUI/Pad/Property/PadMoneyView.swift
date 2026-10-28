@@ -146,7 +146,7 @@ struct PadMoneyView: View {
     // MARK: Tiles and chips
 
     private var tiles: some View {
-        PadTileGrid(minimumColumnWidth: 190) {
+        PadGrid(minimumColumnWidth: 190) {
             ForEach(model.tiles) { tile in
                 PadTile(tile.title) {
                     if let amount = tile.amount {
@@ -284,7 +284,7 @@ struct PadMoneyView: View {
             if model.displayCurrency != model.currency || model.showsGBP && model.offersGBP {
                 Text("Transactions keep their own currency.").mangoFont(.footnote).foregroundStyle(.secondary)
             }
-            PadTileGrid(minimumColumnWidth: 340, balanced: false) {
+            PadGrid(minimumColumnWidth: 340, balanced: false) {
                 ForEach(lines) { line in
                     PadMoneyLineRow(model: model, line: line, isSelected: model.panel?.line.id == line.id, card: true) {
                         Task { await model.select(line) }

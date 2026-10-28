@@ -281,6 +281,26 @@ struct PadTile<Value: View, Caption: View>: View {
     }
 }
 
+/// `PadTileGrid` with its minimum column width scaled with Dynamic Type, so larger text gets fewer, wider columns
+/// rather than truncated names and dates. What the iPad screens use.
+struct PadGrid<Content: View>: View {
+    @ScaledMetric private var minimumColumnWidth: CGFloat
+    let maximumColumns: Int
+    let balanced: Bool
+    let content: Content
+
+    init(minimumColumnWidth: CGFloat, maximumColumns: Int = .max, balanced: Bool = true, @ViewBuilder content: () -> Content) {
+        _minimumColumnWidth = ScaledMetric(wrappedValue: minimumColumnWidth, relativeTo: .body)
+        self.maximumColumns = maximumColumns
+        self.balanced = balanced
+        self.content = content()
+    }
+
+    var body: some View {
+        PadTileGrid(minimumColumnWidth: minimumColumnWidth, maximumColumns: maximumColumns, balanced: balanced) { content }
+    }
+}
+
 /// Tiles (or cards) in rows of equal-width columns, as many as fit at `minimumColumnWidth` (at most `maximumColumns`),
 /// where every item of a row is offered the row's tallest height: a row's tiles always end level.
 struct PadTileGrid: Layout {

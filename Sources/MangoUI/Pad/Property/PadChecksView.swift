@@ -302,7 +302,7 @@ struct PadChecksView: View {
         if costs.isEmpty {
             Text("No cost repeats in the property's history yet.").mangoFont(.callout).foregroundStyle(.secondary)
         }
-        PadTileGrid(minimumColumnWidth: 360, balanced: false) {
+        PadGrid(minimumColumnWidth: 360, balanced: false) {
             ForEach(costs) { cost in
                 VStack(alignment: .leading, spacing: 8) {
                     costRow(cost, compact: false)

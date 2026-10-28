@@ -18,14 +18,14 @@ struct PadTenancyDetailView: View {
         VStack(alignment: .leading, spacing: PadSpacing.s) {
             header
             PadRefusalBanner(message: write.message(for: PadTenanciesModel.tenancyRow(tenancy.id)))
-            PadTileGrid(minimumColumnWidth: 190, maximumColumns: 4) {
+            PadGrid(minimumColumnWidth: 190, maximumColumns: 4) {
                 tenantTile
                 rentTile
                 depositTile
                 datesTile
             }
             // Side by side when both fit at 320 pt, each as tall as the taller.
-            PadTileGrid(minimumColumnWidth: 320, maximumColumns: 2) {
+            PadGrid(minimumColumnWidth: 320, maximumColumns: 2) {
                 rentHistory
                 contract
             }

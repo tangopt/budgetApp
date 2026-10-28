@@ -127,7 +127,7 @@ struct PadCalendarView: View {
                         }
                     }
                 }
-                PadTileGrid(minimumColumnWidth: 320, balanced: false) {
+                PadGrid(minimumColumnWidth: 320, balanced: false) {
                     ForEach(month.obligations) { obligation in row(obligation) }
                 }
             }
@@ -207,7 +207,7 @@ struct PadCalendarView: View {
             if items.isEmpty {
                 Text("Nothing is due.").mangoFont(.callout).foregroundStyle(.secondary)
             }
-            PadTileGrid(minimumColumnWidth: 320, balanced: false) {
+            PadGrid(minimumColumnWidth: 320, balanced: false) {
                 ForEach(items) { row($0) }
             }
         }
