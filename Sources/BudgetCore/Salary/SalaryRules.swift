@@ -132,11 +132,10 @@ public struct SalaryRules: Equatable, Sendable {
                   note: "Also listed on the employers' rates and thresholds page"),
             .init(covers: "Relief at source at the 20% basic rate", url: pensionTaxRelief)
         ],
-        checkedFields: ["scottishBands", "studentLoanPlan4Threshold", "studentLoanPlan5Threshold"]
+        checkedFields: []
     )
 
-    /// 2026/27. Income tax and NI thresholds are frozen, so they repeat 2025/26; the whole year is
-    /// marked to check.
+    /// 2026/27, checked against GOV.UK on 28 Oct 2026 (income tax, Scottish bands, employee NI, student loans).
     public static let y2026 = SalaryRules(
         startYear: 2026,
         personalAllowance: 1_257_000, taperThreshold: 10_000_000, taperRateNumerator: 1, taperRateDenominator: 2,
@@ -159,13 +158,13 @@ public struct SalaryRules: Equatable, Sendable {
         reliefAtSourceRateBP: 2_000,
         sources: [
             .init(covers: "Personal allowance, taper, England/Wales/NI bands and rates", url: incomeTaxRates,
-                  note: "Thresholds frozen; assumed equal to 2025/26"),
+                  note: "Checked against GOV.UK 28 Oct 2026"),
             .init(covers: "Scottish bands and rates", url: scottishIncomeTax),
             .init(covers: "Class 1 employee NI thresholds and rates", url: employers2026,
-                  note: "Assumed unchanged from 2025/26"),
+                  note: "Checked against GOV.UK 28 Oct 2026"),
             .init(covers: "Student and postgraduate loan thresholds and rates", url: studentLoanThresholds),
             .init(covers: "Relief at source at the 20% basic rate", url: pensionTaxRelief)
         ],
-        checkedFields: allValueFields
+        checkedFields: []
     )
 }

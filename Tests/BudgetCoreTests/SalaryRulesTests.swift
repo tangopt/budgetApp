@@ -27,16 +27,15 @@ final class SalaryRulesTests: XCTestCase {
     }
 
     func testCheckedFieldsListed() {
-        let rules = SalaryRules.forYear(2026)!
-        XCTAssertFalse(rules.checkedFields.isEmpty)
         for table in SalaryRules.all {
             let names = Set(Mirror(reflecting: table).children.compactMap(\.label))
             for field in table.checkedFields {
                 XCTAssertTrue(names.contains(field), "\(table.startYear): \(field) is not a property")
             }
         }
-        XCTAssertEqual(Set(SalaryRules.forYear(2025)!.checkedFields),
-                       ["scottishBands", "studentLoanPlan4Threshold", "studentLoanPlan5Threshold"])
+        // Both years were checked against GOV.UK on 28 Oct 2026.
+        XCTAssertEqual(SalaryRules.forYear(2025)!.checkedFields, [])
+        XCTAssertEqual(SalaryRules.forYear(2026)!.checkedFields, [])
     }
 
     func testUnknownYearIsNil() {
