@@ -292,13 +292,17 @@ final class ImportPipelineTests: XCTestCase {
     /// process's folder and a recent old-style copy are kept.
     func testStalePlanningCopiesAreSwept() throws {
         let fileManager = FileManager.default
-        let root = ImportPlanningCopy.folder
-        try fileManager.createDirectory(at: ImportPlanningCopy.processFolder, withIntermediateDirectories: true)
+        // Its own folder: the shared one is swept by every planning copy other tests take (in parallel), which would
+        // remove this test's "stale" folders before it does.
+        let root = fileManager.temporaryDirectory.appendingPathComponent("BudgetImportPlanningTest-\(UUID().uuidString)", isDirectory: true)
+        let ownFolder = ImportPlanningCopy.processFolder(pid: getpid(), in: root)
+        try fileManager.createDirectory(at: ownFolder, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
         // A pid no process has (searched downwards from the top of the range).
         var deadPid: pid_t = 99_999
         while ImportPlanningCopy.isRunning(deadPid) { deadPid -= 1 }
-        let dead = ImportPlanningCopy.processFolder(pid: deadPid)
-        let running = ImportPlanningCopy.processFolder(pid: 1)
+        let dead = ImportPlanningCopy.processFolder(pid: deadPid, in: root)
+        let running = ImportPlanningCopy.processFolder(pid: 1, in: root)
         for folder in [dead, running] {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
             try Data("copy".utf8).write(to: folder.appendingPathComponent("plan-test.sqlite"))
@@ -308,14 +312,13 @@ final class ImportPipelineTests: XCTestCase {
         try Data("copy".utf8).write(to: old)
         try Data("copy".utf8).write(to: recent)
         try fileManager.setAttributes([.modificationDate: Date().addingTimeInterval(-2 * 60 * 60)], ofItemAtPath: old.path)
-        defer { for url in [running, recent] { try? fileManager.removeItem(at: url) } }
 
-        XCTAssertGreaterThanOrEqual(ImportPipeline.removeStalePlanningCopies(), 2)
+        XCTAssertEqual(ImportPlanningCopy.removeStale(in: root), 2)
         XCTAssertFalse(fileManager.fileExists(atPath: dead.path), "a process no longer running")
         XCTAssertFalse(fileManager.fileExists(atPath: old.path), "an old-style copy not touched for an hour")
         XCTAssertTrue(fileManager.fileExists(atPath: running.path), "a running process's copies")
         XCTAssertTrue(fileManager.fileExists(atPath: recent.path), "an old-style copy still in use")
-        XCTAssertTrue(fileManager.fileExists(atPath: ImportPlanningCopy.processFolder.path), "this process's own")
+        XCTAssertTrue(fileManager.fileExists(atPath: ownFolder.path), "this process's own")
     }
 
     /// The copies are in this process's folder, which its exit handler removes.

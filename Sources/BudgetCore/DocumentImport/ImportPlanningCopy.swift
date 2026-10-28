@@ -30,8 +30,8 @@ final class ImportPlanningCopy: @unchecked Sendable {
     /// This process's copies: `<folder>/process-<pid>`.
     static var processFolder: URL { processFolder(pid: getpid()) }
 
-    static func processFolder(pid: pid_t) -> URL {
-        folder.appendingPathComponent("\(processPrefix)\(pid)", isDirectory: true)
+    static func processFolder(pid: pid_t, in root: URL? = nil) -> URL {
+        (root ?? folder).appendingPathComponent("\(processPrefix)\(pid)", isDirectory: true)
     }
 
     /// Registers the exit handler that removes this process's folder (once per process).
@@ -65,14 +65,16 @@ final class ImportPlanningCopy: @unchecked Sendable {
 
     /// Copies left behind by processes that ended without removing them: the folders of
     /// processes no longer running, and copies at the top of `folder` (where builds before the
-    /// per-process folders put them) not touched for `legacyAge`. Returns how many it removed.
+    /// per-process folders put them) not touched for `legacyAge`. Returns how many it removed. `root`: a folder other
+    /// than the shared one (a test sweeping its own, which no concurrent copy's sweep can reach).
     @discardableResult
-    static func removeStale(now: Date = Date(), legacyAge: TimeInterval = 60 * 60) -> Int {
+    static func removeStale(now: Date = Date(), legacyAge: TimeInterval = 60 * 60, in root: URL? = nil) -> Int {
         let fileManager = FileManager.default
-        guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return 0 }
+        let root = root ?? folder
+        guard let names = try? fileManager.contentsOfDirectory(atPath: root.path) else { return 0 }
         var removed = 0
         for name in names {
-            let url = folder.appendingPathComponent(name)
+            let url = root.appendingPathComponent(name)
             if name.hasPrefix(processPrefix) {
                 guard let pid = pid_t(name.dropFirst(processPrefix.count)), pid != getpid(), !isRunning(pid) else { continue }
                 if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
