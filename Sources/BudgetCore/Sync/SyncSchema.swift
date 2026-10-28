@@ -420,7 +420,7 @@ extension SyncSchema {
             SyncJSONRule("newIncomeCategoryId", .row("category")),
             SyncJSONRule("addedEntryIds[]", .row("forecastEntry")),
         ]), plainNumbers: Set(["current", "offer"].flatMap { salary in
-            ["grossAnnual", "bonusAnnual", "taxYearStart", "benefitsInKindAnnual",
+            ["grossAnnual", "bonusAnnual", "bonusPercentBP", "taxYearStart", "benefitsInKindAnnual",
              "pension.percentOfGross.basisPoints", "pension.fixedAnnual.pence",
              "employerPension.percentOfGross.basisPoints", "employerPension.fixedAnnual.pence"].map { "\(salary).\($0)" }
         } + ["noticeGapMonths", "oneOffs[].amountMinorUnits"])),
