@@ -27,10 +27,11 @@ struct PadProfileView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
                     PadWriteNotices(write: write)
                     if let property = model.snapshot.property {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 380), spacing: 16, alignment: .top)], alignment: .leading, spacing: 16) {
+                        // Cards two (or more) to a row, each row's cards as tall as its tallest.
+                        PadGrid(minimumColumnWidth: 380, balanced: false) {
                             detailsCard(property)
                             addressCard(property)
                             PadPropertyMapCard(model: model, locator: locator, property: property)
@@ -40,18 +41,18 @@ struct PadProfileView: View {
                             groupsCard
                             documentsCard
                         }
+                        .padEqualHeightCards()
                     } else {
                         EmptyState(symbol: "person.text.rectangle", title: "No property",
                                    message: "The property's profile appears here once the Mac has shared it.")
                             .frame(maxWidth: .infinity).padding(.top, 60)
                     }
                 }
-                .padding(20)
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Profile")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Profile")
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await write.refresh()

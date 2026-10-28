@@ -24,24 +24,21 @@ struct PadThisMonthView: View {
         NavigationStack {
             GeometryReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: PadSpacing.section) {
                         content(wide: proxy.size.width >= Self.sideBySideWidth)
                     }
-                    .padding(20)
+                    .padPageContent()
                 }
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("This month")
-            .navigationBarTitleDisplayModeInline()
-            .toolbar {
+            .padPage("This month") {
                 // The built-in browser and its Downloads tray (hidden with demo data).
                 if let browser {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { browser.present() } label: {
-                            Label("Sites & downloads", systemImage: RowAction.openSite.systemImage)
-                        }
+                    Button { browser.present() } label: {
+                        Label("Sites & downloads", systemImage: RowAction.openSite.systemImage)
                     }
+                    .buttonStyle(.pad(.secondary))
                 }
             }
         }
@@ -99,7 +96,7 @@ struct PadThisMonthView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(checklist.tenancyName) · \(ThisMonthCopy.month(checklist.month))")
-                    .mangoFont(.title2, weight: .semibold).accessibilityAddTraits(.isHeader)
+                    .mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
                 if model.tenancies.count > 1 {
                     Menu {
                         ForEach(model.tenancies) { tenancy in

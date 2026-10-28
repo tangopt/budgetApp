@@ -29,7 +29,7 @@ public struct MonthView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     content
                 }
-                .padding(16)
+                .phonePageContent()
             }
             .background(theme.background)
             .refreshable {
@@ -37,7 +37,7 @@ public struct MonthView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .navigationTitle("Month")
+            .phonePageTitle("Month")
             .navigationDestination(for: MonthRowDestination.self) { destination in
                 MonthTransactionsView(model: model.transactionsModel(for: destination))
                     .demoBannerSlot()

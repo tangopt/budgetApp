@@ -6,6 +6,8 @@ public struct Card<Content: View>: View {
     public let title: String?
     public let content: Content
     @Environment(\.phoneTheme) private var theme
+    /// In a row of equal-height cards (the iPad's `PadTileGrid`), the card fills the height it is offered.
+    @Environment(\.cardFillsHeight) private var fillsHeight
 
     public init(title: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
@@ -31,9 +33,22 @@ public struct Card<Content: View>: View {
                     .accessibilityAddTraits(.isHeader)
             }
             content
+                .environment(\.cardFillsHeight, false)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: fillsHeight ? .topLeading : .leading)
+    }
+}
+
+private struct CardFillsHeightKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Set on a row of cards that share one height (`padEqualHeightCards()`): each `Card` fills the height offered.
+    public var cardFillsHeight: Bool {
+        get { self[CardFillsHeightKey.self] }
+        set { self[CardFillsHeightKey.self] = newValue }
     }
 }
 

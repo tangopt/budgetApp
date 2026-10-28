@@ -68,6 +68,7 @@ public struct PadRootView: View {
                 Divider()
                 detail(selection)
                     .environment(\.showsDemoData, isDemo)
+                    .environment(\.usesPadPage, true)
                     .environment(\.documentPanelSource, tabs.padDocuments.panelSource)
                     .environment(\.padBrowser, browser)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

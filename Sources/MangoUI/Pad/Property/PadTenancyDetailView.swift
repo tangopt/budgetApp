@@ -15,24 +15,19 @@ struct PadTenancyDetailView: View {
     private var currency: Currency { model.currency }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: PadSpacing.s) {
             header
             PadRefusalBanner(message: write.message(for: PadTenanciesModel.tenancyRow(tenancy.id)))
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12, alignment: .top)], spacing: 12) {
+            PadGrid(minimumColumnWidth: 190, maximumColumns: 4) {
                 tenantTile
                 rentTile
                 depositTile
                 datesTile
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    rentHistory
-                    contract
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    rentHistory
-                    contract
-                }
+            // Side by side when both fit at 320 pt, each as tall as the taller.
+            PadGrid(minimumColumnWidth: 320, maximumColumns: 2) {
+                rentHistory
+                contract
             }
         }
     }
@@ -117,15 +112,7 @@ struct PadTenancyDetailView: View {
     }
 
     private func tile<Value: View, Caption: View>(_ title: String, @ViewBuilder value: () -> Value, @ViewBuilder caption: () -> Caption) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
-            value()
-            caption().mangoFont(.footnote).foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
-        .accessibilityElement(children: .combine)
+        PadTile(title, value: value, caption: caption)
     }
 
     static func months(_ count: Int) -> String { "\(count) month\(count == 1 ? "" : "s")" }
@@ -149,9 +136,7 @@ struct PadTenancyDetailView: View {
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
+        .padCardSurface()
     }
 
     private var contract: some View {
@@ -187,8 +172,6 @@ struct PadTenancyDetailView: View {
                 Text(notes).mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
+        .padCardSurface()
     }
 }

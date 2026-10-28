@@ -41,20 +41,19 @@ struct PadAccountsView: View {
                         panel
                     }
                 }
-                .navigationTitle("Accounts")
+                .background(theme.background)
+                .padPage("Accounts") {
+                    if canAdd, let onAdd {
+                        Button(action: onAdd) { Label("Add account", systemImage: "plus") }
+                            .buttonStyle(.pad(.secondary))
+                            .accessibilityIdentifier("add-account")
+                    }
+                }
                 .navigationDestination(for: AccountDestination.self) { destination in
                     PadAccountDetailView(model: model, detail: accounts.detailModel(for: destination), onEdit: onEdit)
                         .navigationTitle(accounts.row(for: destination)?.name ?? "Account")
                         .navigationBarTitleDisplayModeInline()
                         .demoBannerSlot()
-                }
-                .toolbar {
-                    if canAdd, let onAdd {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button(action: onAdd) { Label("Add account", systemImage: "plus") }
-                                .accessibilityIdentifier("add-account")
-                        }
-                    }
                 }
             }
             .onChange(of: split, initial: true) { _, isSplit in
@@ -88,13 +87,12 @@ struct PadAccountsView: View {
     private func list(split: Bool) -> some View {
         ScrollView {
             // Not lazy: a household has a dozen accounts or so, and the snapshot probe measures every one.
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: PadSpacing.m) {
                 PadWriteNotices(write: write)
                 content(split: split)
             }
-            .padding(16)
-            .frame(maxWidth: split ? .infinity : 720)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: split ? .infinity : 720, alignment: .leading)
+            .padPageContent()
         }
         .background(theme.background)
         .refreshable {

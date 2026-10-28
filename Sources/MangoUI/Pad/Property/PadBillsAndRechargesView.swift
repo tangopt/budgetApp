@@ -20,7 +20,7 @@ struct PadBillsAndRechargesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
                     PadWriteNotices(write: write)
                     if property.tenancies.isEmpty {
                         EmptyState(symbol: "doc.text", title: "No tenancy yet", message: "Bills and statements appear here once the Mac has shared a tenancy.")
@@ -34,12 +34,11 @@ struct PadBillsAndRechargesView: View {
                                           prepareEmail: { model.emailStatementId = $0.id }, choosePayment: choosePayment)
                     }
                 }
-                .padding(20)
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Bills & recharges")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Bills & recharges")
         }
         .modifier(PadBillPanelHost(model: model) { bill in panelExtra(bill) })
         .task(id: ReloadKey(trigger: SyncReloadTrigger(syncStatus), tenancy: property.selectedTenancyId)) {
@@ -74,7 +73,7 @@ struct PadBillsAndRechargesView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(property.selectedTenancy?.referenceLabel ?? "")
-                    .mangoFont(.title2, weight: .semibold).lineLimit(1).truncationMode(.middle)
+                    .mangoFont(.title3, weight: .semibold).lineLimit(1).truncationMode(.middle)
                     .accessibilityAddTraits(.isHeader)
                 if property.tenancies.count > 1 {
                     Menu {
@@ -155,7 +154,7 @@ struct PadBillsAndRechargesView: View {
         let summary = model.summary(year: model.year)
         let currency = model.currency
         return VStack(alignment: .leading, spacing: 10) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12, alignment: .top)], spacing: 12) {
+            PadGrid(minimumColumnWidth: 190) {
                 tile("Outstanding", caption: summary.outstandingCaption, pill: summary.overdue > 0 ? "\(summary.overdue) overdue" : nil) {
                     MoneyText(minorUnits: summary.outstandingMinorUnits, currency: currency, role: .neutral, fit: .shrink(), font: .title2.weight(.semibold))
                 }
@@ -194,9 +193,7 @@ struct PadBillsAndRechargesView: View {
             Text(caption.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
             if let pill { PadStatusPill(text: pill, tone: .warning) }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
+        .padCardSurface()
         .accessibilityElement(children: .combine)
     }
 

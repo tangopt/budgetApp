@@ -18,7 +18,7 @@ struct PadCalendarView: View {
                 let sideCard = geometry.size.width >= 860 && model.selected != nil
                 HStack(alignment: .top, spacing: 0) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: PadSpacing.section) {
                             if model.isEmpty {
                                 EmptyState(symbol: "calendar.badge.clock", title: "Nothing due",
                                            message: "Link the property's accounts and category groups in Profile so recurring costs and the mortgage show here.")
@@ -34,13 +34,13 @@ struct PadCalendarView: View {
                                 }
                             }
                         }
-                        .padding(20)
+                        .padPageContent()
                     }
                     .frame(maxWidth: .infinity)
                     if sideCard, let obligation = model.selected {
                         Divider()
                         ScrollView {
-                            PadObligationCard(obligation: obligation, onClose: model.closeCard).padding(20)
+                            PadObligationCard(obligation: obligation, onClose: model.closeCard).padSidePanelContent()
                         }
                         .frame(width: 340)
                     }
@@ -48,8 +48,7 @@ struct PadCalendarView: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Calendar")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Calendar")
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.property.reload()
@@ -128,7 +127,7 @@ struct PadCalendarView: View {
                         }
                     }
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
+                PadGrid(minimumColumnWidth: 320, balanced: false) {
                     ForEach(month.obligations) { obligation in row(obligation) }
                 }
             }
@@ -152,10 +151,8 @@ struct PadCalendarView: View {
                     PadObligationAmount(obligation: obligation, font: .headline)
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            .padCardSurface()
+            .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -210,7 +207,7 @@ struct PadCalendarView: View {
             if items.isEmpty {
                 Text("Nothing is due.").mangoFont(.callout).foregroundStyle(.secondary)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
+            PadGrid(minimumColumnWidth: 320, balanced: false) {
                 ForEach(items) { row($0) }
             }
         }
