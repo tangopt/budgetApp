@@ -339,6 +339,11 @@ public struct ImportWaitingList: Sendable {
             """)
     }
 
+    /// How many files are waiting (`waiting`), for the Dashboard.
+    public static func waitingCount(db: Database) throws -> Int {
+        try waiting(db: db).count
+    }
+
     private static func row(db: Database, sha256: String) throws -> ImportWaitingFile? {
         try ImportWaitingFile.filter(Column("sha256") == sha256).fetchOne(db)
     }
