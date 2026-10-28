@@ -29,7 +29,7 @@ public struct SearchView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     content
                 }
-                .padding(16)
+                .phonePageContent()
             }
             .background(theme.background)
             .refreshable {
@@ -37,7 +37,7 @@ public struct SearchView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .navigationTitle("Search")
+            .phonePageTitle("Search", keepsSearchBar: true)
             .modifier(SearchField(model: model))
         }
         .sheet(item: $model.detail) { row in

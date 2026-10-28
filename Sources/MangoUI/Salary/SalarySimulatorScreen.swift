@@ -12,6 +12,7 @@ public struct SalarySimulatorScreen: View {
     @State private var side: Side = .current
     @Environment(\.phoneTheme) private var theme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.usesPadPage) private var usesPadPage
 
     enum Side: String, CaseIterable, Identifiable {
         case current = "Current", offer = "Offer"
@@ -37,7 +38,8 @@ public struct SalarySimulatorScreen: View {
             let pinned = !dynamicTypeSize.isAccessibilitySize
             VStack(spacing: 0) {
                 if pinned {
-                    strip.padding([.horizontal, .top], 16).padding(.bottom, 8)
+                    strip.padding(.horizontal, usesPadPage ? PadMetrics.pageInset : 16)
+                        .padding(.top, usesPadPage ? PadSpacing.xs : 16).padding(.bottom, 8)
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -58,15 +60,14 @@ public struct SalarySimulatorScreen: View {
                         Text("An estimate from published UK rates, not tax advice.")
                             .mangoFont(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(16)
-                    .padding(.top, pinned ? 0 : 0)
+                    .phonePageContent()
                 }
                 .scrollDismissesKeyboard(.interactively)
             }
         }
         .background(theme.background)
         .task { await viewModel.refreshPrefill() }
-        .navigationTitle("UK Salary Calculator")
+        .phonePageTitle("UK Salary Calculator")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

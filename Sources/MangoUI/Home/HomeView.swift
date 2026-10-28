@@ -31,7 +31,7 @@ public struct HomeView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     content
                 }
-                .padding(16)
+                .phonePageContent()
             }
             .background(theme.background)
             .refreshable {
@@ -39,7 +39,8 @@ public struct HomeView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .navigationTitle("Home")
+            // On the iPad, Settings is the sidebar footer's.
+            .phonePageTitle("Home")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onSettings) {
