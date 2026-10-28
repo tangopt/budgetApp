@@ -268,8 +268,8 @@ public enum PadRoutes {
         DemoRoute(name: "pad-check-statement", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
             AnyView(CheckAndLinkSheet(model: CheckSamples.statement(), showsLivePreview: false, onClose: {}))
         },
-        // Step 19: a statement imported here (Import, Finish on the Mac), waiting while the Mac imports, offline, and a
-        // member without import access (Send to the Mac).
+        // Step 19: a statement imported here (Import, Finish on the Mac), waiting while the Mac imports, offline, the
+        // owner's account in a zone this iPad doesn't write (Send to the Mac), and a member's iPad (a note, no button).
         DemoRoute(name: "pad-import-statement", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
             AnyView(CheckAndLinkSheet(model: CheckSamples.statement(route: .importHere, canFinishOnMac: true), showsLivePreview: false,
                                       onClose: {}))
@@ -285,6 +285,9 @@ public enum PadRoutes {
         },
         DemoRoute(name: "pad-import-send", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
             AnyView(CheckAndLinkSheet(model: CheckSamples.statement(route: .sendToMac), showsLivePreview: false, onClose: {}))
+        },
+        DemoRoute(name: "pad-import-member", sizes: DemoRoute.padSizes, minimumFigures: 5, pad: true) { _ in
+            AnyView(CheckAndLinkSheet(model: CheckSamples.statement(route: .ownerImports), showsLivePreview: false, onClose: {}))
         },
         DemoRoute(name: "pad-check-refusal", sizes: DemoRoute.padSizes, minimumFigures: 6, pad: true) { _ in
             AnyView(CheckAndLinkSheet(model: CheckSamples.utility(refusal: DeviceWriteCopy.filedYear(years: ["2024/25"])),

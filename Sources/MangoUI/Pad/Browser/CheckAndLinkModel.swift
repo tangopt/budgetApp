@@ -255,7 +255,13 @@ public final class CheckAndLinkModel {
             case .heldBy(let name, let since)?: route = .heldBy(deviceName: name, since: since)
             case .offline?: route = .offline
             case .noImportAccess?: route = .sendToMac
-            case nil: break
+            case .foundChanges?:
+                // Another device's import arrived: the statement is read again, the refusal kept above it.
+                isWorking = false
+                phase = .reading
+                await start()
+                refusal = PadStatementImportCopy.foundChanges
+            case .stillSyncing?, nil: break
             }
             return false
         }

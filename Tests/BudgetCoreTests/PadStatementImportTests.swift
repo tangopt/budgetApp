@@ -238,16 +238,103 @@ final class PadStatementImportTests: XCTestCase {
         XCTAssertEqual(renewed?.holderName, "Mac")
     }
 
-    func testALeaseStillHeldHereIsKeptNotTakenAgain() async throws {
+    func testALeaseStillHeldHereStaysUsedWhenTakenAgain() async throws {
         _ = try await importFebruary(try download(february()))
-        let taken = await leases.acquired
-        XCTAssertEqual(taken, 1)
-        // Its batch still uploading (the lease used): the Undo goes under the same lease, its used mark kept.
+        // Its batch still uploading (the lease used): the Undo takes it again through the engine (review M1), and it
+        // stays marked used, so the push keeps renewing it until that batch is up.
         let runId = try await queue.read { db in try Int64.fetchOne(db, sql: "SELECT MAX(id) FROM importRun")! }
         _ = try await importer().undo(runId: runId, writer: writer(), now: start.addingTimeInterval(60))
-        let again = await leases.acquired
-        XCTAssertEqual(again, 1, "not taken again")
+        let taken = await leases.acquired
+        XCTAssertEqual(taken, 2, "always through the engine")
         try await queue.read { db in XCTAssertEqual(try SyncImportGate.heldLease(db: db)?.used, true) }
+    }
+
+    // MARK: Catching up (review I2)
+
+    /// The Mac's import of the same month is still arriving (its batch waits in staging): Import refuses, nothing is
+    /// written, and the lease taken for it goes back.
+    func testImportWaitsWhileAnotherDevicesBatchIsArriving() async throws {
+        let item = try download(february())
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt)
+                VALUES ('transaction_', 'staged-row', '{}', 'batch', 'mac-run', ?)
+                """, arguments: [self.start])
+        }
+        let before = try counts()
+        let error = await thrown { _ = try await self.importFebruary(item) }
+        XCTAssertEqual(error as? PadImportRefusal, .stillSyncing)
+        XCTAssertEqual((error as? LocalizedError)?.errorDescription, "Mango is still syncing — try again in a moment")
+        let pulled = await leases.catchUps
+        XCTAssertEqual(pulled, 1, "it pulled first")
+        XCTAssertEqual(try counts(), before)
+        let holder = try await ImportLease.holder(now: start, transport: store)
+        XCTAssertNil(holder, "the lease goes back")
+        XCTAssertEqual(tray.items().map(\.id), [item.id])
+    }
+
+    /// The Mac imported the same statement; the pull under the lease brings its rows in after the sheet counted them as
+    /// new: the write refuses ("Mango found changes"), nothing of the iPad's is written.
+    func testRowsArrivingBeforeTheWriteRefuseTheImport() async throws {
+        let item = try download(february())
+        let proposal = try await engine.propose(item, in: tray)
+        let staged = try XCTUnwrap(Self.staged(proposal))
+        XCTAssertEqual(staged.count, 3)
+        let account = id("bbva")
+        await leases.onCatchUp { db in try Self.insertRows(staged, account: account, db: db) }
+        let error = await thrown {
+            _ = try await self.engine.importStatement(proposal, item: item, tray: self.tray, writer: self.writer(), importer: self.importer(),
+                                                      now: self.start)
+        }
+        XCTAssertEqual(error as? PadImportRefusal, .foundChanges)
+        let rows = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM transaction_ WHERE accountId = ?", arguments: [account])!
+        }
+        XCTAssertEqual(rows, 3, "only the Mac's rows, none twice")
+        XCTAssertEqual(try counts()["importRun"], 0)
+        let holder = try await ImportLease.holder(now: start, transport: store)
+        XCTAssertNil(holder)
+        // Read again, the statement is in Mango already.
+        engine.discard(item)
+        let again = try await engine.propose(item, in: tray)
+        XCTAssertEqual(again.check.duplicateOf, "Already imported: 3 rows")
+    }
+
+    /// The other direction: the Mac's review was read before the iPad's import arrived; the Mac's write refuses too.
+    func testMacWriteRefusesRowsAnIPadImportBrought() async throws {
+        let item = try download(february())
+        let proposal = try await engine.propose(item, in: tray)
+        let staged = try XCTUnwrap(Self.staged(proposal))
+        try await queue.write { db in
+            try SyncImportGate.setSyncOn(false, db: db)
+            try Self.insertRows(staged, account: self.id("bbva"), db: db)
+        }
+        var plan = proposal.check.plan
+        plan.items = plan.items.map(CheckAndLink.confirmed)
+        let applier = ImportApplier(dbQueue: queue, databasePath: nil, library: library)
+        XCTAssertThrowsError(try applier.apply(plan, entryPoint: "Import…")) { error in
+            XCTAssertEqual(error as? ImportApplyError, .planOutdated(ImportApplier.rowsChangedDetail))
+        }
+        XCTAssertEqual(try counts()["importRun"], 0)
+    }
+
+    private static func staged(_ proposal: CheckAndLinkProposal) -> [StagedTransaction]? {
+        for item in proposal.check.plan.items {
+            if case .bbvaStatement(let effect) = item.effect { return effect.staged }
+        }
+        return nil
+    }
+
+    /// Rows as another device's import brings them (same fingerprints).
+    private static func insertRows(_ staged: [StagedTransaction], account: Int64, db: Database) throws {
+        var batch = ImportBatch(accountId: account, sourceFileName: "mac.pdf", importedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        try batch.insert(db)
+        for row in staged {
+            var transaction = Transaction(importBatchId: batch.id!, accountId: account, date: row.parsed.date, rawDescription: row.parsed.rawDescription,
+                                          amountMinorUnits: row.parsed.amountMinorUnits, categoryId: nil, status: .confirmed,
+                                          categorizedBy: .manual, fingerprint: row.fingerprint)
+            try transaction.insert(db)
+        }
     }
 
     func testOfflineSaysConnectAndWritesNothing() async throws {
@@ -268,7 +355,7 @@ final class PadStatementImportTests: XCTestCase {
         let none = PadStatementImport(dbQueue: queue, library: library,
                                       leases: CurrentEngineLeasing(device: SyncDevice(id: "ipad", name: "iPad"), current: { nil }))
         let offline = await none.route(accountId: id("bbva"), writer: writer())
-        XCTAssertEqual(offline, .sendToMac, "no zone written without an engine: the admin sends it to the Mac")
+        XCTAssertEqual(offline, .offline, "no engine running: Connect to the internet (review M6)")
         let forwarding = CurrentEngineLeasing(device: SyncDevice(id: "ipad", name: "iPad"), current: { [leases] in leases })
         let through = PadStatementImport(dbQueue: queue, library: library, leases: forwarding)
         let route = await through.route(accountId: id("bbva"), writer: writer())
@@ -301,16 +388,16 @@ final class PadStatementImportTests: XCTestCase {
 
     // MARK: Who may import
 
-    func testMemberWithoutImportAccessIsSentToTheMac() async throws {
-        try await queue.write { db in
-            try MemberPermissions.ensureDefaults(appUserId: self.id("memberUser"), db: db)
-            try db.execute(sql: "UPDATE memberPermission SET level = 'view' WHERE appUserId = ? AND area = 'import'",
-                           arguments: [self.id("memberUser")])
-        }
+    /// Review I1: a member's iPad doesn't import statements for now (her run's records naming no account would wait for
+    /// the admin's zone, her batch never closing): she sees a note, with or without Import, and nothing is written.
+    func testMemberSeesTheOwnerImportsNoteAndNothingIsWritten() async throws {
+        XCTAssertFalse(PadStatementImport.membersImport)
+        try await queue.write { db in try MemberPermissions.ensureDefaults(appUserId: self.id("memberUser"), db: db) }
         let item = try download(february())
         let proposal = try await engine.propose(item, in: tray)
         let route = await importer(zones: [SyncZones.household]).route(accountId: id("bbva"), writer: writer(Self.member))
-        XCTAssertEqual(route, .sendToMac)
+        XCTAssertEqual(route, .ownerImports)
+        XCTAssertEqual(PadStatementImportCopy.ownerImports, "Statements are imported on the Mac or on the owner’s iPad.")
         let before = try counts()
         let error = await thrown {
             _ = try await self.engine.importStatement(proposal, item: item, tray: self.tray, writer: self.writer(Self.member),
@@ -318,25 +405,19 @@ final class PadStatementImportTests: XCTestCase {
         }
         XCTAssertEqual(error as? PadImportRefusal, .noImportAccess)
         XCTAssertEqual(try counts(), before)
+        XCTAssertEqual(tray.items().map(\.id), [item.id])
         let taken = await leases.acquired
-        XCTAssertEqual(taken, 0, "no lease taken for a refusal")
+        XCTAssertEqual(taken, 0, "no lease taken")
 
-        // With Import (the default), she imports the household's statement herself.
-        try await queue.write { db in
-            try db.execute(sql: "UPDATE memberPermission SET level = 'edit' WHERE appUserId = ? AND area = 'import'",
-                           arguments: [self.id("memberUser")])
-        }
-        let ok = await importer(zones: [SyncZones.household]).route(accountId: id("bbva"), writer: writer(Self.member))
-        XCTAssertEqual(ok, .importHere)
-        let result = try await engine.importStatement(proposal, item: item, tray: tray, writer: writer(Self.member),
-                                                      importer: importer(zones: [SyncZones.household]), now: start)
+        // Nor may she undo a run on the iPad (review M3: the same access as an import).
+        let result = try await engine.importStatement(proposal, item: item, tray: tray, writer: writer(), importer: importer(), now: start)
         let runId = try XCTUnwrap(result.importRunId)
-        let by = try await queue.read { db in try ImportRun.fetchOne(db, key: runId)?.appUserId }
-        XCTAssertEqual(by, id("memberUser"))
+        let undo = await thrown { _ = try await self.importer(zones: [SyncZones.household]).undo(runId: runId, writer: self.writer(Self.member)) }
+        XCTAssertEqual(undo as? PadImportRefusal, .noImportAccess)
     }
 
-    /// With ownership confirmed, an import goes where its account's records go: a member's iPad (household only) may
-    /// import a shared account's statement, never one of A's private accounts; A's own iPad may.
+    /// With ownership confirmed, an import goes where its account's records go: A's iPad imports his private account only
+    /// when it pushes his zone; a member's iPad imports nothing while `membersImport` is off.
     func testImportZoneDecidesWhoMayImport() throws {
         let db = try TestDatabase.migrated()
         try db.write { db in
@@ -344,11 +425,14 @@ final class PadStatementImportTests: XCTestCase {
             let memberId = try XCTUnwrap(Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE isAdmin = 0"))
             let member = try AccessActor.load(appUserId: memberId, db: db)
             let household = [SyncZones.household]
-            XCTAssertTrue(try PadStatementImport.canImport(member, accountId: fixture.shared, zones: household, db: db))
+            XCTAssertFalse(try PadStatementImport.canImport(member, accountId: fixture.shared, zones: household, db: db), "members don't import yet")
             XCTAssertFalse(try PadStatementImport.canImport(member, accountId: fixture.privateAccount, zones: household, db: db))
+            XCTAssertTrue(try PadStatementImport.canImport(fixture.admin, accountId: fixture.shared, zones: household, db: db))
+            XCTAssertFalse(try PadStatementImport.canImport(fixture.admin, accountId: fixture.privateAccount, zones: household, db: db),
+                           "his private account's import goes to a zone this device doesn't push")
             XCTAssertTrue(try PadStatementImport.canImport(fixture.admin, accountId: fixture.privateAccount,
                                                            zones: [SyncZones.household, fixture.privateZone], db: db))
-            XCTAssertTrue(try PadStatementImport.canImport(member, accountId: fixture.privateAccount, zones: nil, db: db), "no sync: no zones")
+            XCTAssertTrue(try PadStatementImport.canImport(fixture.admin, accountId: fixture.privateAccount, zones: nil, db: db), "no sync: no zones")
         }
     }
 
@@ -397,7 +481,21 @@ final actor StoreLeasing: ImportLeasing {
         let lease = try await ImportLease.acquire(device: leaseDevice, now: now, transport: store)
         acquired += 1
         let now = now
-        try await db.write { db in try SyncImportGate.setHeldLease(HeldImportLease(record: lease.record, tag: lease.tag), db: db, now: now) }
+        try await db.write { db in
+            let used = try SyncImportGate.heldLease(db: db).map { $0.used && $0.record.holderId == lease.record.holderId } ?? false
+            try SyncImportGate.setHeldLease(HeldImportLease(record: lease.record, tag: lease.tag, used: used), db: db, now: now)
+        }
+    }
+
+    /// What a pull brings in (another device's import arriving), run on `catchUp`.
+    private var arriving: (@Sendable (Database) throws -> Void)?
+    private(set) var catchUps = 0
+    func onCatchUp(_ body: @escaping @Sendable (Database) throws -> Void) { arriving = body }
+
+    func catchUp() async throws {
+        if offline { throw LeaseStoreError.unavailable("offline") }
+        catchUps += 1
+        if let arriving { try await db.write { db in try arriving(db) } }
     }
 
     func releaseImportLease() async throws {

@@ -242,7 +242,10 @@ public actor SyncEngineCore {
             let now = self.clock()
             let lease = try await ImportLease.acquire(device: self.device, now: now, transport: try self.leaseStore(key))
             try await self.db.write { db in
-                try SyncImportGate.setHeldLease(HeldImportLease(record: lease.record, tag: lease.tag), db: db, now: now)
+                // Taken again while a batch of this device's still uploads under it (step 19): it stays marked used, so
+                // the push keeps renewing it and releases it only once that batch is up.
+                let used = try SyncImportGate.heldLease(db: db).map { $0.used && $0.record.holderId == lease.record.holderId } ?? false
+                try SyncImportGate.setHeldLease(HeldImportLease(record: lease.record, tag: lease.tag, used: used), db: db, now: now)
             }
         }
     }

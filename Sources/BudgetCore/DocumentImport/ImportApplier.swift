@@ -372,6 +372,7 @@ public struct ImportApplier: Sendable {
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
         try Self.checkCurrent(db: db, applied)
+        try Self.checkRowsStillNew(db: db, applied)
         try SyncImportGate.require(db: db, now: now)
         // Everything the run writes from here on is one sync batch (sync spec §5.2).
         let syncMark = try SyncBatch.mark(db: db)
@@ -506,6 +507,31 @@ public struct ImportApplier: Sendable {
         try run.update(db)
         try SyncBatch.open(runId: runId, since: syncMark, db: db)
         return summary
+    }
+
+    /// `ImportApplyError.planOutdated`'s detail when rows the review counted as new are in Mango now.
+    public static let rowsChangedDetail = "rows it counted as new are in Mango now"
+
+    /// Step 19: the duplicate check again, inside the write. Two devices import now, so between the review and the
+    /// write another device's import of the same rows may have arrived (a pull): a statement row the review staged as
+    /// new whose fingerprint its account now holds refuses the whole plan (`planOutdated(rowsChangedDetail)`).
+    static func checkRowsStillNew(db: Database, _ items: [ImportItem]) throws {
+        for item in items {
+            let account: Int64?
+            let staged: [StagedTransaction]
+            switch item.effect {
+            case .bbvaStatement(let effect): (account, staged) = (effect.currentAccountId, effect.staged)
+            case .ukStatement(let effect): (account, staged) = (effect.accountId, effect.staged)
+            default: continue
+            }
+            guard let account, !staged.isEmpty else { continue }
+            let fingerprints = staged.map(\.fingerprint)
+            let marks = Array(repeating: "?", count: fingerprints.count).joined(separator: ", ")
+            let found = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM \(Transaction.databaseTableName) WHERE accountId = ? AND fingerprint IN (\(marks))
+                """, arguments: StatementArguments([account]) + StatementArguments(fingerprints)) ?? 0
+            if found > 0 { throw ImportApplyError.planOutdated(rowsChangedDetail) }
+        }
     }
 
     /// The library metadata an applied item is filed with (`metadata`), a custom kind's as it is

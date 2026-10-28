@@ -84,6 +84,9 @@ struct CheckAndLinkSheet: View {
                         .disabled(model.isWorking)
                 }
                 Button("Done") { close() }.buttonStyle(.pad(.primary))
+            } else if model.route == .ownerImports {
+                // A member's iPad: nothing to press (the note says where statements are imported).
+                EmptyView()
             } else if let route = model.route, route != .sendToMac {
                 // Step 19: a bank statement imported here, under the household's import lease.
                 Button { Task { await model.importStatement() } } label: {
@@ -329,6 +332,8 @@ struct CheckAndLinkSheet: View {
             note(CheckAndLinkSheetCopy.statementNote)
         case .sendToMac?:
             note(CheckAndLinkSheetCopy.sendToMacNote)
+        case .ownerImports?:
+            InlineBanner(tone: .neutral, text: PadStatementImportCopy.ownerImports)
         default:
             if case .saved = model.phase {
                 EmptyView()

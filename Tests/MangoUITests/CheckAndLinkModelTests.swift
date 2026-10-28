@@ -73,6 +73,7 @@ final class CheckAndLinkModelTests: XCTestCase {
         }
         func acquireImportLease() async throws {}
         func releaseImportLease() async throws {}
+        func catchUp() async throws {}
     }
 
     private struct FiledYear: LocalizedError {
