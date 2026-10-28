@@ -286,6 +286,12 @@ public final class SyncZoneRouter {
             .joined(separator: " UNION ")))
     }
 
+    /// Where an import into account `id` goes (rule 6, step 19): the household for an account at Everything, else its
+    /// owner's private zone.
+    public func importZone(account id: Int64) throws -> String {
+        try placement(account: id).privateZone ?? SyncZones.household
+    }
+
     /// The record's zone, what it leaves out there, and its companion.
     public func assignment(table: String, localId: Int64) throws -> ZoneAssignment {
         guard let assignment = try assignmentIfPresent(table: table, localId: localId, ignoring: []) else {

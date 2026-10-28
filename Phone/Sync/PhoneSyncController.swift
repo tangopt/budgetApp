@@ -159,6 +159,11 @@ final class PhoneSyncController: ObservableObject {
         return try await openDocument(uuid: uuid)
     }
 
+    /// Step 19: the running engine's import lease (an iPad importing a statement); nil while sync isn't running here.
+    func importLeases() -> (any ImportLeasing)? {
+        isDemo ? nil : engine
+    }
+
     // MARK: Launch
 
     /// Called once the database is open: checks the iCloud account, then starts sync if this launch may.
