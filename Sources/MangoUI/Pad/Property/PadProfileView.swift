@@ -425,7 +425,7 @@ struct PadPropertyFormSheet: View {
                 Section("Notes") {
                     TextField("Notes", text: $draft.notes, prompt: Text("Optional"), axis: .vertical).lineLimit(2...4)
                 }
-            }
+            }.padFormChrome()
             .environment(\.calendar, MonthRange.calendar)
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .scrollContentBackground(.hidden)
@@ -433,9 +433,9 @@ struct PadPropertyFormSheet: View {
             .navigationTitle("Edit property")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) {
                         saving = true
                         Task {
                             let saved = await model.save(draft)
@@ -444,7 +444,7 @@ struct PadPropertyFormSheet: View {
                         }
                     }
                     .disabled(!draft.canSave || saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
         .interactiveDismissDisabled(saving)
@@ -496,7 +496,7 @@ struct PadOwnersSheet: View {
                 } footer: {
                     Text("On any day someone owns the property, the shares must add up to 100%. People are added on the Mac.")
                 }
-            }
+            }.padFormChrome()
             .environment(\.calendar, MonthRange.calendar)
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .scrollContentBackground(.hidden)
@@ -504,9 +504,9 @@ struct PadOwnersSheet: View {
             .navigationTitle("Owners")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) {
                         saving = true
                         Task {
                             let saved = await model.save(draft)
@@ -515,7 +515,7 @@ struct PadOwnersSheet: View {
                         }
                     }
                     .disabled(saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
         .interactiveDismissDisabled(saving)
@@ -562,13 +562,13 @@ struct PadLinkAccountSheet: View {
                     }
                     .frame(minHeight: 44)
                 }
-            }
+            }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Link account")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Link") {
                         guard let accountId else { return }
@@ -580,7 +580,7 @@ struct PadLinkAccountSheet: View {
                         }
                     }
                     .disabled(accountId == nil || saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
     }
@@ -613,14 +613,14 @@ struct PadAddressSheet: View {
                 } footer: {
                     Text("Saving a changed address finds it on the map with Apple Maps. Only the address text is sent, and only then.")
                 }
-            }
+            }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Edit address")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).disabled(saving) }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
+                ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Save", prominent: true, action: save).disabled(saving) }.padFlatToolbarItem()
             }
             .confirmationDialog("Find the new address on the map?", isPresented: Binding(get: { askingToReplace != nil },
                                                                                          set: { if !$0 { askingToReplace = nil } })) {

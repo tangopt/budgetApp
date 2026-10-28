@@ -41,7 +41,7 @@ struct PadMortgageTermsSheet: View {
                         .accessibilityIdentifier("mortgage-rate-now")
                 }
                 overrideSection
-            }
+            }.padFormChrome()
             .environment(\.calendar, calendar)
             .environment(\.timeZone, calendar.timeZone)
             .scrollContentBackground(.hidden)
@@ -49,9 +49,9 @@ struct PadMortgageTermsSheet: View {
             .navigationTitle("Mortgage terms")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) {
                         problem = nil
                         saving = true
                         Task {
@@ -61,7 +61,7 @@ struct PadMortgageTermsSheet: View {
                         }
                     }
                     .disabled(!form.canSave || saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
         .interactiveDismissDisabled(saving)

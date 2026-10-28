@@ -12,6 +12,37 @@ final class SalaryCalculatorTests: XCTestCase {
         return SalaryCalculator.calculate(inputs)
     }
 
+    // MARK: Bonus as a percentage
+
+    func testBonusAsPercentOfSalaryEqualsTheSameAmount() {
+        // 10% of £50,000 is a £5,000 bonus.
+        let asAmount = calc(5_000_000) { $0.bonusAnnual = 500_000 }
+        let asPercent = calc(5_000_000) { $0.bonusPercentBP = 1_000 }
+        XCTAssertEqual(asPercent.takeHomeAnnual, asAmount.takeHomeAnnual)
+        XCTAssertEqual(asPercent.incomeTax, asAmount.incomeTax)
+        XCTAssertEqual(asPercent.employeeNI, asAmount.employeeNI)
+        XCTAssertEqual(asPercent.inputs.bonusPay, 500_000)
+    }
+
+    func testBonusPercentFollowsTheSalaryAndBeatsTheAmount() {
+        var inputs = SalaryInputs(grossAnnual: 4_000_000, bonusAnnual: 999_999, taxYearStart: 2025, bonusPercentBP: 1_250)
+        XCTAssertEqual(inputs.bonusPay, 500_000)
+        inputs.grossAnnual = 6_000_000
+        XCTAssertEqual(inputs.bonusPay, 750_000)
+        inputs.bonusPercentBP = nil
+        XCTAssertEqual(inputs.bonusPay, 999_999, "without a percentage the amount is the bonus")
+    }
+
+    func testSavedInputsWithoutABonusPercentageStillDecodeAsAnAmount() throws {
+        let old = SalaryInputs(grossAnnual: 3_000_000, bonusAnnual: 200_000, taxYearStart: 2025)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        object.removeValue(forKey: "bonusPercentBP")
+        let decoded = try JSONDecoder().decode(SalaryInputs.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.bonusPercentBP)
+        XCTAssertEqual(decoded.bonusPay, 200_000)
+        XCTAssertEqual(decoded, old)
+    }
+
     // MARK: Worked examples
 
     func testExample30k() {

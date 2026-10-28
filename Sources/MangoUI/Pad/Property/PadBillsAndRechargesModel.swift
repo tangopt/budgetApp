@@ -585,17 +585,44 @@ public final class PadBillsAndRechargesModel: ObservableObject {
                                  open: open, today: today, onMarkedSent: { [weak self] in await self?.refresh() })
     }
 
-    /// Rent matching, then exact recharge payments (the Mac's "Match payments").
+    /// What "Match tenant credits" says afterwards: what it linked, or that there was nothing new. Never silent.
+    public nonisolated static func matchMessage(rentLinks: Int, rechargePayments: Int) -> String {
+        let total = rentLinks + rechargePayments
+        switch total {
+        case 0: return "Nothing new to match"
+        case 1: return "Matched 1 payment"
+        default: return "Matched \(total) payments"
+        }
+    }
+
+    /// The last Match tenant credits' result (or why it could not run), shown above the page.
+    @Published public var matchMessage: String?
+
+    /// Rent matching, then exact recharge payments (the Mac's "Match payments"). Sets `matchMessage` either way: what was
+    /// matched, "Nothing new to match", or the reason it could not run (view only, a refusal, no property).
     @discardableResult
     public func matchCredits() async -> Bool {
-        guard let propertyId = property.property?.id else { return false }
-        let saved = await write.perform(rowId: Self.screenRow, origin: .propertyMatching, edit: PadBillsAction.matchCredits.edit,
-                                        scope: .everyYear) { db in
-            _ = try RentReceiptMatching.match(db: db, propertyId: propertyId)
-            _ = try Recharges.matchPayments(db: db, propertyId: propertyId)
+        guard let propertyId = property.property?.id else {
+            matchMessage = "There is no property to match payments for"
+            return false
         }
-        if saved { await refresh() }
-        return saved
+        guard write.canEdit else {
+            matchMessage = "This iPad can only view Property, so it cannot match payments"
+            return false
+        }
+        let counts = await write.saving(rowId: Self.screenRow, origin: .propertyMatching, edit: PadBillsAction.matchCredits.edit,
+                                        scope: .everyYear) { db -> [Int] in
+            let rent = try RentReceiptMatching.match(db: db, propertyId: propertyId)
+            let recharges = try Recharges.matchPayments(db: db, propertyId: propertyId)
+            return [rent.created.count, recharges.count]
+        }
+        guard let counts else {
+            matchMessage = write.message(for: Self.screenRow) ?? DeviceWriteCopy.notSaved
+            return false
+        }
+        matchMessage = Self.matchMessage(rentLinks: counts[0], rechargePayments: counts[1])
+        await refresh()
+        return true
     }
 
     private func runStatement(_ statement: Statement, _ action: PadBillsAction, origin: WriteOrigin, transactions: [Int64] = [],

@@ -38,7 +38,7 @@ public enum SalaryCalculator {
         if let codeNotice { notices.append(codeNotice) }
 
         // Pay and pension
-        let pay = max(0, inputs.grossAnnual) + max(0, inputs.bonusAnnual)
+        let pay = max(0, inputs.grossAnnual) + inputs.bonusPay
         let benefits = max(0, inputs.benefitsInKindAnnual)
         let requested = inputs.pension.annual(on: pay)
         let contribution = min(requested, pay)

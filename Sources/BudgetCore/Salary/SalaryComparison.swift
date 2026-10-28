@@ -112,7 +112,7 @@ public final class SalaryComparisonViewModel {
 
     /// Whether each side has pay to work from.
     public var ready: (current: Bool, offer: Bool) {
-        (current.grossAnnual + current.bonusAnnual > 0, offer.grossAnnual + offer.bonusAnnual > 0)
+        (current.grossAnnual + current.bonusPay > 0, offer.grossAnnual + offer.bonusPay > 0)
     }
 
     /// The "Use my latest payslip/P60" button shows when there is a prefill the Current column doesn't already hold.

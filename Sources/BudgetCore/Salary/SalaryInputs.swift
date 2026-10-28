@@ -41,6 +41,9 @@ public enum StudentLoanPlan: String, Codable, Equatable, Sendable, CaseIterable 
 public struct SalaryInputs: Codable, Equatable, Sendable {
     public var grossAnnual: Int
     public var bonusAnnual: Int
+    /// The bonus as a share of `grossAnnual` (basis points), when it is given as a percentage; nil = `bonusAnnual` is
+    /// the bonus (what every saved input before this existed means).
+    public var bonusPercentBP: Int?
     /// The calendar year the tax year starts in (2025 = 2025/26).
     public var taxYearStart: Int
     public var region: SalaryRegion
@@ -55,7 +58,9 @@ public struct SalaryInputs: Codable, Equatable, Sendable {
     public init(grossAnnual: Int, bonusAnnual: Int = 0, taxYearStart: Int, region: SalaryRegion = .englandWalesNI,
                 taxCode: String = "1257L", pension: PensionAmount = .percentOfGross(basisPoints: 0),
                 pensionMethod: PensionMethod = .netPay, employerPension: PensionAmount = .percentOfGross(basisPoints: 0),
-                studentLoan: StudentLoanPlan? = nil, postgraduateLoan: Bool = false, benefitsInKindAnnual: Int = 0) {
+                studentLoan: StudentLoanPlan? = nil, postgraduateLoan: Bool = false, benefitsInKindAnnual: Int = 0,
+                bonusPercentBP: Int? = nil) {
+        self.bonusPercentBP = bonusPercentBP
         self.grossAnnual = grossAnnual
         self.bonusAnnual = bonusAnnual
         self.taxYearStart = taxYearStart
@@ -67,6 +72,15 @@ public struct SalaryInputs: Codable, Equatable, Sendable {
         self.studentLoan = studentLoan
         self.postgraduateLoan = postgraduateLoan
         self.benefitsInKindAnnual = benefitsInKindAnnual
+    }
+}
+
+extension SalaryInputs {
+    /// The bonus the calculation uses (pence a year, never negative): the percentage of salary when one is set, else
+    /// `bonusAnnual`.
+    public var bonusPay: Int {
+        if let bonusPercentBP { return max(0, SalaryCalculator.roundHalfUp(max(0, grossAnnual) * max(0, bonusPercentBP), 10_000)) }
+        return max(0, bonusAnnual)
     }
 }
 

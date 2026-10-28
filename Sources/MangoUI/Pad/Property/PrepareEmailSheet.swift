@@ -162,7 +162,7 @@ struct PrepareEmailSheet: View {
             .background(theme.background)
             .navigationTitle("Email · \(model.monthName)")
             .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
         }
         .task {
             if model.package == nil { await model.reload() }

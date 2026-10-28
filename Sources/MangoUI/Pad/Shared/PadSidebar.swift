@@ -1,6 +1,12 @@
 import SwiftUI
 import BudgetCore
 
+enum PadSidebarMetrics {
+    /// Every row's icon sits in a frame of this width, so the titles start at the same x whatever the symbol.
+    static let iconWidth: CGFloat = 28
+    static let iconToTitle: CGFloat = 10
+}
+
 /// The iPad's own sidebar (step 10, Task 3): the Mango glyph and a collapse button over the sections in their groups,
 /// the footer pinned at the bottom. Collapsed it is a narrow rail, one 44 pt icon per section.
 struct PadSidebar: View {
@@ -79,7 +85,13 @@ struct PadSidebar: View {
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? theme.accent.opacity(0.18) : .clear))
                     .frame(maxWidth: .infinity)
             } else {
-                Label(section.title, systemImage: section.systemImage)
+                HStack(spacing: PadSidebarMetrics.iconToTitle) {
+                    Image(systemName: section.systemImage)
+                        .mangoFont(.body)
+                        .frame(width: PadSidebarMetrics.iconWidth)
+                        .accessibilityHidden(true)
+                    Text(section.title).mangoFont(.body).lineLimit(1).truncationMode(.middle)
+                }
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .padding(.horizontal, 10)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? theme.accent.opacity(0.18) : .clear))
