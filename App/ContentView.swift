@@ -188,6 +188,9 @@ struct ContentView: View {
         switch screen {
         case .imports: return importActive || selection == .imports
         case .uncategorized: return uncategorizedCount > 0
+        // Hidden until it's rebuilt as the missing-documents centre (step 20); Tax years keeps its own list,
+        // and links that open it directly still work.
+        case .missingEvidence: return selection == .missingEvidence
         default: return true
         }
     }
