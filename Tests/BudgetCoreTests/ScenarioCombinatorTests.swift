@@ -195,6 +195,86 @@ final class ScenarioCombinatorTests: XCTestCase {
         XCTAssertEqual(combined.plan.entries.last?.groupId, 2)
     }
 
+    // MARK: - Overlapping salary scenarios and a car (the 2026-10-28 report)
+
+    private func once(_ id: Int64, _ category: Int64, _ amount: Int, on date: Date, scenarioId: Int64) -> ForecastEntry {
+        ForecastEntry(id: id, groupId: 1, categoryId: category, amountMinorUnits: amount, frequency: .once, interval: 1, startDate: date,
+                      endDate: nil, isEnabled: true, status: .manual, note: nil, scenarioId: scenarioId, sourceEntryId: nil, scenarioChange: .added)
+    }
+
+    /// A job offer as `OfferScenarioBuilder` writes one: the salary copy ends the day before
+    /// `from` (changed), and the offer's salary follows as an added entry, after `gapMonths`.
+    private func offer(_ scenario: Int64, name: String, base: Int64, salary: Int, from: Date, gapMonths: Int = 0) -> ScenarioPlan {
+        var ended = entry(base + 1, salaryId, 300_000, start: utc(2026, 1, 25), scenarioId: scenario, source: 1, change: .changed)
+        ended.endDate = MonthRange.calendar.date(byAdding: .day, value: -1, to: from)
+        let start = MonthRange.calendar.date(byAdding: .month, value: gapMonths, to: from)!
+        var added = entry(base + 4, salaryId, salary, start: MonthRange.calendar.date(byAdding: .day, value: 24, to: start), scenarioId: scenario, change: .added)
+        added.note = "Offer: salary"
+        return ScenarioPlan(id: scenario, name: name, plan: PlanInput(entries: replacing(copies(scenario, base: base), source: 1, with: ended) + [added],
+                                                                      exceptions: [], groups: groups))
+    }
+
+    private let s3: Int64 = 9
+
+    /// "200" (3,500 from January 2027), "220" (3,800 after a month's gap) and "New Car" (17,385 once in March 2027).
+    private var offer200: ScenarioPlan { offer(s1, name: "200", base: 10, salary: 350_000, from: utc(2027, 1, 1)) }
+    private var offer220: ScenarioPlan { offer(s2, name: "220", base: 20, salary: 380_000, from: utc(2027, 1, 1), gapMonths: 1) }
+    private var newCar: ScenarioPlan {
+        ScenarioPlan(id: s3, name: "New Car", plan: PlanInput(entries: copies(s3, base: 30) + [once(34, carId, -1_738_500, on: utc(2027, 3, 1), scenarioId: s3)],
+                                                              exceptions: [], groups: groups))
+    }
+
+    func testTwoOffersChangingTheSalaryFollowTheLaterOneWithANotice() throws {
+        let combined = ScenarioCombinator.combine(budget: budget, scenarios: [offer200, offer220, newCar])
+        // 220's ended copy and its offer salary stand in for the budget's salary; 200's are gone.
+        XCTAssertEqual(combined.plan.entries.map(\.id), [21, 24, 2, 3, 34])
+        XCTAssertEqual(combined.contributions, [21: s2, 24: s2, 34: s3])
+        XCTAssertEqual(combined.overlaps, [ScenarioOverlap(sourceEntryId: 1, categoryId: salaryId, earlierScenarioId: s1, laterScenarioId: s2)])
+        XCTAssertEqual(ScenarioCombinator.overlapNotice(combined.overlaps[0], scenarioNames: [s1: "200", s2: "220", s3: "New Car"],
+                                                        categoryNames: [salaryId: "Salary"]),
+                       "200 and 220 both change 'Salary'; the later one is used")
+
+        // Hand-computed 2027: budget income 12 × 3,000; 220's is 11 × 3,800 (no pay in January);
+        // expenses rent 12 × 1,000 + groceries 12 × 400, plus the car's 17,385.
+        let together = summaries(combined.plan)
+        let year2027 = try XCTUnwrap(together.first { $0.year == 2027 })
+        XCTAssertEqual(year2027.income, 11 * 380_000)
+        XCTAssertEqual(year2027.expenses, 12 * 100_000 + 12 * 40_000 + 1_738_500)
+        let budget2027 = try XCTUnwrap(summaries(budget).first { $0.year == 2027 })
+        XCTAssertEqual(budget2027.income, 12 * 300_000)
+
+        // Net worth: the budget plus 220's change plus the car's, every year.
+        let salary = summaries(offer220.plan), car = summaries(newCar.plan)
+        for (index, year) in together.enumerated() {
+            XCTAssertEqual(year.differenceVsBudget, try XCTUnwrap(salary[index].differenceVsBudget) + XCTUnwrap(car[index].differenceVsBudget))
+        }
+        XCTAssertEqual(year2027.differenceVsBudget, 11 * 380_000 - 12 * 300_000 - 1_738_500)
+    }
+
+    func testOfferOrderDecidesWhichSalaryIsUsed() {
+        let combined = ScenarioCombinator.combine(budget: budget, scenarios: [offer220, offer200])
+        XCTAssertEqual(combined.plan.entries.filter { $0.categoryId == salaryId }.map(\.id), [11, 14])
+        XCTAssertEqual(combined.overlaps, [ScenarioOverlap(sourceEntryId: 1, categoryId: salaryId, earlierScenarioId: s2, laterScenarioId: s1)])
+    }
+
+    func testAnAdditionInAnotherCategoryStaysIndependent() {
+        // The car isn't tied to any salary change: both offers keep it, and it counts once.
+        let combined = ScenarioCombinator.combine(budget: budget, scenarios: [offer200, newCar])
+        XCTAssertEqual(combined.plan.entries.map(\.id), [11, 14, 2, 3, 34])
+        XCTAssertEqual(combined.overlaps, [])
+    }
+
+    func testTheSameAdditionInTwoScenariosCountsOnce() {
+        // "200" duplicated from "New Car": its car is a copy of New Car's.
+        var duplicated = offer200
+        duplicated = ScenarioPlan(id: s1, name: "200", plan: PlanInput(entries: duplicated.plan.entries + [once(15, carId, -1_738_500, on: utc(2027, 3, 1), scenarioId: s1)],
+                                                                       exceptions: [], groups: groups))
+        let combined = ScenarioCombinator.combine(budget: budget, scenarios: [duplicated, newCar])
+        XCTAssertEqual(combined.plan.entries.filter { $0.categoryId == carId }.map(\.id), [34])
+        XCTAssertEqual(combined.contributions[34], s3)
+        XCTAssertNil(combined.contributions[15])
+    }
+
     func testOverlapNoticeWording() {
         let overlap = ScenarioOverlap(sourceEntryId: 3, categoryId: groceriesId, earlierScenarioId: s2, laterScenarioId: s1)
         let names = [s1: "Salary +10%", s2: "Buy a car"]

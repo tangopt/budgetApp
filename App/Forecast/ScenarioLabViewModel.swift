@@ -35,8 +35,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let name: String
         let isBudget: Bool
         let years: [PlanYearSummary]
-        /// (Income − expenses) per month over the months shown, in pence.
-        let averageMonthlySurplus: Int
+        /// (Income − expenses) per month over each year's months shown, in pence, by year.
+        let averageMonthlySurplus: [Int: Int]
         /// The Combined row's: each ticked scenario's own year-end difference vs the Budget, by year
         /// (empty on every other row; "Together" is the row's own difference).
         let contributions: [Int: [Contribution]]
