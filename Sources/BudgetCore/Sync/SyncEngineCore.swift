@@ -157,6 +157,9 @@ public actor SyncEngineCore {
     public nonisolated let householdIsShared: Bool
     /// Each zone's current key for the push under way.
     var pushKeys: [String: HouseholdKey] = [:]
+    /// The key ids of the household versions the pull under way received from elsewhere (step 15's backstop: one under a
+    /// revoked key puts the re-seal sweep back to pending).
+    var pulledHouseholdKeyIds: Set<String> = []
     /// Tests only: an assignment that replaces the router's for a record (table, local id), to prove the guard.
     var assignmentOverride: (@Sendable (String, Int64) -> ZoneAssignment?)?
 
@@ -238,7 +241,8 @@ public actor SyncEngineCore {
         try await serialized {
             try await self.prepare()
             // Only the Mac makes the household key; an iPad leases with the one it holds (or waits for it).
-            let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: self.mode.ownsZones)
+            // The server's marker, not the one cached (step 15: never a lease under a revoked key).
+            let key = try await self.refreshHouseholdKey(zone: SyncRecordStore.householdZone, create: self.mode.ownsZones)
             let now = self.clock()
             let lease = try await ImportLease.acquire(device: self.device, now: now, transport: try self.leaseStore(key))
             try await self.db.write { db in
@@ -297,6 +301,7 @@ public actor SyncEngineCore {
     func pullAll() async throws -> SyncPullReport {
         try await prepare()
         var report = SyncPullReport()
+        pulledHouseholdKeyIds = []
         // The private zone first, then the household: a record moving out of the household is here from its new zone
         // before its marker comes, and a stub's companion waits for the stub.
         for zone in zoneList.reversed() {
@@ -316,6 +321,16 @@ public actor SyncEngineCore {
             report.reconciled += zoneReport.reconciled
             report.leftHousehold = report.leftHousehold || zoneReport.leftHousehold
         }
+        // Step 15 (security review I1): a version sealed under a key a removed member held, arriving after the removal's
+        // sweep (a device that sealed before it saw the new marker): the sweep is owed again.
+        if mode.ownsZones, !pulledHouseholdKeyIds.isEmpty {
+            let ids = pulledHouseholdKeyIds
+            let now = clock()
+            if try await db.write({ db in try SyncKeyRotation.reopenIfRevoked(ids, db: db, now: now) }) {
+                Self.log.error("Sync: a household record arrived under a revoked key; the re-seal sweep runs again")
+            }
+        }
+        pulledHouseholdKeyIds = []
         // The Mac keeps every file (sync spec §5.7).
         let files = try await downloadMissingDocuments()
         report.documentsDownloaded = files.downloaded
@@ -402,6 +417,7 @@ public actor SyncEngineCore {
                         alreadyHeld += 1
                         continue
                     }
+                    if zone == SyncZones.household, let id = FieldSealing.keyId(of: record.wire) { pulledHouseholdKeyIds.insert(id) }
                     do {
                         entries[name] = (position, .save(try SyncLargePayload.payload(from: record, keys: keys), record.stamp))
                     } catch FieldSealing.SealingError.keyMissing {
@@ -902,7 +918,11 @@ public actor SyncEngineCore {
     /// on an iPad, step 8: it waits for the Mac's).
     private func sealingKey(zone: String) async throws -> HouseholdKey {
         if let known = pushKeys[zone] { return known }
-        let key = try await householdKey(zone: zone, create: mode.ownsZones)
+        // Step 15 (security review I1): the Mac may have given the household a new key since this device last pulled
+        // (a removal): every push reads the server's marker before sealing a household record, never the one cached.
+        let key = zone == SyncZones.household
+            ? try await refreshHouseholdKey(zone: zone, create: mode.ownsZones)
+            : try await householdKey(zone: zone, create: mode.ownsZones)
         pushKeys[zone] = key
         return key
     }

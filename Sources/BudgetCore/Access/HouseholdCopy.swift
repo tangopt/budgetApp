@@ -75,6 +75,8 @@ public enum HouseholdCopy {
         guard progress.total > 0 else { return "Securing the household…" }
         return "Securing the household… \(progress.done.formatted()) of \(progress.total.formatted())"
     }
+    /// Taking her off the share didn't finish (`HouseholdRemoval.Outcome.removalOwed`): the pane's one line until it does.
+    public static func removalOwed(_ name: String) -> String { "Removing \(name) — finishes when online" }
     /// Removed, but the new key or the sweep finishes later (`HouseholdRemoval.Outcome.securingLater`).
     public static let securingLater = "Mango finishes securing the household the next time it syncs."
 

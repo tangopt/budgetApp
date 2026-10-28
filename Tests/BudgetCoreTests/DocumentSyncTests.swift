@@ -217,6 +217,9 @@ final class DocumentSyncTests: XCTestCase {
         let held = try b.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.marker }
         XCTAssertEqual(held, good)
 
+        // Sent before the marker is damaged (step 15: a push reads the server's marker first and waits on a damaged one).
+        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
+        try await a.engine.pushPending()
         // Another build (or corruption) writes a marker that isn't readable here.
         let awaitedServer = await cloud.record(named: keyName)
         let server = try XCTUnwrap(awaitedServer)
@@ -224,8 +227,6 @@ final class DocumentSyncTests: XCTestCase {
                                      encryptedFields: ["keyId": Data("not a key id".utf8), "createdAt": Data(count: 8)])
         let saved = try await cloud.save([damaged], ifUnchanged: [keyName: server.stamp.systemFields], atomic: false)
         guard case .saved = saved.first?.outcome else { return XCTFail("damaged version saved") }
-        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
-        try await a.engine.pushPending()
 
         let pulled = try await b.engine.pull()
         XCTAssertEqual(pulled.unreadable, 1)
@@ -265,6 +266,9 @@ final class DocumentSyncTests: XCTestCase {
         let good = try await zoneKeys().marker
         let keyName = SyncZoneKeys.recordName(zone: zone)
 
+        // Sent before the marker is damaged (step 15: a push reads the server's marker first and waits on a damaged one).
+        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
+        try await a.engine.pushPending()
         // A valid key id with a NaN creation time (0x7ff8000000000000): a Date JSONEncoder refuses.
         let awaitedServer = await cloud.record(named: keyName)
         let server = try XCTUnwrap(awaitedServer)
@@ -272,8 +276,6 @@ final class DocumentSyncTests: XCTestCase {
                                  encryptedFields: ["keyId": Data(good.keyId.utf8), "createdAt": Data([0x7f, 0xf8, 0, 0, 0, 0, 0, 0])])
         let saved = try await cloud.save([nan], ifUnchanged: [keyName: server.stamp.systemFields], atomic: false)
         guard case .saved = saved.first?.outcome else { return XCTFail("damaged version saved") }
-        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
-        try await a.engine.pushPending()
 
         let pulled = try await b.engine.pull()
         XCTAssertEqual(pulled.unreadable, 1)

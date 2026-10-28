@@ -106,7 +106,8 @@ final class HouseholdController: ObservableObject {
     private func resumeSecuring() async {
         guard !busy, let engine else { return }
         do {
-            let outcome = try await HouseholdRemoval.resumeIfPending(engine: engine, db: dbQueue, progress: securingProgress())
+            let outcome = try await HouseholdRemoval.resumeIfPending(transport: cloud(), engine: engine, db: dbQueue,
+                                                                     progress: securingProgress())
             if outcome != nil { Self.log.notice("Household: securing resumed") }
         } catch {
             Self.log.error("Household: securing failed (\(String(describing: type(of: error)), privacy: .public))")
@@ -173,18 +174,21 @@ final class HouseholdController: ObservableObject {
     private func publish() async {
         let share = share
         let request = request
-        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool, PermissionGrid?, SyncKeyRotation.Progress?) in
+        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool, PermissionGrid?, SyncKeyRotation.Progress?, Bool) in
             let member = try HouseholdInvite.member(db: db)
             let grid = try member?.id.flatMap { try? PermissionGrid.load(db: db, appUserId: $0) }
             return (member, try AppUserStore.unclaimedPeople(db).map(\.name), try HouseholdInvite.wasRemoved(db: db), grid,
-                    try SyncKeyRotation.progress(db: db))
+                    try SyncKeyRotation.progress(db: db), try SyncKeyRotation.isShareRemovalOwed(db: db))
         }
-        guard let (member, unclaimed, removed, grid, owed) = read else { return }
+        guard let (member, unclaimed, removed, grid, owed, shareOwed) = read else { return }
         var next = HouseholdPaneState()
         next.unclaimed = unclaimed
         next.busy = busy
         if busy && checking {
             next.progress = HouseholdCopy.inviteProgress(stage)
+        } else if shareOwed, let member {
+            // One honest state (review I2): she isn't off the share yet; it is retried, then secured, when online.
+            next.progress = HouseholdCopy.removalOwed(member.displayName)
         } else if let securing {
             next.progress = HouseholdCopy.securing(securing)
         } else if owed != nil {
@@ -305,16 +309,17 @@ final class HouseholdController: ObservableObject {
     func remove() async {
         await run {
             guard let member = try await dbQueue.read({ db in try HouseholdInvite.member(db: db) }) else { return }
-            guard isRunning(), let engine else {
-                blockers = [HouseholdCopy.blocker(.syncNotOn, alreadyShared: true)]
-                return
-            }
             defer { securing = nil }
-            let outcome = try await HouseholdRemoval.remove(transport: cloud(), engine: engine, member: member, db: dbQueue,
-                                                            progress: securingProgress())
+            // Without running sync she still comes off the share; the new key is owed until sync runs (review M3).
+            let outcome = try await HouseholdRemoval.remove(transport: cloud(), engine: isRunning() ? engine : nil, keys: keys,
+                                                            member: member, db: dbQueue, progress: securingProgress())
             switch outcome {
             case .offline:
                 error = HouseholdCopy.removeOffline
+                return
+            case .removalOwed:
+                // The pane's one line says so (`removalOwed`), not an error.
+                Self.log.notice("Household: taking the member off the share is owed; retried when online")
                 return
             case .securingLater:
                 Self.log.notice("Household: removed; securing goes on after a later sync")
