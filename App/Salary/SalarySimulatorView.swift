@@ -9,24 +9,21 @@ struct SalarySimulatorView: View {
     @Bindable var model: SalaryComparisonViewModel
     /// The Forecast screen's model, for "Try in Forecast…"; nil (the button off) where there is none.
     var forecast: ScenarioLabViewModel? = nil
-    /// "Edit offer…" from the scenario lab: opens the sheet on this scenario, then clears.
-    @Binding var editRequest: OfferEditRequest?
     /// After a scenario is saved: the shell shows the Forecast screen.
     var openForecast: () -> Void = {}
     @Environment(\.theme) private var theme
     @State private var sheet: TryInForecastViewModel?
     @State private var sheetError: String?
 
-    init(model: SalaryComparisonViewModel, forecast: ScenarioLabViewModel? = nil,
-         editRequest: Binding<OfferEditRequest?> = .constant(nil), openForecast: @escaping () -> Void = {}) {
+    init(model: SalaryComparisonViewModel, forecast: ScenarioLabViewModel? = nil, openForecast: @escaping () -> Void = {}) {
         self.model = model
         self.forecast = forecast
-        self._editRequest = editRequest
         self.openForecast = openForecast
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
+            if let edit = model.offerEdit { editingBanner(edit) }
             strip
             ScrollView {
                 VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
@@ -49,10 +46,15 @@ struct SalarySimulatorView: View {
         .padding(ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await model.refreshPrefill() }
-        .onAppear { openPendingEdit() }
-        .onChange(of: editRequest) { openPendingEdit() }
         .sheet(item: $sheet) { host in
-            TryInForecastSheet(host: host, onSaved: openForecast)
+            TryInForecastSheet(host: host, onSaved: saved)
+        }
+        .screenToolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(forecastTitle) { openSheet() }
+                    .disabled(offerReason != nil)
+                    .help(offerReason ?? "Make a forecast scenario with this offer")
+            }
         }
         .navigationTitle("Salary simulator")
     }
@@ -65,9 +67,26 @@ struct SalarySimulatorView: View {
         return nil
     }
 
+    /// "Try in Forecast…", or "Update <scenario>…" while editing a job-offer scenario's salaries.
+    private var forecastTitle: String {
+        model.offerEdit.map { "Update \($0.scenarioName)…" } ?? "Try in Forecast…"
+    }
+
+    private func editingBanner(_ edit: SalaryOfferEdit) -> some View {
+        InlineBanner(.info, action: {
+            HStack(spacing: 8) {
+                Button("Stop editing") { model.endOfferEdit(saved: false) }
+                Button(forecastTitle) { openSheet() }.disabled(offerReason != nil)
+            }
+        }, content: {
+            Text("Editing the offer in \(edit.scenarioName). Change the salaries, then update the scenario. Your own figures come back when you stop.")
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        })
+    }
+
     private var tryInForecast: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button("Try in Forecast…") { openSheet(edit: nil) }
+            Button(forecastTitle) { openSheet() }
                 .disabled(offerReason != nil)
             if let reason = offerReason ?? sheetError {
                 Text(reason).font(.caption).foregroundStyle(offerReason == nil ? .red : .secondary)
@@ -77,22 +96,20 @@ struct SalarySimulatorView: View {
         .padding(.horizontal, ScreenMetrics.padding)
     }
 
-    private func openSheet(edit: OfferEditRequest?) {
+    private func openSheet() {
         guard let forecast else { return }
         do {
-            sheet = try TryInForecastViewModel(offer: model.offer, current: model.current, edit: edit, lab: forecast)
+            sheet = try TryInForecastViewModel(offer: model.offer, current: model.current, edit: model.offerEdit, lab: forecast)
             sheetError = nil
         } catch {
             sheetError = "Couldn't read the budget: \(error.localizedDescription)"
         }
     }
 
-    private func openPendingEdit() {
-        guard let request = editRequest else { return }
-        editRequest = nil
-        model.current = request.spec.current
-        model.offer = request.spec.offer
-        openSheet(edit: request)
+    /// A scenario saved: editing (if any) ends with these salaries kept, and the Forecast screen shows it.
+    private func saved() {
+        model.endOfferEdit(saved: true)
+        openForecast()
     }
 
     // MARK: Comparison strip

@@ -142,14 +142,15 @@ final class SyncSchemaTests: XCTestCase {
     }
 
     /// Step 14: a job offer's inputs travel with its scenario (additive and nullable: an older device ignores
-    /// the field), and the budget entries and category they name travel as UUIDs.
+    /// the field), and the entries and category they name travel as UUIDs.
     func testScenarioOfferInputsIsSynced() throws {
         XCTAssertTrue(SyncSchema.table("scenario")?.syncedColumns.contains("offerInputs") ?? false)
         XCTAssertFalse(SyncSchema.table("scenario")?.localOnlyColumns.contains("offerInputs") ?? true)
         let reference = try XCTUnwrap(SyncSchema.jsonReferences.first { $0.table == "scenario" && $0.column == "offerInputs" })
         XCTAssertEqual(reference.content, .rules([SyncJSONRule("salaryEntryId", .row("forecastEntry")),
                                                   SyncJSONRule("pensionEntryId", .row("forecastEntry")),
-                                                  SyncJSONRule("newIncomeCategoryId", .row("category"))]))
+                                                  SyncJSONRule("newIncomeCategoryId", .row("category")),
+                                                  SyncJSONRule("addedEntryIds[]", .row("forecastEntry"))]))
         let manager = try migrated()
         try manager.dbQueue.read { db in
             let column = try XCTUnwrap(try db.columns(in: "scenario").first { $0.name == "offerInputs" })

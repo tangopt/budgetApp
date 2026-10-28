@@ -3,7 +3,7 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// "Try in Forecast…" from the salary simulator's Offer column (and "Edit offer…" from the scenario lab):
+/// "Try in Forecast…" from the salary simulator (and "Update <scenario>…" after "Edit offer…" in the scenario lab):
 /// which salary the offer replaces, when it starts, any months without salary, a signing bonus and the
 /// scenario's name. Save builds the scenario; the preview line says what the forecast will hold.
 struct TryInForecastSheet: View {
@@ -28,7 +28,7 @@ struct TryInForecastSheet: View {
     var body: some View {
         @Bindable var model = host.model
         SheetScaffold(title: model.isEditing ? "Edit offer" : "Try in Forecast",
-                      subtitle: "Makes a scenario where this offer replaces your salary from the start month. The budget is not changed.",
+                      subtitle: model.subtitle,
                       error: errorMessage, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: model.canSave && !bonusInvalid) { save() }) {
             SheetForm {
@@ -48,6 +48,7 @@ struct TryInForecastSheet: View {
                     }
                     .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                 }
+                if model.salaryEntryId != nil { SheetFormNote(OfferSheetModel.refreshNote) }
                 if model.salaryEntryId == nil {
                     LabeledContent("Income category") {
                         Picker("Income category", selection: $model.newIncomeCategoryId) {
@@ -58,16 +59,17 @@ struct TryInForecastSheet: View {
                         .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                if !host.choices.pensions.isEmpty {
+                if !model.pensionChoices.isEmpty {
                     LabeledContent("Pension") {
                         Picker("Pension", selection: $model.pensionEntryId) {
-                            ForEach(host.choices.pensions) { entry in
+                            ForEach(model.pensionChoices) { entry in
                                 Text(host.label(entry)).lineLimit(1).truncationMode(.middle).tag(Int64?.some(entry.id!))
                             }
                             Text("Leave as it is").tag(Int64?.none)
                         }
                         .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    if let note = model.pensionNote { SheetFormNote(note) }
                 }
                 LabeledContent("Starts") {
                     Picker("Starts", selection: $model.startMonth) {
@@ -80,7 +82,7 @@ struct TryInForecastSheet: View {
                 LabeledContent("Months without salary") {
                     ValueStepper("Months without salary", value: $model.noticeGapMonths, in: 0...12, text: ValueStepper.months)
                 }
-                SheetFormNote("A notice period: the old salary ends at the start month and the new one begins this many months later.")
+                SheetFormNote("A notice period: the old salary ends before the start month and the new one (and any signing bonus) begins this many months later.")
                 LabeledContent("Signing bonus") {
                     TextField("Signing bonus", text: $bonusText, prompt: Text("0.00"))
                         .multilineTextAlignment(.trailing).monospacedDigit().frame(width: 120)

@@ -93,9 +93,9 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     @Published var tickedDifferenceIds: Set<Int64> = []
     @Published var errorMessage: String?
     @Published var notice: Notice?
-    /// "Edit offer…" on a job-offer scenario: the shell takes it, opens the Salary screen with the stored
-    /// spec and clears it.
-    @Published var offerToEdit: OfferEditRequest?
+    /// "Edit offer…" on a job-offer scenario: the shell takes it, shows its salaries in the Salary screen to
+    /// edit, and clears it.
+    @Published var offerToEdit: SalaryOfferEdit?
 
     // MARK: Loaded data
 
@@ -555,11 +555,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         try dbQueue.read { db in
             let categories = try Category.fetchAll(db).filter { $0.type == .income && !$0.isReserved }
             let names = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } })
-            let pensions = try ForecastEntry.budgetEntries
-                .filter(Column("isEnabled") == true && Column("frequency") == ForecastFrequency.monthly.rawValue)
-                .order(Column("startDate").desc, Column("id").desc).fetchAll(db)
-                .filter { $0.amountMinorUnits < 0 && (names[$0.categoryId] ?? "").localizedCaseInsensitiveContains("pension") }
-            return OfferChoices(salaries: try OfferScenarioBuilder.salaryCandidates(db: db), pensions: pensions,
+            return OfferChoices(salaries: try OfferScenarioBuilder.salaryCandidates(db: db),
+                                pensions: try OfferScenarioBuilder.pensionCandidates(db: db),
                                 incomeCategories: categories, categoryNames: names)
         }
     }

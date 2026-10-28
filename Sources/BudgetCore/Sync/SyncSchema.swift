@@ -412,12 +412,13 @@ extension SyncSchema {
             SyncJSONRule("createdGroupIds[]", .row("forecastGroup")),
             SyncJSONRule("lastEntryId", .row("forecastEntry")),
         ]), plainNumbers: ["boundary", "operations[].modified[].before.endDate"]),
-        // A job offer's simulator inputs (`OfferScenarioSpec`): the budget entries it replaces and the
-        // category it adds to; everything else is amounts, rates and counts.
+        // A job offer's simulator inputs (`OfferScenarioSpec`): the budget entries it replaces, the category it
+        // adds to and the scenario entries it added; everything else is amounts, rates and counts.
         SyncJSONReference(table: "scenario", column: "offerInputs", content: .rules([
             SyncJSONRule("salaryEntryId", .row("forecastEntry")),
             SyncJSONRule("pensionEntryId", .row("forecastEntry")),
             SyncJSONRule("newIncomeCategoryId", .row("category")),
+            SyncJSONRule("addedEntryIds[]", .row("forecastEntry")),
         ]), plainNumbers: Set(["current", "offer"].flatMap { salary in
             ["grossAnnual", "bonusAnnual", "taxYearStart", "benefitsInKindAnnual",
              "pension.percentOfGross.basisPoints", "pension.fixedAnnual.pence",

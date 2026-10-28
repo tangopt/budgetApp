@@ -19,16 +19,37 @@ extension OfferScenarioError: LocalizedError {
     }
 }
 
+/// A budget pension entry the offer can change, and how (`OfferScenarioBuilder.pensionCandidates`).
+public struct OfferPensionCandidate: Equatable, Identifiable, Sendable {
+    public var entry: ForecastEntry
+    /// A transfer into a pension account: it becomes the offer's employee plus employer contributions. Otherwise
+    /// a pension expense: it changes by the difference in the employee's contribution only.
+    public var isTransfer: Bool
+    public var id: Int64 { entry.id ?? 0 }
+
+    public init(entry: ForecastEntry, isTransfer: Bool) {
+        self.entry = entry
+        self.isTransfer = isTransfer
+    }
+
+    /// Whether it can go with `salary`: a transfer always; an expense only in the salary's group or account.
+    public func fits(salary: ForecastEntry?) -> Bool {
+        if isTransfer { return true }
+        guard let salary else { return false }
+        return entry.groupId == salary.groupId || (entry.accountId != nil && entry.accountId == salary.accountId)
+    }
+}
+
 /// A job offer as a scenario (spec 2026-10-28-step14-job-offer-forecast-design.md): a copy of the budget
 /// (`Scenarios.create`) where the salary entry's copy ends the day before the start month and the offer's
-/// take-home pay follows it (after any notice-period gap), the pension entry's copy becomes the offer's
-/// employee plus employer pension from the start, and the one-offs are added. Every write carries the
-/// scenario's id: the budget and actuals are never touched. The spec is stored in `scenario.offerInputs`.
+/// take-home pay follows it (after any notice-period gap), the pension entry's copy changes from the start
+/// (`OfferPensionCandidate`), and the one-offs are added. Every write carries the scenario's id: the budget and
+/// actuals are never touched. The spec is stored in `scenario.offerInputs`.
 ///
-/// What the builder adds is marked by a note starting `"Offer: "`; the copies it changes are the copies of
-/// the spec's budget entries (`sourceEntryId`). `rebuild` puts exactly those back and applies a new spec.
+/// The entries the builder adds are listed in the stored spec (`addedEntryIds`); the copies it changes are the
+/// copies of the spec's budget entries (`sourceEntryId`). `rebuild` puts exactly those back and applies a new spec.
 public enum OfferScenarioBuilder {
-    /// Notes of the entries the builder adds start with this.
+    /// Notes of the entries the builder adds start with this (wording only: `addedEntryIds` says which they are).
     public static let notePrefix = "Offer: "
 
     private static let utc = MonthRange.calendar
@@ -41,8 +62,9 @@ public enum OfferScenarioBuilder {
         try db.inSavepoint {
             let plan = try resolve(db: db, spec: spec, scenarioId: nil)
             scenario = try Scenarios.create(db: db, name: name, now: now)
-            try apply(db: db, plan: plan, scenarioId: scenario.id!)
-            scenario.offerInputs = try plan.spec.json()
+            var stored = plan.spec
+            stored.addedEntryIds = try apply(db: db, plan: plan, scenarioId: scenario.id!)
+            scenario.offerInputs = try stored.json()
             try scenario.update(db, columns: ["offerInputs"])
             return .commit
         }
@@ -57,16 +79,20 @@ public enum OfferScenarioBuilder {
             guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
             let plan = try resolve(db: db, spec: spec, scenarioId: scenarioId)
             let previous = scenario.offerInputs.flatMap(OfferScenarioSpec.decode)
+            let added = Set(previous?.addedEntryIds ?? [])
             for entry in try ForecastEntry.inScenario(db, id: scenarioId) {
-                if entry.scenarioChange == .added, entry.note?.hasPrefix(notePrefix) == true {
+                // A spec stored before the ids were kept: its entries are the ones with the builder's note.
+                let isOffers = added.isEmpty ? entry.note?.hasPrefix(notePrefix) == true : entry.id.map(added.contains) == true
+                if entry.scenarioChange == .added, isOffers {
                     _ = try entry.delete(db)
                 } else if let previous, entry.scenarioChange == .changed || entry.scenarioChange == .removed,
                           let source = entry.sourceEntryId, source == previous.salaryEntryId || source == previous.pensionEntryId {
                     try Scenarios.revert(db: db, scenarioId: scenarioId, entryId: entry.id!)
                 }
             }
-            try apply(db: db, plan: plan, scenarioId: scenarioId)
-            scenario.offerInputs = try plan.spec.json()
+            var stored = plan.spec
+            stored.addedEntryIds = try apply(db: db, plan: plan, scenarioId: scenarioId)
+            scenario.offerInputs = try stored.json()
             try scenario.update(db, columns: ["offerInputs"])
             return .commit
         }
@@ -87,6 +113,43 @@ public enum OfferScenarioBuilder {
             """, arguments: [ForecastFrequency.monthly.rawValue, CategoryType.income.rawValue])
     }
 
+    /// The budget pension entries an offer can change: enabled monthly outgoings that are either a transfer into
+    /// a pension account (an account whose name says "pension") or a pension expense (category name). Which
+    /// expense fits a salary is `OfferPensionCandidate.fits`. Most recent start first.
+    public static func pensionCandidates(db: Database) throws -> [OfferPensionCandidate] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT forecastEntry.id AS entryId, category.type AS categoryType, category.name AS categoryName,
+                   account.name AS accountName
+            FROM forecastEntry JOIN category ON category.id = forecastEntry.categoryId
+            LEFT JOIN account ON account.id = category.transferAccountId
+            WHERE forecastEntry.scenarioId IS NULL AND forecastEntry.isEnabled = 1 AND forecastEntry.frequency = ?
+              AND forecastEntry.amountMinorUnits < 0
+            ORDER BY forecastEntry.startDate DESC, forecastEntry.id DESC
+            """, arguments: [ForecastFrequency.monthly.rawValue])
+        var result: [OfferPensionCandidate] = []
+        for row in rows {
+            let type: String = row["categoryType"]
+            let isTransfer: Bool
+            if type == CategoryType.transfer.rawValue, let account: String = row["accountName"], account.localizedCaseInsensitiveContains("pension") {
+                isTransfer = true
+            } else if type == CategoryType.expense.rawValue, (row["categoryName"] as String).localizedCaseInsensitiveContains("pension") {
+                isTransfer = false
+            } else {
+                continue
+            }
+            guard let entry = try ForecastEntry.fetchOne(db, key: row["entryId"] as Int64) else { continue }
+            result.append(OfferPensionCandidate(entry: entry, isTransfer: isTransfer))
+        }
+        return result
+    }
+
+    /// Whether `entry` is a transfer into a pension account (its category is linked to an account named "pension").
+    private static func isPensionTransfer(db: Database, _ entry: ForecastEntry) throws -> Bool {
+        guard let category = try Category.fetchOne(db, key: entry.categoryId), category.type == .transfer,
+              let accountId = category.transferAccountId, let account = try Account.fetchOne(db, key: accountId) else { return false }
+        return account.name.localizedCaseInsensitiveContains("pension")
+    }
+
     // MARK: - Plan
 
     /// What `apply` writes, worked out (and checked) before anything is written.
@@ -103,7 +166,18 @@ public enum OfferScenarioBuilder {
         var startMonth: Date
         var offerStart: Date
         var takeHomeMonthly: Int
-        var pensionMonthly: Int
+        /// A transfer into a pension account: the offer's employee plus employer pension a month.
+        var pensionTransferMonthly: Int
+        /// A pension expense: how much more (or less) the employee pays a month with the offer.
+        var employeePensionChangeMonthly: Int
+        var pensionIsTransfer: Bool
+
+        /// The pension entry's new amount from `amount` (its sign kept; an expense that would cross zero stops at 0).
+        func pensionAmount(from amount: Int) -> Int {
+            let sign = amount < 0 ? -1 : 1
+            if pensionIsTransfer { return sign * pensionTransferMonthly }
+            return sign * max(0, abs(amount) + employeePensionChangeMonthly)
+        }
     }
 
     private static func resolve(db: Database, spec input: OfferScenarioSpec, scenarioId: Int64?) throws -> Plan {
@@ -129,18 +203,26 @@ public enum OfferScenarioBuilder {
         }
 
         let offer = SalaryCalculator.calculate(spec.offer)
+        let current = SalaryCalculator.calculate(spec.current)
+        let pensionIsTransfer = try pension.map { try isPensionTransfer(db: db, $0) } ?? false
         let offerStart = utc.date(byAdding: .month, value: spec.noticeGapMonths, to: spec.startMonth)!
         let salaryAnchor = salary.map { $0.anchorDay ?? utc.component(.day, from: $0.startDate) }
         return Plan(spec: spec, salary: salary, pension: pension, incomeCategoryId: categoryId,
                     groupId: salary?.groupId, accountId: salary?.accountId,
                     anchorDay: salaryAnchor == 1 ? nil : salaryAnchor,
                     startMonth: spec.startMonth, offerStart: offerStart, takeHomeMonthly: offer.takeHomeMonthly,
-                    pensionMonthly: SalaryCalculator.roundHalfUp(offer.employeePension + offer.employerPension, 12))
+                    pensionTransferMonthly: SalaryCalculator.roundHalfUp(offer.employeePension + offer.employerPension, 12),
+                    employeePensionChangeMonthly: SalaryCalculator.roundHalfUp(offer.employeePension, 12)
+                        - SalaryCalculator.roundHalfUp(current.employeePension, 12),
+                    pensionIsTransfer: pensionIsTransfer)
     }
 
-    /// The offer salary an earlier build of this scenario added (its note says so), if any.
+    /// The offer salary an earlier build of this scenario added (the first of its added entries), if any.
     private static func previousOfferSalary(db: Database, scenarioId: Int64) throws -> ForecastEntry? {
-        try ForecastEntry.inScenario(db, id: scenarioId).first { $0.scenarioChange == .added && $0.note == salaryNote }
+        guard let first = try spec(db: db, scenarioId: scenarioId)?.addedEntryIds.first else {
+            return try ForecastEntry.inScenario(db, id: scenarioId).first { $0.scenarioChange == .added && $0.note == salaryNote }
+        }
+        return try ForecastEntry.fetchOne(db, key: first).flatMap { $0.scenarioId == scenarioId ? $0 : nil }
     }
 
     private static let salaryNote = notePrefix + "salary"
@@ -148,20 +230,22 @@ public enum OfferScenarioBuilder {
 
     // MARK: - Apply
 
-    private static func apply(db: Database, plan: Plan, scenarioId: Int64) throws {
+    /// Writes the plan; returns the ids of the entries it added.
+    private static func apply(db: Database, plan: Plan, scenarioId: Int64) throws -> [Int64] {
+        var added: [Int64] = []
         // Salary: the copy ends the day before the start month (or, starting on or after it, the whole
         // series is replaced), and the offer's take-home follows after the gap.
         if let salary = plan.salary, var copy = try copy(of: salary, db: db, scenarioId: scenarioId) {
             try endOrRemove(db: db, &copy, before: plan.startMonth)
         }
-        try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
-                accountId: plan.accountId, amount: plan.takeHomeMonthly, frequency: .monthly, start: plan.offerStart,
-                anchorDay: plan.anchorDay, note: salaryNote)
+        added.append(try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
+                             accountId: plan.accountId, amount: plan.takeHomeMonthly, frequency: .monthly, start: plan.offerStart,
+                             anchorDay: plan.anchorDay, note: salaryNote))
 
-        // Pension: employee plus employer contributions a month, keeping the entry's sign.
+        // Pension: a transfer becomes the offer's contributions, an expense moves by the employee's change.
         if let pension = plan.pension, var copy = try copy(of: pension, db: db, scenarioId: scenarioId),
            copy.endDate.map({ $0 >= plan.startMonth }) ?? true {
-            let amount = copy.amountMinorUnits < 0 ? -plan.pensionMonthly : plan.pensionMonthly
+            let amount = plan.pensionAmount(from: copy.amountMinorUnits)
             if copy.startDate >= plan.startMonth {
                 // Starts within the new job: the copy itself takes the new amount (from the offer's salary on).
                 try dropExceptions(db: db, entryId: copy.id!, from: plan.startMonth)
@@ -175,20 +259,21 @@ public enum OfferScenarioBuilder {
                 try copy.update(db)
             } else {
                 try endOrRemove(db: db, &copy, before: plan.startMonth)
-                if plan.pensionMonthly != 0 {
+                if amount != 0 {
                     let anchor = pension.anchorDay ?? utc.component(.day, from: pension.startDate)
-                    try add(db: db, scenarioId: scenarioId, categoryId: copy.categoryId, groupId: copy.groupId,
-                            accountId: copy.accountId, amount: amount, frequency: copy.frequency, start: plan.offerStart,
-                            anchorDay: anchor == 1 ? nil : anchor, note: pensionNote, interval: copy.interval)
+                    added.append(try add(db: db, scenarioId: scenarioId, categoryId: copy.categoryId, groupId: copy.groupId,
+                                         accountId: copy.accountId, amount: amount, frequency: copy.frequency, start: plan.offerStart,
+                                         anchorDay: anchor == 1 ? nil : anchor, note: pensionNote, interval: copy.interval))
                 }
             }
         }
 
         for oneOff in plan.spec.oneOffs {
-            try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
-                    accountId: plan.accountId, amount: oneOff.amountMinorUnits, frequency: .once, start: oneOff.month,
-                    anchorDay: nil, note: notePrefix + oneOff.label)
+            added.append(try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
+                                 accountId: plan.accountId, amount: oneOff.amountMinorUnits, frequency: .once, start: oneOff.month,
+                                 anchorDay: nil, note: notePrefix + oneOff.label))
         }
+        return added
     }
 
     /// The scenario's copy of a budget entry: its unchanged copy if any, else a changed one; nil when the
@@ -222,7 +307,7 @@ public enum OfferScenarioBuilder {
     /// (the Planned group).
     private static func add(db: Database, scenarioId: Int64, categoryId: Int64, groupId: Int64?, accountId: Int64?,
                             amount: Int, frequency: ForecastFrequency, start: Date, anchorDay: Int?, note: String,
-                            interval: Int = 1) throws {
+                            interval: Int = 1) throws -> Int64 {
         var entry: ForecastEntry
         if let groupId {
             entry = ForecastEntry(groupId: groupId, categoryId: categoryId, amountMinorUnits: amount, frequency: frequency,
@@ -236,6 +321,7 @@ public enum OfferScenarioBuilder {
             entry.anchorDay = anchorDay
             try entry.update(db)
         }
+        return entry.id!
     }
 
     private static func firstOfMonth(_ date: Date) -> Date {

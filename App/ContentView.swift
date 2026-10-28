@@ -107,8 +107,6 @@ struct ContentView: View {
     @StateObject private var scenarioLabViewModel: ScenarioLabViewModel
     /// Kept on this device between launches (`SalaryDraftStore`), except in the snapshot build.
     @State private var salaryViewModel: SalaryComparisonViewModel
-    /// "Edit offer…" from the Forecast screen, waiting for the Salary screen to open its sheet.
-    @State private var offerEditRequest: OfferEditRequest?
     @StateObject private var rulesViewModel: RulesViewModel
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
@@ -273,7 +271,7 @@ struct ContentView: View {
                         .onAppear { scenarioLabViewModel.load() }
                 case .salary:
                     SalarySimulatorView(model: salaryViewModel, forecast: scenarioLabViewModel,
-                                        editRequest: $offerEditRequest, openForecast: { selection = .forecast })
+                                        openForecast: { selection = .forecast })
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }
@@ -381,7 +379,7 @@ struct ContentView: View {
         .onChange(of: scenarioLabViewModel.offerToEdit) { _, request in
             guard let request else { return }
             scenarioLabViewModel.offerToEdit = nil
-            offerEditRequest = request
+            salaryViewModel.beginOfferEdit(request)
             selection = .salary
         }
         // Someone else signed in: the screens show what they can see (`SharedActualsSource`), so the one on show

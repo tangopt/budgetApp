@@ -4,17 +4,10 @@ import BudgetCore
 import struct BudgetCore.Category
 import GRDB
 
-/// "Edit offer…" on a scenario: what the Salary screen opens the sheet with.
-struct OfferEditRequest: Equatable {
-    let scenarioId: Int64
-    let name: String
-    let spec: OfferScenarioSpec
-}
-
 /// What the offer sheet can pick from (`ScenarioLabViewModel.offerChoices`).
 struct OfferChoices {
     var salaries: [ForecastEntry] = []
-    var pensions: [ForecastEntry] = []
+    var pensions: [OfferPensionCandidate] = []
     var incomeCategories: [Category] = []
     var categoryNames: [Int64: String] = [:]
 }
@@ -27,12 +20,13 @@ final class TryInForecastViewModel: ObservableObject, Identifiable {
     let choices: OfferChoices
     private let lab: ScenarioLabViewModel
 
-    init(offer: SalaryInputs, current: SalaryInputs, edit: OfferEditRequest?, lab: ScenarioLabViewModel) throws {
+    /// `offer`/`current`: the simulator's salaries (in edit mode too: the person has just edited them there).
+    init(offer: SalaryInputs, current: SalaryInputs, edit: SalaryOfferEdit?, lab: ScenarioLabViewModel) throws {
         let choices = try lab.offerChoices()
         self.choices = choices
         self.lab = lab
         model = OfferSheetModel(offer: offer, current: current, candidates: choices.salaries, pensionCandidates: choices.pensions,
-                                editing: edit.map { ($0.scenarioId, $0.spec) }, scenarioName: edit?.name,
+                                editing: edit.map { ($0.scenarioId, $0.spec) }, scenarioName: edit?.scenarioName,
                                 newIncomeCategoryId: choices.incomeCategories.first?.id)
     }
 

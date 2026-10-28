@@ -57,6 +57,41 @@ final class SalaryDraftStoreTests: XCTestCase {
         XCTAssertEqual(again.offer.grossAnnual, 7_000_000)
     }
 
+    /// "Edit offer…": the scenario's salaries are shown without touching the draft; stopping without saving brings
+    /// back what was on show, saving keeps the edited salaries as the draft.
+    func testOfferEditKeepsTheDraftAside() async throws {
+        let store = SalaryDraftStore(defaults: defaults)
+        store.save(draft)
+        let model = SalaryComparisonViewModel(store: store, saveDelay: .milliseconds(1))
+        model.setPrefill(nil, for: 3)
+        let spec = OfferScenarioSpec(current: SalaryInputs(grossAnnual: 3_000_000, taxYearStart: 2026),
+                                     offer: SalaryInputs(grossAnnual: 8_000_000, taxYearStart: 2026),
+                                     salaryEntryId: 1, pensionEntryId: nil, startMonth: Date(timeIntervalSince1970: 1_800_000_000))
+        let edit = SalaryOfferEdit(scenarioId: 4, scenarioName: "Big job", spec: spec)
+        model.beginOfferEdit(edit)
+        XCTAssertEqual(model.offerEdit, edit)
+        XCTAssertEqual(model.offer, spec.offer)
+        XCTAssertEqual(model.current, spec.current)
+        model.offer.grossAnnual = 8_500_000
+        model.setPrefill(SalaryInputs(grossAnnual: 1, taxYearStart: 2026), for: 3)
+        XCTAssertEqual(model.offer.grossAnnual, 8_500_000, "the prefill doesn't replace what is being edited")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(store.load(), draft, "edits to a scenario's salaries aren't the draft")
+
+        model.endOfferEdit(saved: false)
+        XCTAssertNil(model.offerEdit)
+        XCTAssertEqual(model.offer, draft.offer)
+        XCTAssertEqual(model.current, draft.current)
+        XCTAssertEqual(store.load(), draft)
+
+        model.beginOfferEdit(edit)
+        model.offer.grossAnnual = 9_000_000
+        model.endOfferEdit(saved: true)
+        XCTAssertNil(model.offerEdit)
+        XCTAssertEqual(model.offer.grossAnnual, 9_000_000)
+        XCTAssertEqual(store.load()?.offer.grossAnnual, 9_000_000)
+    }
+
     func testDraftWinsOverPrefillUntilReset() {
         let store = SalaryDraftStore(defaults: defaults)
         store.save(draft)

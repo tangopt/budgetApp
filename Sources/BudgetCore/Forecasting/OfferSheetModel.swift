@@ -5,7 +5,8 @@ import Observation
 /// from SwiftUI so it can be tested: which salary entry the offer replaces, when it starts, a notice-period
 /// gap, a signing bonus and the scenario's name. `spec()` is what `OfferScenarioBuilder` is given.
 ///
-/// In edit mode ("Edit offer…" on a scenario) everything starts from the stored spec and the scenario's name.
+/// In edit mode ("Edit offer…" on a scenario) the salaries are the simulator's (the person has just edited them
+/// there) and everything else starts from the stored spec and the scenario's name.
 @MainActor @Observable
 public final class OfferSheetModel {
     /// The one-off label the sheet's signing bonus field writes (and reads back when editing).
@@ -14,14 +15,16 @@ public final class OfferSheetModel {
     public let offer: SalaryInputs
     public let current: SalaryInputs
     public let salaryCandidates: [ForecastEntry]
-    public let pensionCandidates: [ForecastEntry]
+    public let pensionCandidates: [OfferPensionCandidate]
     /// Set in edit mode: the scenario being rebuilt.
     public let editingScenarioId: Int64?
 
     public var name: String
     /// The budget salary entry the offer replaces; nil = none (the offer is new income, in `newIncomeCategoryId`).
-    public var salaryEntryId: Int64?
-    /// The budget pension entry whose amount becomes the offer's pension; nil = leave the pension alone.
+    public var salaryEntryId: Int64? {
+        didSet { if let id = pensionEntryId, !pensionChoices.contains(where: { $0.id == id }) { pensionEntryId = nil } }
+    }
+    /// The budget pension entry the offer changes; nil = leave the pension alone (the default).
     public var pensionEntryId: Int64?
     /// The income category for "Add as new income" when `salaryEntryId` is nil.
     public var newIncomeCategoryId: Int64?
@@ -41,20 +44,21 @@ public final class OfferSheetModel {
     /// One-offs of a stored spec other than the signing bonus: kept as they were.
     private let otherOneOffs: [OfferOneOff]
 
-    public init(offer: SalaryInputs, current: SalaryInputs, candidates: [ForecastEntry], pensionCandidates: [ForecastEntry],
+    public init(offer: SalaryInputs, current: SalaryInputs, candidates: [ForecastEntry], pensionCandidates: [OfferPensionCandidate],
                 editing: (scenarioId: Int64, spec: OfferScenarioSpec)?, scenarioName: String? = nil,
                 newIncomeCategoryId: Int64? = nil, today: Date = Date()) {
         self.salaryCandidates = candidates
         self.pensionCandidates = pensionCandidates
         if let editing {
             let spec = editing.spec
-            self.offer = spec.offer
-            self.current = spec.current
+            self.offer = offer
+            self.current = current
             self.editingScenarioId = editing.scenarioId
             self.name = scenarioName ?? Self.defaultName(for: spec.startMonth)
             // An entry that has since left the budget is no longer a choice.
-            self.salaryEntryId = candidates.contains { $0.id == spec.salaryEntryId } ? spec.salaryEntryId : nil
-            self.pensionEntryId = pensionCandidates.contains { $0.id == spec.pensionEntryId } ? spec.pensionEntryId : nil
+            let salary = candidates.first { $0.id == spec.salaryEntryId }
+            self.salaryEntryId = salary?.id
+            self.pensionEntryId = pensionCandidates.contains { $0.id == spec.pensionEntryId && $0.fits(salary: salary) } ? spec.pensionEntryId : nil
             self.newIncomeCategoryId = spec.newIncomeCategoryId ?? newIncomeCategoryId
             self.startMonth = Self.firstOfMonth(spec.startMonth)
             self.noticeGapMonths = max(0, spec.noticeGapMonths)
@@ -68,7 +72,7 @@ public final class OfferSheetModel {
             let start = MonthRange.calendar.date(byAdding: .month, value: 1, to: Self.firstOfMonth(today))!
             self.name = Self.defaultName(for: start)
             self.salaryEntryId = Self.mostRecent(candidates)?.id
-            self.pensionEntryId = Self.mostRecent(pensionCandidates)?.id
+            self.pensionEntryId = nil
             self.newIncomeCategoryId = newIncomeCategoryId
             self.startMonth = start
             self.noticeGapMonths = 0
@@ -88,11 +92,37 @@ public final class OfferSheetModel {
 
     public var salaryEntry: ForecastEntry? { salaryCandidates.first { $0.id == salaryEntryId } }
 
+    /// The pension entries the picker offers for the chosen salary (`OfferPensionCandidate.fits`).
+    public var pensionChoices: [ForecastEntry] {
+        pensionCandidates.filter { $0.fits(salary: salaryEntry) }.map(\.entry)
+    }
+
+    /// The month the offer's salary starts: `startMonth` after any months without salary.
+    public var offerStart: Date { MonthRange.calendar.date(byAdding: .month, value: noticeGapMonths, to: startMonth)! }
+
+    /// The sheet's subtitle.
+    public var subtitle: String {
+        isEditing
+            ? "Builds this scenario's offer again. Any changes you made in the scenario to the offer's entries, or to the salary and pension it replaces, are replaced. The budget is not changed."
+            : "Makes a scenario where this offer replaces your salary from the start month. The budget is not changed."
+    }
+
+    /// Said under the salary picker: a budget salary edited later isn't followed by the scenario.
+    public static let refreshNote = "If you later change this salary in the budget and use Refresh from budget, open Edit offer again so the offer replaces the new salary."
+
+    /// What a pension choice does, said under the picker; nil when the pension is left alone.
+    public var pensionNote: String? {
+        guard let id = pensionEntryId, let candidate = pensionCandidates.first(where: { $0.id == id }) else { return nil }
+        return candidate.isTransfer
+            ? "Becomes the offer's employee and employer contributions a month."
+            : "Changes by the difference in what you pay in (the employer's share isn't your spending)."
+    }
+
     /// "From Apr 2026: £2,600.00 a month net, was £2,000.00": the offer's take-home from the month its salary
     /// starts (after any gap), against the entry it replaces; "£200.00 less than …" when it pays less.
     public var preview: String {
         let takeHome = SalaryCalculator.calculate(offer).takeHomeMonthly
-        let from = MonthRange.calendar.date(byAdding: .month, value: noticeGapMonths, to: startMonth)!
+        let from = offerStart
         let head = "From \(Self.monthLabel(from)): \(Money.format(takeHome, currency: .gbp)) a month net"
         guard let was = salaryEntry?.amountMinorUnits else { return head + ", new income" }
         if takeHome < was { return head + ", \(Money.format(was - takeHome, currency: .gbp)) less than \(Money.format(was, currency: .gbp))" }
@@ -103,7 +133,7 @@ public final class OfferSheetModel {
     public func spec() -> OfferScenarioSpec {
         var oneOffs = otherOneOffs
         if let signingBonus, signingBonus > 0 {
-            oneOffs.insert(OfferOneOff(label: Self.signingBonusLabel, amountMinorUnits: signingBonus, month: startMonth), at: 0)
+            oneOffs.insert(OfferOneOff(label: Self.signingBonusLabel, amountMinorUnits: signingBonus, month: offerStart), at: 0)
         }
         return OfferScenarioSpec(current: current, offer: offer, salaryEntryId: salaryEntryId, pensionEntryId: pensionEntryId,
                                  startMonth: startMonth, noticeGapMonths: noticeGapMonths, oneOffs: oneOffs,

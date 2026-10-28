@@ -149,7 +149,7 @@ final class SyncReferenceClassificationTests: XCTestCase {
         return try OfferScenarioSpec(current: current, offer: offer, salaryEntryId: 51, pensionEntryId: 52,
                                      startMonth: Date(timeIntervalSince1970: 1_700_000_000), noticeGapMonths: 1,
                                      oneOffs: [OfferOneOff(label: "Bonus", amountMinorUnits: 9, month: Date(timeIntervalSince1970: 1_700_000_000))],
-                                     newIncomeCategoryId: 53).json()
+                                     newIncomeCategoryId: 53, addedEntryIds: [54, 55]).json()
     }
 
     /// The known shapes of each JSON column, made by the code that writes them.
