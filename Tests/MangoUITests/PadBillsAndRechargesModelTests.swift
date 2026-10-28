@@ -158,9 +158,9 @@ final class PadBillsAndRechargesModelTests: XCTestCase {
         let summary = model.summary(year: year)
         XCTAssertEqual(summary.rechargedMinorUnits, figure.recharged)
         XCTAssertEqual(summary.billsPaidMinorUnits, figure.billsPaid)
-        XCTAssertEqual(summary.differenceMinorUnits, figure.recharged - figure.billsPaid)
+        XCTAssertEqual(summary.differenceMinorUnits, figure.difference)
         XCTAssertEqual(summary.outstandingMinorUnits, model.awaiting.reduce(0) { $0 + $1.row.outstandingMinorUnits })
-        XCTAssertEqual(summary.reasons.isEmpty, summary.differenceMinorUnits == 0)
+        XCTAssertEqual(summary.reasons.isEmpty, figure.gaps.isEmpty)
         for reason in summary.reasons { XCTAssertEqual(reason.statementIds.count, reason.statementNames.count) }
         model.chosenYear = 2024
         XCTAssertEqual(model.year, 2024)

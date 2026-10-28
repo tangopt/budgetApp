@@ -317,24 +317,14 @@ public final class PadBillsAndRechargesModel: ObservableObject {
             rechargedMinorUnits: figure.recharged,
             rechargedCaption: "\(figure.statements) statement\(figure.statements == 1 ? "" : "s") · \(Money.format(figure.received, currency: currency)) received",
             billsPaidMinorUnits: figure.billsPaid, differenceMinorUnits: difference,
-            differenceCaption: difference == 0 ? "Every statement matches its bills"
-                : difference > 0 ? "Recharged more than paid" : "Recharged less than paid",
-            reasons: difference == 0 ? [] : reasons(figure))
+            differenceCaption: RechargeYearFigures.differenceCaption(difference),
+            reasons: reasons(figure))
     }
 
     private func reasons(_ figure: RechargeYearFigures) -> [Reason] {
-        Dictionary(grouping: figure.gaps, by: \.reason).sorted { $0.key < $1.key }.map { reason, gaps in
-            let amount = Money.format(abs(gaps.reduce(0) { $0 + $1.amountMinorUnits }), currency: currency)
-            let months = gaps.map { RechargeEmail.monthName($0.month, language: .english) }
-            let on = gaps.count == 1 ? "on \(months[0])'s statement" : "on \(gaps.count) statements"
-            let lines = gaps.reduce(0) { $0 + $1.lines }
-            let text: String = switch reason {
-            case .rounding: "\(amount) rounding \(on)"
-            case .noPayment: "\(amount) from \(lines) bill\(lines == 1 ? "" : "s") with no bank payment linked, \(on)"
-            case .oneOff: "\(amount) from \(lines) one-off line\(lines == 1 ? "" : "s") with no bank movement, \(on)"
-            case .otherAmount: "\(amount) where the bank paid a different amount than recharged, \(on)"
-            }
-            return Reason(text: text, statementIds: gaps.map(\.statementId), statementNames: months)
+        figure.explanations(currency: currency).map { item in
+            Reason(text: item.text, statementIds: item.gaps.map(\.statementId),
+                   statementNames: item.gaps.map { RechargeEmail.monthName($0.month, language: .english) })
         }
     }
 
