@@ -14,51 +14,44 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 if let error = viewModel.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if let content = viewModel.content {
-                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, importsWaiting: content.review.importsWaiting, navigate: navigate)
                     let visibility = DashboardCardVisibility(storedString: hiddenCards)
                     let review = content.review
-                    CurrentMonthCard(month: content.currentMonth, navigate: navigate) {
-                        viewModel.clearCloseError()
-                        closeTarget = CloseMonthTarget(month: PayMonth(year: content.currentMonth.year, month: content.currentMonth.month))
-                    }
-                    let taxCard = review.tax.flatMap { visibility.shows(.taxYear) ? $0 : nil }
-                    let propertyCard = review.property.flatMap { visibility.shows(.propertyMonth) ? $0 : nil }
-                    if let tax = taxCard, let rows = propertyCard {
-                        TwoUpRow {
-                            TaxYearPositionCard(tax: tax, navigate: navigate)
-                        } second: {
-                            PropertyMonthCard(rows: rows, navigate: navigate)
+                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, navigate: navigate)
+                    // What the Dashboard showed before the review cards, first.
+                    DashboardSection(title: "Money") {
+                        NetWorthTile(content: content, navigate: navigate).tileSpan(2)
+                        CurrentMonthTile(month: content.currentMonth, navigate: navigate) {
+                            viewModel.clearCloseError()
+                            closeTarget = CloseMonthTarget(month: PayMonth(year: content.currentMonth.year, month: content.currentMonth.month))
                         }
-                    } else if let tax = taxCard {
-                        TaxYearPositionCard(tax: tax, navigate: navigate)
-                    } else if let rows = propertyCard {
-                        PropertyMonthCard(rows: rows, navigate: navigate)
+                        YearTile(viewModel: viewModel, content: content, navigate: navigate).tileSpan(2)
+                        YearChangeTile(changes: content.yearChanges, thisYear: MonthRange.components(of: content.today).year, navigate: navigate)
+                        TopCategoriesTile(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
+                        UpcomingBillsTile(bills: content.bills, navigate: navigate)
+                        AccountsTile(accounts: content.accounts, navigate: navigate)
                     }
-                    if let evidence = review.evidence, visibility.shows(.evidence) {
-                        EvidenceDocumentsCard(evidence: evidence, navigate: navigate)
+                    let propertyRows = review.property.flatMap { visibility.shows(.propertyMonth) ? $0 : nil }
+                    let mortgages = review.mortgages.flatMap { visibility.shows(.mortgage) ? $0 : nil } ?? []
+                    if propertyRows != nil || !mortgages.isEmpty {
+                        DashboardSection(title: "Property") {
+                            if let rows = propertyRows { PropertyMonthTile(rows: rows, navigate: navigate) }
+                            ForEach(mortgages, id: \.propertyName) { mortgage in
+                                MortgageTile(mortgage: mortgage, today: content.today, navigate: navigate)
+                            }
+                        }
                     }
-                    NetWorthCard(content: content, navigate: navigate)
-                    YearChangeCard(changes: content.yearChanges, navigate: navigate)
-                    YearAtAGlanceCard(viewModel: viewModel, content: content, navigate: navigate)
-                    TwoUpRow {
-                        TopCategoriesCard(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
-                    } second: {
-                        AttentionCard(items: content.attention, extra: review.attention, navigate: navigate)
-                    }
-                    TwoUpRow {
-                        UpcomingBillsCard(bills: content.bills, navigate: navigate)
-                    } second: {
-                        AccountsCard(accounts: content.accounts, navigate: navigate)
-                    }
-                    if let mortgages = review.mortgages, visibility.shows(.mortgage) {
-                        MortgageCard(mortgages: mortgages, navigate: navigate)
+                    DashboardSection(title: "Tax & documents") {
+                        if let tax = review.tax, visibility.shows(.taxYear) { TaxYearTile(tax: tax, navigate: navigate) }
+                        if let evidence = review.evidence, visibility.shows(.evidence) { EvidenceTile(evidence: evidence, navigate: navigate) }
+                        if review.importsWaiting > 0 { ImportsWaitingTile(count: review.importsWaiting, navigate: navigate) }
+                        AttentionTile(items: content.attention, extra: review.attention, navigate: navigate)
                     }
                 } else if viewModel.errorMessage == nil {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 200)

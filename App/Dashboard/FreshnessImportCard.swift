@@ -12,8 +12,6 @@ struct FreshnessImportCard: View {
     @ObservedObject var importCenter: ImportCenterModel
     let accounts: [Account]
     @Binding var selectedAccountId: Int64?
-    /// Files waiting for the Mac to import (`DashboardReview.importsWaiting`).
-    var importsWaiting: Int = 0
     let navigate: (AppScreen) -> Void
 
     private var tint: Color {
@@ -38,8 +36,7 @@ struct FreshnessImportCard: View {
     private var detail: String {
         var parts: [String] = []
         if let at = freshness.lastImportAt {
-            let file = freshness.lastImportFileName.map { " (\($0))" } ?? ""
-            parts.append("Last import \(DashboardFormat.day(at).unbroken)\(file)")
+            parts.append("Last import \(DashboardFormat.day(at).unbroken)")
         }
         if let through = freshness.dataThrough { parts.append("transactions through \(DashboardFormat.day(through).unbroken)") }
         return parts.joined(separator: " · ")
@@ -101,6 +98,7 @@ struct FreshnessImportCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(freshness.lastImportFileName.map { "Last import: \($0)" } ?? "")
             }
         }
     }
@@ -137,12 +135,6 @@ struct FreshnessImportCard: View {
                 }
             }
             importStatus
-            if importsWaiting > 0 {
-                HStack {
-                    Text("\(importsWaiting) waiting for the Mac to import").font(.callout)
-                    Button("Import") { navigate(.imports) }.buttonStyle(.link).fixedSize()
-                }
-            }
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
             NonGBPImportCaption(account: selectedAccount, eurToGbpRate: eurToGbpRate)

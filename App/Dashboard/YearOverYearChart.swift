@@ -5,6 +5,7 @@ import BudgetCore
 /// Net worth change per year: solid = realised, hatched = forecast, negative below the axis.
 struct YearOverYearChart: View {
     let changes: [YearChange]
+    var height: CGFloat = 200
 
     @State private var selectedYear: String?
     @Environment(\.theme) private var theme
@@ -78,7 +79,7 @@ struct YearOverYearChart: View {
                 }
             }
         }
-        .frame(height: 200)
+        .frame(height: height)
         .accessibilityLabel("Net worth change per year")
     }
 

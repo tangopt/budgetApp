@@ -8,6 +8,7 @@ struct NetWorthLineChart: View {
     let actual: [NetWorthPoint]
     let forecast: [NetWorthPoint]
     let today: Date
+    var height: CGFloat = 230
 
     @State private var selectedDate: Date?
     @Environment(\.theme) private var theme
@@ -85,7 +86,7 @@ struct NetWorthLineChart: View {
                 }
             }
         }
-        .frame(height: 230)
+        .frame(height: height)
         .accessibilityLabel("Net worth by month since \(actual.first.map { String($0.year) } ?? "the start"), actual and forecast")
     }
 }
