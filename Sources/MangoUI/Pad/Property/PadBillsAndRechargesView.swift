@@ -50,9 +50,10 @@ struct PadBillsAndRechargesView: View {
         .sheet(item: $correcting) { bill in
             PadTotalSheet(model: model, write: write, bill: bill)
         }
-        .sheet(isPresented: Binding(get: { model.openStatementId != nil }, set: { if !$0 { model.openStatementId = nil } })) {
+        .padSidePanel(isPresented: model.openStatementId != nil, onClose: { model.openStatementId = nil }) {
             if let id = model.openStatementId {
-                PadStatementSheet(model: model, write: write, statementId: id, choosePayment: choosePayment)
+                PadStatementSheet(model: model, write: write, statementId: id, choosePayment: choosePayment,
+                                  onClose: { model.openStatementId = nil })
             }
         }
         .sheet(isPresented: Binding(get: { model.emailStatementId != nil }, set: { if !$0 { model.emailStatementId = nil } })) {
