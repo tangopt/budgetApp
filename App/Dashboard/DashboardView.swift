@@ -21,7 +21,7 @@ struct DashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if let content = viewModel.content {
-                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, navigate: navigate)
+                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, importsWaiting: content.review.importsWaiting, navigate: navigate)
                     let visibility = DashboardCardVisibility(storedString: hiddenCards)
                     let review = content.review
                     CurrentMonthCard(month: content.currentMonth, navigate: navigate) {
@@ -50,7 +50,7 @@ struct DashboardView: View {
                     TwoUpRow {
                         TopCategoriesCard(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
                     } second: {
-                        AttentionCard(items: content.attention, navigate: navigate)
+                        AttentionCard(items: content.attention, extra: review.attention, navigate: navigate)
                     }
                     TwoUpRow {
                         UpcomingBillsCard(bills: content.bills, navigate: navigate)

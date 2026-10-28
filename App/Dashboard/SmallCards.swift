@@ -48,7 +48,21 @@ struct TopCategoriesCard: View {
 
 struct AttentionCard: View {
     let items: AttentionItems
+    /// The review's signals (tax deadline, late rent, evidence, waiting documents and imports,
+    /// mortgage review), shown after the original rows.
+    var extra: [DashboardReview.AttentionLine] = []
     let navigate: (AppScreen) -> Void
+
+    private func destination(_ kind: DashboardReview.AttentionLine.Kind) -> (screen: AppScreen, link: String) {
+        switch kind {
+        case .taxDeadline: return (.taxYears, "Tax years")
+        case .rentLate: return (.property, "Property")
+        case .evidenceMissing: return (.missingEvidence, "Missing evidence")
+        case .documentsWaiting: return (.documents, "Documents")
+        case .importsWaiting: return (.imports, "Imports")
+        case .mortgageReview: return (.property, "Property")
+        }
+    }
 
     var body: some View {
         DashboardCard(title: "Needs attention") {
@@ -65,6 +79,10 @@ struct AttentionCard: View {
             }
             if items.missingReserveAllowance {
                 row(warning: true, "No reserve for unplanned spending in the budget", link: "Budget grid") { navigate(.budgetGrid) }
+            }
+            ForEach(extra) { line in
+                let target = destination(line.kind)
+                row(warning: true, line.text, link: target.link) { navigate(target.screen) }
             }
         }
     }
