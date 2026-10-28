@@ -476,35 +476,38 @@ extension SyncEngineCore {
     public func rotateZoneKey() async throws -> SyncZoneKeyRotation {
         // Only the Mac makes keys (step 8).
         guard mode.ownsZones else { throw ReadOnlyError.readOnly }
-        return try await serialized {
-            try await self.prepare()
-            let zone = SyncRecordStore.householdZone
+        return try await serialized { try await self.rotateZoneKeyNow() }
+    }
+
+    /// `rotateZoneKey`'s work, inside an entry point already serialized (`finishKeyRevocation` runs it too).
+    func rotateZoneKeyNow() async throws -> SyncZoneKeyRotation {
+        try await self.prepare()
+        let zone = SyncRecordStore.householdZone
+        _ = try await self.householdKey(zone: zone, create: true)
+        let systemFields = try await self.db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.systemFields }
+        let key = DocumentCrypto.newZoneKey()
+        try self.keyStore.store(key, zone: zone)
+        let marker = SyncZoneKeys.Marker(keyId: DocumentCrypto.zoneKeyId(key), createdAt: self.clock())
+        let wire = SyncZoneKeys.wire(marker, zone: zone)
+        let results = try await self.transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
+        let now = self.clock()
+        switch results.first?.outcome {
+        case .saved(let stamp):
+            try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
+        case .changed(let server):
+            // Another device rotated (or created) it first: its key is the zone's.
+            Self.documentLog.error("Zone key changed on another device during rotation; adopting it")
+            guard let adopted = try? SyncZoneKeys.marker(from: server.wire) else { throw SyncKeyError.unavailable }
+            try await self.db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now) }
+        case .deleted:
+            try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: nil), zone: zone, db: db, now: now) }
             _ = try await self.householdKey(zone: zone, create: true)
-            let systemFields = try await self.db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.systemFields }
-            let key = DocumentCrypto.newZoneKey()
-            try self.keyStore.store(key, zone: zone)
-            let marker = SyncZoneKeys.Marker(keyId: DocumentCrypto.zoneKeyId(key), createdAt: self.clock())
-            let wire = SyncZoneKeys.wire(marker, zone: zone)
-            let results = try await self.transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
-            let now = self.clock()
-            switch results.first?.outcome {
-            case .saved(let stamp):
-                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
-            case .changed(let server):
-                // Another device rotated (or created) it first: its key is the zone's.
-                Self.documentLog.error("Zone key changed on another device during rotation; adopting it")
-                guard let adopted = try? SyncZoneKeys.marker(from: server.wire) else { throw SyncKeyError.unavailable }
-                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now) }
-            case .deleted:
-                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: nil), zone: zone, db: db, now: now) }
-                _ = try await self.householdKey(zone: zone, create: true)
-            default:
-                throw SyncKeyError.unavailable
-            }
-            let keys = try self.keyStore.allKeys(zone: zone)
-            let rewrapped = try await self.db.write { db in try Self.rewrapStragglers(zone: zone, keys: keys, db: db, now: now) }
-            return SyncZoneKeyRotation(rewrapped: rewrapped, push: try await self.pushAll())
+        default:
+            throw SyncKeyError.unavailable
         }
+        let keys = try self.keyStore.allKeys(zone: zone)
+        let rewrapped = try await self.db.write { db in try Self.rewrapStragglers(zone: zone, keys: keys, db: db, now: now) }
+        return SyncZoneKeyRotation(rewrapped: rewrapped, push: try await self.pushAll())
     }
 
     /// Every data key known here that isn't wrapped with the zone's current key, and whose old key is held,

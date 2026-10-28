@@ -1657,7 +1657,7 @@ public actor SyncEngineCore {
     }
 
     /// One non-atomic save operation; split in half while the server says it is too large.
-    private func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data]) async throws -> [SaveResult] {
+    func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data]) async throws -> [SaveResult] {
         let names = Set(records.map(\.recordName))
         do {
             return try await transport.save(records, ifUnchanged: ifUnchanged.filter { names.contains($0.key) }, atomic: false)
