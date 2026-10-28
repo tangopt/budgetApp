@@ -33,4 +33,13 @@ final class LockCoverPolicyTests: XCTestCase {
         XCTAssertTrue(covering.contains(sheet))
         XCTAssertTrue(covering.contains(CGRect(x: 0, y: 0, width: 500, height: 360)))
     }
+
+    // Locked with a sheet open (and a sheet over a sheet): exactly one lock screen, in the top sheet.
+    func testOneLockScreenPerWindowAndItsSheets() {
+        for depth in 1...3 {
+            let covers = (0..<depth).map { LockCoverPolicy.cover(hasSheetAbove: $0 < depth - 1) }
+            XCTAssertEqual(covers.filter { $0 == .lockScreen }.count, 1, "\(depth) window(s) stacked")
+            XCTAssertEqual(covers.last, .lockScreen, "the top one takes the keyboard")
+        }
+    }
 }

@@ -16,8 +16,9 @@ extension View {
     /// under it is hidden, not blurred. The content is also disabled: it takes no clicks, focus, typing or
     /// keyboard shortcuts; Settings' toolbar (its tabs) goes, and the main window's toolbar items hide. The session is the app's (`AppEnvironment.Current`),
     /// shared by every window; snapshot routes pass one of their own.
-    func lockOverlay(_ scene: LockOverlayScene, session: SessionModel? = nil) -> some View {
-        modifier(LockOverlayModifier(scene: scene, fixedSession: session))
+    /// `sheetCarriesLock`: snapshot routes (no window sheets there) say a sheet over this window shows the lock screen.
+    func lockOverlay(_ scene: LockOverlayScene, session: SessionModel? = nil, sheetCarriesLock: Bool = false) -> some View {
+        modifier(LockOverlayModifier(scene: scene, fixedSession: session, sheetCarriesLock: sheetCarriesLock))
     }
 }
 
@@ -59,11 +60,25 @@ private final class LockGate: ObservableObject {
 
 private struct LockOverlayModifier: ViewModifier {
     let scene: LockOverlayScene
+    let sheetCarriesLock: Bool
     @StateObject private var gate: LockGate
+    /// Which windows have a sheet showing the lock screen (`SheetCovers`).
+    @ObservedObject private var sheets = SheetCovers.shared
+    /// This overlay's window.
+    @State private var window = WindowHolder()
 
-    init(scene: LockOverlayScene, fixedSession: SessionModel?) {
+    init(scene: LockOverlayScene, fixedSession: SessionModel?, sheetCarriesLock: Bool) {
         self.scene = scene
+        self.sheetCarriesLock = sheetCarriesLock
         _gate = StateObject(wrappedValue: LockGate(fixed: fixedSession))
+    }
+
+    /// A sheet open on this window shows the lock screen (it's the one that takes the keyboard), so this window shows
+    /// only a backdrop: one lock screen, not one here and another in the sheet (`LockCoverPolicy.cover`).
+    private var sheetHasTheLock: Bool {
+        if sheetCarriesLock { return true }
+        guard let window = window.window else { return false }
+        return LockCoverPolicy.cover(hasSheetAbove: window.attachedSheet != nil || sheets.carriesLock(over: window)) == .backdrop
     }
 
     private var covers: Bool {
@@ -85,9 +100,14 @@ private struct LockOverlayModifier: ViewModifier {
             .toolbar(covers && scene == .settings ? .hidden : .automatic, for: .windowToolbar)
             .overlay {
                 if covers {
-                    cover.transition(.opacity)
+                    if sheetHasTheLock {
+                        LockBackdrop().transition(.opacity)
+                    } else {
+                        cover.transition(.opacity)
+                    }
                 }
             }
+            .background(WindowReader { window.window = $0 })
             .onChange(of: gate.session?.isCovered ?? false, initial: true) { _, covered in
                 if let session = gate.session { SheetCovers.shared.update(covered: covered, session: session) }
             }
@@ -101,6 +121,15 @@ private struct LockOverlayModifier: ViewModifier {
         } else {
             PlainCover(title: "Set up Mango", message: "Finish setting up in Mango's window first.")
         }
+    }
+}
+
+/// A covered window whose sheet shows the lock screen: nothing on it, so the lock screen shows once.
+struct LockBackdrop: View {
+    var body: some View {
+        Color(nsColor: .windowBackgroundColor)
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
     }
 }
 
@@ -793,10 +822,14 @@ enum SignInErrorText {
 /// When the cover lifts, the sheets come back as they were if the same person signed in again, and end
 /// otherwise (`LockCoverPolicy`): someone else never sees another person's recovery key or half-typed form.
 @MainActor
-final class SheetCovers {
+final class SheetCovers: ObservableObject {
     static let shared = SheetCovers()
     private struct Cover {
         weak var window: NSWindow?
+        /// The window at the bottom of its sheets (the one with the lock overlay).
+        weak var root: NSWindow?
+        /// What it shows now: the lock screen only in the top sheet (`LockCoverPolicy.cover`).
+        var shows: LockCoverPolicy.Cover
         let original: NSView
         /// What had the keyboard in the sheet (a view inside `original`, or the window).
         weak var firstResponder: NSResponder?
@@ -804,7 +837,13 @@ final class SheetCovers {
         let frame: CGRect
     }
     private var covers: [ObjectIdentifier: Cover] = [:]
+    /// The windows (at the bottom of their sheets) whose lock screen a sheet shows: their own overlay shows a backdrop.
+    @Published private(set) var carriers: Set<ObjectIdentifier> = []
     private var observer: NSObjectProtocol?
+    private var sheetEndObserver: NSObjectProtocol?
+
+    /// Whether a sheet over `window` shows the lock screen for it.
+    func carriesLock(over window: NSWindow) -> Bool { carriers.contains(ObjectIdentifier(window)) }
     private weak var session: SessionModel?
     /// The popovers on show and the menus tracking, followed from launch (`trackTransients`).
     private let popovers = NSHashTable<NSPopover>.weakObjects()
@@ -857,12 +896,22 @@ final class SheetCovers {
             for menu in menus.allObjects { menu.cancelTrackingWithoutAnimation() }
             for popover in popovers.allObjects where popover.isShown { Self.close(popover) }
             for window in NSApp.windows { coverOrCancel(window) }
+            settle()
+            if sheetEndObserver == nil {
+                // A sheet that ends while covered (a background task closed it): the lock screen moves down to what
+                // is now on top, so no window is left without one.
+                sheetEndObserver = NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: nil,
+                                                                          queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.settle() }
+                }
+            }
             if observer == nil {
                 // A sheet or panel that opens while covered (an alert from a background task).
                 observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
                     MainActor.assumeIsolated {
                         guard let window = note.object as? NSWindow else { return }
                         self?.coverOrCancel(window)
+                        self?.settle()
                     }
                 }
             }
@@ -881,10 +930,13 @@ final class SheetCovers {
                 }
             }
             covers = [:]
+            if !carriers.isEmpty { carriers = [] }
             isCovering = false
             coveredFor = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
+            if let sheetEndObserver { NotificationCenter.default.removeObserver(sheetEndObserver) }
+            sheetEndObserver = nil
         }
     }
 
@@ -909,11 +961,13 @@ final class SheetCovers {
         // A field being typed in has the shared field editor as first responder: keep the field itself.
         var previous = window.firstResponder
         if let editor = previous as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder { previous = field }
-        let host = NSHostingView(rootView: LockScreenHost(session: session).themedRoot())
-        // The cover is the size of the window the sheet hangs from, so the lock screen runs edge to edge
-        // and nothing of the sheet's own frame (its edge, its shadow) shows over the window's lock screen.
-        // The sheet gets its own size back with its content.
-        // (A sheet over a sheet covers the window under both.)
+        let shows = LockCoverPolicy.cover(hasSheetAbove: window.attachedSheet != nil)
+        let host = Self.host(shows, session: session)
+        // The cover is the size of the window the sheet hangs from, so the lock screen runs edge to edge.
+        // The sheet shows the lock screen (it takes the keyboard) and the window under it only a backdrop
+        // (`carriers`): one lock screen, never the window's and the sheet's both. The sheet gets its own size
+        // back with its content. (A sheet over a sheet covers the window under both; only the top one shows
+        // the lock screen.)
         var root = window.sheetParent
         while let next = root?.sheetParent { root = next }
         let covering = root.map {
@@ -922,9 +976,38 @@ final class SheetCovers {
         host.sizingOptions = []
         host.frame = CGRect(origin: .zero, size: covering.size)
         let keeps = previous === window || (previous as? NSView)?.isDescendant(of: content) == true
-        covers[ObjectIdentifier(window)] = Cover(window: window, original: content, firstResponder: keeps ? previous : nil, frame: frame)
+        covers[ObjectIdentifier(window)] = Cover(window: window, root: root, shows: shows, original: content,
+                                                 firstResponder: keeps ? previous : nil, frame: frame)
         window.contentView = host
         window.setFrame(covering, display: true)
         window.makeFirstResponder(host)
+    }
+
+    /// The view a covered sheet shows instead of its content.
+    private static func host(_ shows: LockCoverPolicy.Cover, session: SessionModel) -> NSHostingView<AnyView> {
+        switch shows {
+        case .lockScreen: return NSHostingView(rootView: AnyView(LockScreenHost(session: session).themedRoot()))
+        case .backdrop: return NSHostingView(rootView: AnyView(LockBackdrop().themedRoot()))
+        }
+    }
+
+    /// One lock screen per window and its sheets: the top sheet shows it, every sheet under another shows a backdrop,
+    /// and the window's own overlay shows a backdrop while a sheet carries it (`carriers`). Sheets gone are dropped.
+    private func settle() {
+        guard let session else { return }
+        covers = covers.filter { $0.value.window?.isSheet == true && $0.value.window?.sheetParent != nil }
+        for (id, cover) in covers {
+            guard let window = cover.window else { continue }
+            let shows = LockCoverPolicy.cover(hasSheetAbove: window.attachedSheet != nil)
+            guard shows != cover.shows else { continue }
+            let host = Self.host(shows, session: session)
+            host.sizingOptions = []
+            host.frame = window.contentView?.frame ?? host.frame
+            window.contentView = host
+            if shows == .lockScreen { window.makeFirstResponder(host) }
+            covers[id]?.shows = shows
+        }
+        let roots = Set(covers.values.compactMap { $0.root.map(ObjectIdentifier.init) })
+        if roots != carriers { carriers = roots }
     }
 }

@@ -326,6 +326,70 @@ final class HouseholdInviteTests: XCTestCase {
         } catch is Refused {}
     }
 
+    // A real household: "Invite…" spun forever (bug A). The gate now reads the household once, without the documents'
+    // contents, reports where it is, and gives up when iCloud stops answering.
+
+    func testPressReadsTheHouseholdOnceWithoutFiles() async throws {
+        let h = try await ready()
+        let counting = DelayedShareTransport(inner: h.macTransport)
+        let stages = StageLog()
+        let outcome = try await HouseholdInvite.press(running: true, transport: counting, keys: h.adminKeys, db: h.adminMac.db,
+                                                      title: "Synthetic household", progress: { stages.add($0) }) { "sheet" }
+        guard case .present = outcome else { return XCTFail("expected the sheet, got \(outcome)") }
+        let reads = await counting.reads
+        XCTAssertEqual(reads.full, 0, "never the documents' contents")
+        XCTAssertEqual(reads.withoutFiles, 1, "one read for the clean and the audit (one page here)")
+        let seen = stages.all
+        XCTAssertEqual(seen.first, .checkingThisMac)
+        XCTAssertTrue(seen.contains { if case .readingICloud = $0 { return true } else { return false } })
+        XCTAssertEqual(Array(seen.suffix(2)), [.sharing, .preparingSheet])
+    }
+
+    func testPressTimesOutCleanlyWhenICloudNeverAnswers() async throws {
+        let h = try await ready()
+        let silent = DelayedShareTransport(inner: h.macTransport, delay: .seconds(3_600))
+        let started = ContinuousClock.now
+        var asked = 0
+        let outcome = try await HouseholdInvite.press(running: true, transport: silent, keys: h.adminKeys, db: h.adminMac.db,
+                                                      title: "Synthetic household", idleLimit: .milliseconds(300)) { asked += 1; return "sheet" }
+        guard case .timedOut = outcome else { return XCTFail("expected a time-out, got \(outcome)") }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "gives up, doesn't wait for the reply")
+        XCTAssertEqual(asked, 0)
+        try await noShare(h)
+        XCTAssertEqual(HouseholdCopy.inviteTimedOut, "Mango couldn't finish checking iCloud. Try again.")
+    }
+
+    func testPressCompletesWhenICloudIsSlowButAnswers() async throws {
+        let h = try await ready()
+        // Every reply takes 150 ms against a 400 ms limit: the whole press takes longer than the limit, but iCloud never
+        // goes that long without answering.
+        let slow = DelayedShareTransport(inner: h.macTransport, delay: .milliseconds(150))
+        let started = ContinuousClock.now
+        let outcome = try await HouseholdInvite.press(running: true, transport: slow, keys: h.adminKeys, db: h.adminMac.db,
+                                                      title: "Synthetic household", idleLimit: .milliseconds(400)) { "sheet" }
+        guard case .present(let made, _) = outcome else { return XCTFail("expected the sheet, got \(outcome)") }
+        XCTAssertGreaterThan(ContinuousClock.now - started, .milliseconds(400), "precondition: longer than the limit in all")
+        let held = try await h.cloud.zoneShare(household)
+        XCTAssertEqual(held, made)
+    }
+
+    func testWatchdogPassesTheWorksErrorAndResult() async throws {
+        struct Refused: Error {}
+        let value = try await InviteWatchdog.run(idleLimit: .seconds(5)) { _ in 7 }
+        XCTAssertEqual(value, 7)
+        do {
+            _ = try await InviteWatchdog.run(idleLimit: .seconds(5)) { _ -> Int in throw Refused() }
+            XCTFail("must throw")
+        } catch is Refused {}
+    }
+
+    func testInviteProgressCopy() {
+        XCTAssertEqual(HouseholdCopy.inviteProgress(.checkingThisMac), HouseholdCopy.inviteChecking)
+        XCTAssertEqual(HouseholdCopy.inviteProgress(.readingICloud(records: 1_200)),
+                       "Checking the household with iCloud before inviting… \(1_200.formatted()) records read.")
+        XCTAssertEqual(HouseholdCopy.inviteProgress(.sharing), "Making the invitation…")
+    }
+
     // MARK: Binding
 
     func testAcceptedParticipantIsBoundToMember() async throws {
@@ -758,6 +822,61 @@ private actor CountingShareTransport: SyncTransport, SyncShareTransport {
     func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await inner.zoneShare(zone) }
     func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
         made += 1
+        return try await inner.makeZoneShare(zone, title: title)
+    }
+    func removeParticipant(userRecordName: String, zone: String) async throws {
+        try await inner.removeParticipant(userRecordName: userRecordName, zone: zone)
+    }
+    func removeAllParticipants(zone: String) async throws -> [String] { try await inner.removeAllParticipants(zone: zone) }
+}
+
+/// The stages a press reported, in order.
+private final class StageLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stages: [HouseholdInvite.Stage] = []
+    func add(_ stage: HouseholdInvite.Stage) { lock.withLock { stages.append(stage) } }
+    var all: [HouseholdInvite.Stage] { lock.withLock { stages } }
+}
+
+/// iCloud that answers after `delay` (an hour: never, for a test), counting the household reads with and without the
+/// documents' contents. Waits are cancellable, as a CloudKit operation is.
+private actor DelayedShareTransport: SyncTransport, SyncShareTransport {
+    let inner: any SyncTransport & SyncShareTransport
+    let delay: Duration
+    private(set) var reads = (full: 0, withoutFiles: 0)
+    init(inner: any SyncTransport & SyncShareTransport, delay: Duration = .zero) {
+        self.inner = inner
+        self.delay = delay
+    }
+
+    private func wait() async throws { if delay > .zero { try await Task.sleep(for: delay) } }
+
+    func operationLimits() async -> SyncOperationLimits { await inner.operationLimits() }
+    func createZone(_ zone: String) async throws { try await wait(); try await inner.createZone(zone) }
+    func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
+        try await wait()
+        return try await inner.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
+    }
+    func changes(since token: Data?, zone: String) async throws -> SyncChanges {
+        reads.full += 1
+        try await wait()
+        return try await inner.changes(since: token, zone: zone)
+    }
+    func changesWithoutFiles(since token: Data?, zone: String) async throws -> SyncChanges {
+        reads.withoutFiles += 1
+        try await wait()
+        return try await inner.changes(since: token, zone: zone)
+    }
+    func delete(_ recordNames: [String], zone: String) async throws { try await wait(); try await inner.delete(recordNames, zone: zone) }
+    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
+        try await wait()
+        return try await inner.fetch(recordName, zone: zone)
+    }
+    func serverTime() async throws -> Date? { try await inner.serverTime() }
+    func currentUserRecordName() async throws -> String { try await inner.currentUserRecordName() }
+    func zoneShare(_ zone: String) async throws -> SyncZoneShare? { try await wait(); return try await inner.zoneShare(zone) }
+    func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
+        try await wait()
         return try await inner.makeZoneShare(zone, title: title)
     }
     func removeParticipant(userRecordName: String, zone: String) async throws {

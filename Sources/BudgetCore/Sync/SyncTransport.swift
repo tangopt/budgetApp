@@ -164,6 +164,10 @@ public protocol SyncTransport: Sendable {
     func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult]
     /// The zone's changes since `token` (nil: from the start), one page.
     func changes(since token: Data?, zone: String) async throws -> SyncChanges
+    /// `changes`, without the contents of document files: a `documentFile` record comes with its name and type but not
+    /// its `file` asset (`SyncFeedKeys.withoutDocumentFiles`). For readers that only judge records (the invite's audit,
+    /// the orphan-file clean): reading the whole household that way doesn't download every document in it.
+    func changesWithoutFiles(since token: Data?, zone: String) async throws -> SyncChanges
     /// Deletes records (unconditionally, like CloudKit; a record already gone is fine).
     func delete(_ recordNames: [String], zone: String) async throws
     /// One record, or nil when the server has none by that name.
@@ -174,6 +178,17 @@ public protocol SyncTransport: Sendable {
 
 extension SyncTransport {
     public func serverTime() async throws -> Date? { nil }
+    /// A transport that can't leave file contents out reads them too.
+    public func changesWithoutFiles(since token: Data?, zone: String) async throws -> SyncChanges {
+        try await changes(since: token, zone: zone)
+    }
+}
+
+/// The record keys a feed reads (`SyncTransport.changesWithoutFiles`).
+public enum SyncFeedKeys {
+    /// Every key this app writes but a document file's contents: the sealed fields, their key id and a large payload's
+    /// asset (`FieldSealing`, `SyncLargePayload`). A key outside these isn't the app's and isn't read.
+    public static let withoutDocumentFiles = [FieldSealing.sealedField, FieldSealing.keyIdField, SyncLargePayload.assetField]
 }
 
 // MARK: Wire records

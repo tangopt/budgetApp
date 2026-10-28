@@ -64,21 +64,56 @@ public enum HouseholdInvite {
         return blockers
     }
 
+    /// Where "Invite…" has got to (`press`, `invite`): the pane's progress line (`HouseholdCopy.inviteProgress`) and
+    /// the log. Every step reported also counts as the gate still moving (`InviteWatchdog`).
+    public enum Stage: Equatable, Sendable {
+        /// This Mac's own checks.
+        case checkingThisMac
+        /// The household as iCloud holds it, read page by page: how many records so far.
+        case readingICloud(records: Int)
+        /// Files left by old deletes, deleted.
+        case cleaningFiles
+        /// The records read, opened and judged.
+        case auditing(records: Int)
+        /// The share made (or read back).
+        case sharing
+        /// The share sheet's share read.
+        case preparingSheet
+    }
+
+    /// Every record the server's household zone holds, every page from the start, without the documents' contents
+    /// (`SyncTransport.changesWithoutFiles`). `progress` hears the count after each page.
+    public static func serverRecords(transport: any SyncTransport,
+                                     progress: @Sendable (Stage) -> Void = { _ in }) async throws -> [SyncServerRecord] {
+        var records: [SyncServerRecord] = []
+        var token: Data?
+        var pages = 0
+        while true {
+            let page = try await transport.changesWithoutFiles(since: token, zone: SyncZones.household)
+            records += page.records
+            token = page.token
+            pages += 1
+            log.debug("Household read: page \(pages, privacy: .public), \(records.count, privacy: .public) record(s)")
+            progress(.readingICloud(records: records.count))
+            if !page.moreComing { break }
+        }
+        log.notice("Household read: \(records.count, privacy: .public) record(s) in \(pages, privacy: .public) page(s)")
+        return records
+    }
+
     /// Every record the server's household zone holds (every page, from the start), opened with the household key and
     /// judged by `SyncZoneGuard` as if this Mac were about to send it there. A record that doesn't open counts too, and so
     /// does a document file whose document isn't a live household record there (flagged, a marker, or gone: an orphan
     /// file fails closed). Throws the transport's errors.
     public static func auditServer(transport: any SyncTransport, keys: any SyncKeyStore, db: any DatabaseReader) async throws
         -> [SyncZoneGuard.Violation] {
+        try await audit(records: try await serverRecords(transport: transport), keys: keys, db: db)
+    }
+
+    /// `auditServer` over the household as already read (`serverRecords`).
+    static func audit(records: [SyncServerRecord], keys: any SyncKeyStore, db: any DatabaseReader) async throws
+        -> [SyncZoneGuard.Violation] {
         let zone = SyncZones.household
-        var records: [SyncServerRecord] = []
-        var token: Data?
-        while true {
-            let page = try await transport.changes(since: token, zone: zone)
-            records += page.records
-            token = page.token
-            if !page.moreComing { break }
-        }
         let keyring = try keys.allKeys(zone: zone)
         var payloads: [SyncPayload] = []
         var violations: [SyncZoneGuard.Violation] = []
@@ -124,9 +159,9 @@ public enum HouseholdInvite {
     /// invite gets the same share back; step 8: read-write, and an existing read-only share is upgraded). Nothing is shared while anything blocks. A passing transport error (offline,
     /// busy) is `.offline`.
     public static func invite(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore, db: any DatabaseWriter,
-                              title: String) async throws -> Result {
+                              title: String, progress: @Sendable (Stage) -> Void = { _ in }) async throws -> Result {
         do {
-            let result = try await gated(transport: transport, keys: keys, db: db) {
+            let result = try await gated(transport: transport, keys: keys, db: db, progress: progress) {
                 try await transport.makeZoneShare(SyncZones.household, title: title)
             }
             if case .share = result {
@@ -171,16 +206,26 @@ public enum HouseholdInvite {
     /// The gate both the invite and the upgrade go through: local blockers, the household's orphan files cleaned, the
     /// server audit, local blockers again, then `share`. Nothing reaches `share` while anything blocks.
     private static func gated(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore, db: any DatabaseWriter,
+                              progress: @Sendable (Stage) -> Void = { _ in },
                               share: () async throws -> SyncZoneShare) async throws -> Result {
+        progress(.checkingThisMac)
         let local = try await db.read { db in try localBlockers(db: db) }
         guard local.isEmpty else { return .blocked(local) }
+        // The household is read once, without the documents' contents, for both the clean and the audit (it used to be
+        // read twice, every document file downloaded each time: "Invite…" never finished on a real household).
+        let records = try await serverRecords(transport: transport, progress: progress)
         // Final review I-1: files left by household document deletes before deletes took them go first.
-        try await HouseholdOrphanFiles.clean(transport: transport, keys: keys, db: db)
-        let violations = try await auditServer(transport: transport, keys: keys, db: db)
+        progress(.cleaningFiles)
+        let cleaned = try await HouseholdOrphanFiles.clean(records: records, transport: transport, keys: keys, db: db)
+        let remaining = cleaned.isEmpty ? records : records.filter { !cleaned.contains($0.wire.recordName) }
+        progress(.auditing(records: remaining.count))
+        let violations = try await audit(records: remaining, keys: keys, db: db)
+        log.notice("Household gate: audit done, \(violations.count, privacy: .public) violation(s)")
         guard violations.isEmpty else { return .blocked([.householdAudit(violations.count)]) }
         // Nothing changed here while the server was read.
         let again = try await db.read { db in try localBlockers(db: db) }
         guard again.isEmpty else { return .blocked(again) }
+        progress(.sharing)
         return .share(try await share())
     }
 

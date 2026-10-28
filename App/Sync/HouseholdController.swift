@@ -41,6 +41,8 @@ final class HouseholdController: ObservableObject {
     private var busy = false
     /// "Invite…" is running its gate (the pane says so: the server audit can take a while).
     private var checking = false
+    /// Where "Invite…" has got to (the pane's progress line).
+    private var stage: HouseholdInvite.Stage = .checkingThisMac
     private var refreshing = false
 
     init(dbQueue: DatabaseQueue, session: SessionModel) {
@@ -63,7 +65,8 @@ final class HouseholdController: ObservableObject {
 
     private func cloud() -> CloudKitTransport {
         if let transport { return transport }
-        let made = CloudKitTransport()
+        // Someone is waiting on these calls (the pane's buttons): not background sync's `.utility`.
+        let made = CloudKitTransport(qualityOfService: .userInitiated)
         transport = made
         return made
     }
@@ -150,7 +153,7 @@ final class HouseholdController: ObservableObject {
         var next = HouseholdPaneState()
         next.unclaimed = unclaimed
         next.busy = busy
-        next.progress = busy && checking ? HouseholdCopy.inviteChecking : nil
+        next.progress = busy && checking ? HouseholdCopy.inviteProgress(stage) : nil
         next.error = error
         if let member {
             next.member = member.displayName
@@ -205,15 +208,20 @@ final class HouseholdController: ObservableObject {
     /// shows in the pane: the reasons under "Not yet:", or the error line when the sheet can't open.
     func invite() async {
         checking = true
+        stage = .checkingThisMac
         defer { checking = false }
         await run {
             blockers = []
             let transport = cloud()
             let outcome = try await HouseholdInvite.press(running: isRunning(), transport: transport, keys: keys, db: dbQueue,
-                                                          title: "Mango household") {
+                                                          title: "Mango household", progress: { [weak self] stage in
+                Task { @MainActor in self?.show(stage) }
+            }) {
                 try await transport.shareForSheet(SyncZones.household)
             }
             switch outcome {
+            case .timedOut:
+                error = HouseholdCopy.inviteTimedOut
             case .blocked(let lines):
                 Self.log.notice("Household invite: blocked (\(lines.count, privacy: .public) reason(s))")
                 blockers = lines
@@ -229,6 +237,14 @@ final class HouseholdController: ObservableObject {
                 if !shown { error = HouseholdCopy.shareFailed }
             }
         }
+    }
+
+    /// The progress line follows the invite's steps (only while it runs).
+    private func show(_ stage: HouseholdInvite.Stage) {
+        guard checking, busy else { return }
+        self.stage = stage
+        let line = HouseholdCopy.inviteProgress(stage)
+        if state.progress != line { state.progress = line }
     }
 
     /// "Let … make changes" (step 8): the admin's press is the only thing that upgrades the live share, behind the
