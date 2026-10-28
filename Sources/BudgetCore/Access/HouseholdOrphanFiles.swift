@@ -22,17 +22,18 @@ public enum HouseholdOrphanFiles {
     /// recorded here, so a retry judges again from the server).
     @discardableResult
     public static func clean(transport: any SyncTransport, keys: any SyncKeyStore, db: any DatabaseReader) async throws -> Int {
+        guard try !keys.allKeys(zone: SyncZones.household).isEmpty else { return 0 }
+        let records = try await HouseholdInvite.serverRecords(transport: transport)
+        return try await clean(records: records, transport: transport, keys: keys, db: db).count
+    }
+
+    /// `clean` over the household as already read from the start (`HouseholdInvite.serverRecords`): the invite reads it
+    /// once for the clean and the audit. Returns the names of the file records deleted.
+    static func clean(records: [SyncServerRecord], transport: any SyncTransport, keys: any SyncKeyStore,
+                      db: any DatabaseReader) async throws -> Set<String> {
         let zone = SyncZones.household
         let keyring = try keys.allKeys(zone: zone)
-        guard !keyring.isEmpty else { return 0 }
-        var records: [SyncServerRecord] = []
-        var token: Data?
-        while true {
-            let page = try await transport.changes(since: token, zone: zone)
-            records += page.records
-            token = page.token
-            if !page.moreComing { break }
-        }
+        guard !keyring.isEmpty else { return [] }
         var live: Set<String> = []
         var unjudged: Set<String> = []
         var files: [(recordName: String, owner: String)] = []
@@ -57,19 +58,19 @@ public enum HouseholdOrphanFiles {
             }
         }
         let candidates = files.filter { !live.contains($0.owner) && !unjudged.contains($0.owner) }
-        guard !candidates.isEmpty else { return 0 }
+        guard !candidates.isEmpty else { return [] }
         // Read after the server: an upload that finished meanwhile shows here as a live household row.
         let busy = try await db.read { db in
             try Set(candidates.map(\.owner).filter { try isBusyHere(uuid: $0, db: db) })
         }
         let orphans = candidates.filter { !busy.contains($0.owner) }.map(\.recordName)
-        guard !orphans.isEmpty else { return 0 }
+        guard !orphans.isEmpty else { return [] }
         let chunk = max(1, await transport.operationLimits().maxRecords)
         for start in stride(from: 0, to: orphans.count, by: chunk) {
             try await transport.delete(Array(orphans[start..<min(start + chunk, orphans.count)]), zone: zone)
         }
         log.notice("Household: \(orphans.count, privacy: .public) orphan file record(s) deleted")
-        return orphans.count
+        return Set(orphans)
     }
 
     /// Whether this device still has work for `uuid` that its household file may belong to.

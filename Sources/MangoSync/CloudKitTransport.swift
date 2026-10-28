@@ -55,14 +55,18 @@ public final class CloudKitTransport: SyncTransport {
     /// This instance's folder for asset files waiting for an upload (one subfolder per operation). Other
     /// instances' folders are never touched unless a day old.
     private let assetFolder: URL
+    /// The operations' quality of service: `.utility` for background sync; a button someone is waiting on
+    /// (Settings ▸ Household) asks for `.userInitiated`.
+    private let quality: QualityOfService
 
     /// `database`: the container's private database by default, or its shared database with `zoneOwnerName`.
     public init(database: CKDatabase = CKContainer(identifier: CloudKitTransport.containerIdentifier).privateCloudDatabase,
          zoneOwnerName: String? = nil,
          container: CKContainer = CKContainer(identifier: CloudKitTransport.containerIdentifier),
          assetRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoSyncAssets", isDirectory: true),
-         now: Date = Date()) {
+         now: Date = Date(), qualityOfService: QualityOfService = .utility) {
         self.database = database
+        quality = qualityOfService
         self.container = container
         self.zoneOwnerName = zoneOwnerName
         assetFolder = assetRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -142,10 +146,22 @@ public final class CloudKitTransport: SyncTransport {
     }
 
     public func changes(since token: Data?, zone: String) async throws -> SyncChanges {
+        try await page(since: token, zone: zone, desiredKeys: nil)
+    }
+
+    /// A page without the documents' contents (`SyncFeedKeys.withoutDocumentFiles`): the invite's audit reads the
+    /// whole household, and with every key that downloaded every document file in it, twice (Bug: "Invite…" never
+    /// finished).
+    public func changesWithoutFiles(since token: Data?, zone: String) async throws -> SyncChanges {
+        try await page(since: token, zone: zone, desiredKeys: SyncFeedKeys.withoutDocumentFiles)
+    }
+
+    private func page(since token: Data?, zone: String, desiredKeys: [CKRecord.FieldKey]?) async throws -> SyncChanges {
         let me = try await currentUser()
         let zoneID = self.zoneID(zone)
         let configuration = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
         configuration.previousServerChangeToken = try token.map(CloudKitRecordMapping.unarchiveToken)
+        configuration.desiredKeys = desiredKeys
         let operation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [zoneID], configurationsByRecordZoneID: [zoneID: configuration])
         operation.fetchAllChanges = false
         struct Page: Sendable {
@@ -236,7 +252,7 @@ public final class CloudKitTransport: SyncTransport {
     /// (`CloudKitRecordMapping.finalError`: with per-record results a `partialFailure` is theirs, not the call's).
     func run(_ operation: CKDatabaseOperation, zone: String, perRecordResults: Bool,
                      configure: (@escaping @Sendable (Result<Void, Error>) -> Void) -> Void) async throws {
-        operation.qualityOfService = .utility
+        operation.qualityOfService = quality
         // A task already cancelled never adds the operation: CloudKit isn't guaranteed to call the final block of an
         // operation cancelled before it was added, which would leave the continuation waiting (final review M2).
         // Note: `SyncEngineCore.serialized` runs each entry point in its own unstructured Task, so a caller's

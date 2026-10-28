@@ -36,6 +36,26 @@ public enum HouseholdCopy {
     public static let shareFailed = "Couldn't open the sharing sheet. Try again."
     /// While "Invite…" runs the gate (the server audit can take a while).
     public static let inviteChecking = "Checking the household with iCloud before inviting…"
+    /// iCloud stopped answering while "Invite…" ran its gate (`HouseholdInvite.PressOutcome.timedOut`).
+    public static let inviteTimedOut = "Mango couldn't finish checking iCloud. Try again."
+
+    /// The progress line while "Invite…" runs, by step.
+    public static func inviteProgress(_ stage: HouseholdInvite.Stage) -> String {
+        switch stage {
+        case .checkingThisMac:
+            return inviteChecking
+        case .readingICloud(let records):
+            return "Checking the household with iCloud before inviting… \(records.formatted()) records read."
+        case .cleaningFiles:
+            return "Checking the household with iCloud before inviting… tidying old document files."
+        case .auditing(let records):
+            return "Checking the household with iCloud before inviting… checking \(records.formatted()) records."
+        case .sharing:
+            return "Making the invitation…"
+        case .preparingSheet:
+            return "Opening the sharing sheet…"
+        }
+    }
     public static func syncingNotice(_ name: String) -> String { "Mango checks for \(name)'s acceptance each time it syncs." }
 
     public static let removeButton = "Remove from household…"
