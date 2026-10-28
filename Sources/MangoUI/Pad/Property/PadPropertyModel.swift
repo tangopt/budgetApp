@@ -56,14 +56,28 @@ public final class PadPropertyModel: ObservableObject {
 
     public var selectedTenancy: Tenancy? { tenancies.first { $0.id == selectedTenancyId } }
 
+    /// The newest read under way. A read overtaken by a newer one (`selectedTenancyId` starts its own, unawaited, when it
+    /// changes) waits for that one instead of returning with nothing applied, so `await reload()` always comes back with
+    /// the latest data in place (a save that selects the tenancy it created reads it back right after).
+    private var latest: Task<Void, Never>?
+
     public func reload() async {
         generation += 1
         let mine = generation
+        let task = Task { await self.read(generation: mine) }
+        latest = task
+        await task.value
+    }
+
+    private func read(generation mine: Int) async {
         let day = today()
         let selected = selectedTenancyId
         let reader = dbQueue
         guard let snapshot = try? await reader.read({ db in try Self.read(db, today: day, selected: selected) }) else { return }
-        guard mine == generation else { return }
+        guard mine == generation else {
+            await latest?.value
+            return
+        }
         property = snapshot.property
         tenancies = snapshot.tenancies
         bills = snapshot.bills
