@@ -53,12 +53,14 @@ public final class PadAccountsModel: ObservableObject {
 
     /// Opens Add account.
     public func openAddForm() {
+        write.clearRefusal(rowId: PadAccountFormModel.rowId)
         form = OpenForm(model: PadAccountFormModel(mode: .add, write: write, dbQueue: dbQueue))
     }
 
     /// Opens Edit details for the account, from its stored details (nothing when it is gone).
     public func openEditForm(accountId: Int64) async {
         guard let account = try? await dbQueue.read({ db in try Account.fetchOne(db, key: accountId) }) else { return }
+        write.clearRefusal(rowId: PadAccountFormModel.rowId)
         form = OpenForm(model: PadAccountFormModel(mode: .edit(account), write: write, dbQueue: dbQueue))
     }
 
@@ -84,6 +86,22 @@ public final class PadAccountsModel: ObservableObject {
             guard let account = try Account.fetchOne(db, key: accountId) else { return false }
             return try viewer.resolve(db: db).seesInFull(account)
         }) ?? false
+    }
+
+    /// The Details card (bank, number, kind, how the balance is kept, sharing) shows: the viewer sees the account in full
+    /// and is a known person (demo data's admin, tests' everyone). The other person's account below Everything, or any
+    /// account while this device's user isn't named yet, shows no details, as on the iPhone.
+    public func showsDetails(for accountId: Int64) async -> Bool {
+        let viewer = accounts.viewer
+        return (try? await dbQueue.read { db in
+            guard let account = try Account.fetchOne(db, key: accountId) else { return false }
+            return Self.showsDetails(account, seer: try viewer.resolve(db: db))
+        }) ?? false
+    }
+
+    nonisolated static func showsDetails(_ account: Account, seer: SharingViewer) -> Bool {
+        if seer.personId == nil, seer.strict { return false }
+        return seer.seesInFull(account)
     }
 
     /// The account's sharing as the device's user sees it; nil with no writer or actor.

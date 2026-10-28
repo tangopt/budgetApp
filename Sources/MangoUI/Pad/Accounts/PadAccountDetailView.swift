@@ -15,6 +15,8 @@ struct PadAccountDetailView: View {
     @Environment(\.quickEdit) private var quickEdit
     @State private var actions: Set<PadAccountAction> = []
     @State private var sharingLine: String?
+    /// Off for the other person's account below Everything, and while the viewer isn't named (`showsDetails`).
+    @State private var showsDetails = false
 
     var body: some View {
         ScrollView {
@@ -36,6 +38,7 @@ struct PadAccountDetailView: View {
             model.offersBrowser = browser != nil
             actions = await model.actions(for: detail.accountId)
             sharingLine = await model.sharingLine(for: detail.accountId)
+            showsDetails = await model.showsDetails(for: detail.accountId)
         }
         .modifier(UpdateBalancePresenter(model: quickEdit, detail: detail))
     }
@@ -105,7 +108,7 @@ struct PadAccountDetailView: View {
         case .loaded(let loaded):
             BalanceChartCard(history: loaded.history, currency: loaded.account.currency)
             RecentTransactionsCard(recent: loaded.recent) { row in Task { await model.open(row) } }
-            detailsCard(loaded.account)
+            if showsDetails { detailsCard(loaded.account) }
         }
     }
 

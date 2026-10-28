@@ -203,10 +203,18 @@ final class PadAccountEditsTests: XCTestCase {
         XCTAssertEqual(question.years.first?.label, "2022/23")
         XCTAssertEqual(try account(f.lisbon), before, "nothing saved")
         XCTAssertNil(try read { db in try Int64.fetchOne(db, sql: "SELECT categoryId FROM transaction_ WHERE id = ?", arguments: [repair]) })
-        // The same kind change on its own moves no filed figure (no tax figure reads an account's kind): it saves.
+        // Through `PadAccountEdits.update` itself: the kind and Count toward net worth change on the property-linked account
+        // is checked against every filed year, moves no filed figure (no tax figure reads an account's kind or net worth
+        // flag), and saves; the filed 2022/23 return's figures are the same before and after.
+        let figuresBefore = try read { db in try TaxFigures.snapshot(db: db) }
+        XCTAssertTrue(TaxFigures.isFiled(figuresBefore, startYear: 2022))
         try await PadAccountEdits.update(writer: adminWriter, accountId: f.lisbon, name: before.name, kind: .investment, details: AccountDetails(before),
-                                         includeInNetWorth: before.includeInNetWorth, sharing: nil)
+                                         includeInNetWorth: !before.includeInNetWorth, sharing: nil)
         XCTAssertEqual(try account(f.lisbon).kind, .investment)
+        XCTAssertEqual(try account(f.lisbon).includeInNetWorth, !before.includeInNetWorth)
+        let figuresAfter = try read { db in try TaxFigures.snapshot(db: db) }
+        XCTAssertEqual(TaxFigures.changes(from: figuresBefore, to: figuresAfter), [], "filed returns unchanged")
+        XCTAssertEqual(figuresAfter, figuresBefore)
     }
 
     func testViewOnlyWriterRefused() async throws {

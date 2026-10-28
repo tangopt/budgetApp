@@ -124,6 +124,35 @@ final class PadAccountsModelTests: XCTestCase {
         XCTAssertTrue(ids.contains(f.shared))
     }
 
+    func testDetailsHiddenForAccountNotSeenInFull() async throws {
+        try setMemberLevel(.edit)
+        let own = try await memberAccount()
+        let (privateId, totalsId) = (f.privateAccount, f.totals)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE account SET bankName = 'Example Bank', accountNumber = '12345678' WHERE id IN (?, ?)",
+                           arguments: [privateId, totalsId])
+        }
+        let member = model(as: TwoPersonHousehold.memberICloudUser)
+        let ownShown = await member.showsDetails(for: own)
+        let jointShown = await member.showsDetails(for: f.joint)
+        let balanceOnlyShown = await member.showsDetails(for: f.privateAccount)
+        let totalsShown = await member.showsDetails(for: f.totals)
+        XCTAssertTrue(ownShown)
+        XCTAssertTrue(jointShown)
+        XCTAssertFalse(balanceOnlyShown, "the admin's Balance-only account: no bank or number")
+        XCTAssertFalse(totalsShown, "the admin's Category-totals account: no bank or number")
+        // A device whose user isn't named yet: no details on any account, joint ones included.
+        let stranger = model(as: "test-nobody")
+        for id in [own, f.joint, f.shared, f.privateAccount] {
+            let shown = await stranger.showsDetails(for: id)
+            XCTAssertFalse(shown)
+        }
+        // Demo data (its admin): her own accounts in full.
+        let demo = model(as: nil)
+        let demoShown = await demo.showsDetails(for: f.privateAccount)
+        XCTAssertTrue(demoShown)
+    }
+
     func testBankSiteMatchesTheBanksHost() {
         func site(_ name: String, _ host: String) -> SavedSite { SavedSite(name: name, url: URL(string: "https://\(host)")!, kind: .bank, sortOrder: 0) }
         let sites = [site("Example Water", "water.example.test"), site("Example Bank", "bank.example.test")]

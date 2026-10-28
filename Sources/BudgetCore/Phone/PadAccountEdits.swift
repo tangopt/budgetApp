@@ -49,13 +49,14 @@ public enum PadAccountEdits {
                               includeInNetWorth: Bool, sharing: (owner: SharingSetup.Owner, level: SharingLevel)?) async throws {
         let viewer = writer.viewerNow()
         let scope = try await writer.reader.read { db in
-            // The other person's account seen below Everything: not hers to edit.
+            try updateScope(accountId: accountId, kind: kind, includeInNetWorth: includeInNetWorth, db: db)
+        }
+        try await writer.writeWithActor(.budgetAndAccounts, edit: "Edit account", scope: scope) { db, actor in
+            // The other person's account seen below Everything: not hers to edit. Checked in the write's own transaction,
+            // so a level synced in since the screen read can't slip past.
             if let account = try Account.fetchOne(db, key: accountId), try !viewer.resolve(db: db).seesInFull(account) {
                 throw AccessDenied(area: .budgetAndAccounts)
             }
-            return try updateScope(accountId: accountId, kind: kind, includeInNetWorth: includeInNetWorth, db: db)
-        }
-        try await writer.writeWithActor(.budgetAndAccounts, edit: "Edit account", scope: scope) { db, actor in
             try AccountEditing.update(db: db, accountId: accountId, name: name, kind: kind, details: details,
                                       includeInNetWorth: includeInNetWorth)
             if let sharing {

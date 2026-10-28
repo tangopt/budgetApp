@@ -57,17 +57,61 @@ final class PadAccountFormModelTests: XCTestCase {
     func testCancelWritesNothing() async throws {
         let id = try await memberAccount()
         let before = try account(id)
-        let count = try accountCount()
-        let edit = await form(.edit(before), as: TwoPersonHousehold.memberICloudUser)
+        let write = await write(as: TwoPersonHousehold.memberICloudUser)
+        let screen = PadAccountsModel(accounts: AccountsViewModel(dbQueue: queue, today: { Date() },
+                                                                  viewer: .iCloudUser(recordName: TwoPersonHousehold.memberICloudUser)),
+                                      write: write, dbQueue: queue)
+        func rows() throws -> (accounts: [Account], pending: Int) {
+            try queue.read { db in (try Account.order(Column("id")).fetchAll(db), try SyncChangeTracker.pending(db: db).count) }
+        }
+        let stored = try rows()
+
+        // Edit opened from the screen, a saveable draft (name, level, net worth), the preview read, then Cancel: the
+        // sheet's form goes away without its Save.
+        await screen.openEditForm(accountId: id)
+        let edit = try XCTUnwrap(screen.form?.model)
+        await edit.load()
         edit.name = "Test Renamed"
-        edit.setSharingJoint(false)
         edit.sharingLevel = .categoryTotals
         edit.includeInNetWorth = false
-        let add = await form(.add, as: TwoPersonHousehold.memberICloudUser)
+        await edit.refreshPreview()
+        XCTAssertTrue(edit.canSave)
+        screen.form = nil
+        // Add opened, a saveable draft, Cancel.
+        screen.openAddForm()
+        let add = try XCTUnwrap(screen.form?.model)
+        await add.load()
         add.name = "Test New"
-        // No save(): the sheet is cancelled or dismissed.
-        XCTAssertEqual(try account(id), before)
-        XCTAssertEqual(try accountCount(), count)
+        add.balanceText = "1,250.00"
+        XCTAssertTrue(add.canSave)
+        screen.form = nil
+
+        let after = try rows()
+        XCTAssertEqual(after.accounts, stored.accounts, "no account row added or changed")
+        XCTAssertEqual(after.pending, stored.pending, "nothing queued to send")
+        XCTAssertNil(add.addedId)
+        XCTAssertNil(write.message(for: PadAccountFormModel.rowId))
+
+        // The same drafts do write when saved: Cancel, not an invalid draft, is why nothing was written.
+        let savedEdit = await edit.save()
+        let savedAdd = await add.save()
+        XCTAssertTrue(savedEdit)
+        XCTAssertTrue(savedAdd)
+        XCTAssertNotEqual(try account(id), before)
+        XCTAssertEqual(try accountCount(), stored.accounts.count + 1)
+    }
+
+    func testOpeningAFormClearsAnEarlierRefusal() async throws {
+        let write = await write(as: TwoPersonHousehold.memberICloudUser)
+        let screen = PadAccountsModel(accounts: AccountsViewModel(dbQueue: queue, today: { Date() },
+                                                                  viewer: .iCloudUser(recordName: TwoPersonHousehold.memberICloudUser)),
+                                      write: write, dbQueue: queue)
+        write.refuse(rowId: PadAccountFormModel.rowId, message: "Not saved.")
+        screen.openAddForm()
+        XCTAssertNil(write.message(for: PadAccountFormModel.rowId))
+        write.refuse(rowId: PadAccountFormModel.rowId, message: "Not saved.")
+        await screen.openEditForm(accountId: f.shared)
+        XCTAssertNil(write.message(for: PadAccountFormModel.rowId))
     }
 
     func testInvalidBankDetailsBlockSave() async throws {
