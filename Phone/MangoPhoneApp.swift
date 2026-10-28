@@ -309,7 +309,7 @@ struct PhoneRoot: View {
     /// while demo data is shown.
     private func settings(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
-        return SettingsSheet(appearance: appearance, themeId: $themeId, iCloud: sync.account, keyHeld: sync.keyHeld,
+        return SettingsSheet(appearance: appearance, themeId: $themeId, fontId: $fontId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
                              outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,

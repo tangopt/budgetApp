@@ -55,6 +55,12 @@ enum PhoneSnapshotRunner {
         return arguments[index + 1] == "ipad"
     }
 
+    /// `--font <id>` (scripts/render-phone-snapshots.sh passes it as MANGO_SNAPSHOT_FONT): the typeface to render in
+    /// (a `FontCatalog` id); SF Pro by default.
+    static var fontId: String {
+        ProcessInfo.processInfo.environment["MANGO_SNAPSHOT_FONT"].flatMap { $0.isEmpty ? nil : $0 } ?? FontCatalog.defaultID
+    }
+
     /// `--only a,b`: just those routes (by name).
     static var only: Set<String> {
         let arguments = CommandLine.arguments
@@ -141,6 +147,7 @@ enum PhoneSnapshotRunner {
                         let root = route.make(context)
                             .environment(\.dynamicTypeSize, size)
                             .environment(\.phoneTheme, .classic)
+                            .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
                         window.frame = CGRect(origin: .zero, size: frameSize)
                         window.rootViewController = UIHostingController(rootView: root)
                         window.layoutIfNeeded()

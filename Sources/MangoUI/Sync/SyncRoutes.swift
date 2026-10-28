@@ -42,7 +42,7 @@ public enum SyncRoutes {
         },
         // Settings while demo data is shown: the banner and "Leave demo".
         DemoRoute(name: "settings-demo", minimumFigures: 0) { context in
-            AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+            AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id), fontId: .constant(FontCatalog.defaultID),
                                   iCloud: .unknown, keyHeld: nil, status: .off,
                                   version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { context.today },
                                   onLockNow: {}, onSyncNow: nil, demo: .leave({}))
@@ -50,7 +50,7 @@ public enum SyncRoutes {
         },
         DemoRoute(name: "settings", minimumFigures: 0) { context in
             let today = context.today
-            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id), fontId: .constant(FontCatalog.defaultID),
                                          iCloud: .available, keyHeld: true,
                                          status: .idle(lastSync: today.addingTimeInterval(-300)),
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
@@ -59,7 +59,7 @@ public enum SyncRoutes {
         // Settings with the Widgets section (step 7b): the lock screen toggle, off.
         DemoRoute(name: "settings-widgets", minimumFigures: 0) { context in
             let today = context.today
-            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id), fontId: .constant(FontCatalog.defaultID),
                                          iCloud: .available, keyHeld: true,
                                          status: .idle(lastSync: today.addingTimeInterval(-300)),
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
