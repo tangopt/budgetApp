@@ -570,6 +570,40 @@ final class ImportApplierTests: XCTestCase {
         XCTAssertTrue(storedFiles().isEmpty, "\(storedFiles())")
     }
 
+    /// Step 19: the same import through a device's writer (the iPad) refuses a batch that would move a filed return,
+    /// and writes nothing (no run, no rows, no library copy); filed figures stay as they were.
+    func testDeviceApplyRefusesAFiledChangeAndWritesNothing() async throws {
+        try await db.write { db in
+            var admin = AppUser(personId: self.id("person"), displayName: "A", cloudKitUserRecordName: "_admin", isAdmin: true, createdAt: Self.date(2024, 1, 1))
+            try admin.insert(db)
+        }
+        let writer = DeviceWriter(db: db, viewer: { .iCloudUser(recordName: "_admin") }, afterWrite: {})
+        let plan = ImportPlan(items: [try documentItem("letter.txt"), try p60Item(pay: 4_100_000)])
+        let before = try trackedCounts()
+        do {
+            _ = try await applier.apply(plan, entryPoint: "Imported on iPad", writer: writer, edit: "Imported a P60")
+            XCTFail("a filed return moved")
+        } catch {
+            let refusedByGuard = (error as? ImportApplyError).map { if case .filedYearChanged = $0 { true } else { false } } ?? false
+            let refusedByWriter = (error as? DeviceWriteRefusal).map { if case .filedYear = $0 { true } else { false } } ?? false
+            XCTAssertTrue(refusedByGuard || refusedByWriter, "\(error)")
+        }
+        XCTAssertEqual(try trackedCounts(), before)
+        XCTAssertEqual(try read { try Int.fetchOne($0, sql: "SELECT payMinorUnits FROM employmentIncome WHERE id = ?", arguments: [self.id("income")]) },
+                       4_000_000)
+        XCTAssertEqual(try read { try ImportRun.fetchCount($0) }, 0)
+        XCTAssertTrue(storedFiles().isEmpty, "\(storedFiles())")
+
+        // A batch that moves nothing filed goes through the writer as the device's user, as one run.
+        let letter = ImportPlan(items: [try documentItem("other-letter.txt")])
+        let summary = try await applier.apply(letter, entryPoint: "Imported on iPad", writer: writer, edit: "Imported a letter")
+        try read { db in
+            let run = try XCTUnwrap(ImportRun.fetchOne(db, key: summary.runId))
+            XCTAssertEqual(run.entryPoint, "Imported on iPad")
+            XCTAssertNotNil(run.appUserId)
+        }
+    }
+
     /// After the backstop refused the batch, every item is checked again: the hold lands on the
     /// item that causes it.
     func testRecheckAfterTheBackstopHoldsTheItemThatCausesIt() async throws {

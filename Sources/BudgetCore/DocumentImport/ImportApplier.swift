@@ -139,6 +139,53 @@ public struct ImportApplier: Sendable {
         }
     }
 
+    /// Step 19: the same import on a device (the iPad), its one transaction run through `writer`
+    /// (`DeviceWriter.writeWithActor`): as the app user bound to the device, with Import's permission and origin, and
+    /// every protected year checked (`FiledYearEditCheck`, no resolution: a change to a filed or paid return throws
+    /// `DeviceWriteRefusal.filedYear` and writes nothing), besides the run's own backstop. No backup and no source
+    /// folders (the files are the device's staged copies). `edit`: what the filed-year question calls it.
+    public func apply(_ plan: ImportPlan, entryPoint: String, writer: DeviceWriter, edit: String, reasons: [UUID: String] = [:],
+                      now: Date = Date()) async throws -> ImportRunSummary {
+        guard plan.canConfirm else { throw ImportApplyError.notConfirmable }
+        let applied = Self.appliedItems(plan)
+        guard !applied.isEmpty, !applied.contains(where: ImportResolutions.isUnreadable) else { throw ImportApplyError.notConfirmable }
+        try await dbQueue.read { db in
+            try SyncImportGate.check(db: db, now: now)
+            try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
+            try Self.checkCurrent(db: db, applied)
+        }
+        let placed = PlacedCopies()
+        let applier = self
+        do {
+            return try await writer.writeWithActor(.import, origin: .import, edit: edit, scope: .everyYear) { db, actor in
+                var files: [URL] = []
+                defer { placed.append(files) }
+                do {
+                    return try applier.applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons,
+                                                appUserId: actor.appUserId, backupPath: nil, folderRoots: [:], now: now, placed: &files)
+                } catch {
+                    try? ImportChangeCapture.cancel(db: db)
+                    throw error
+                }
+            }
+        } catch {
+            do {
+                try library.removeOrphanedFiles(placedFiles: placed.urls)
+            } catch let cleanup {
+                Self.log.error("Import rolled back; removing the copies it placed failed: \(String(describing: cleanup), privacy: .public)")
+            }
+            throw error
+        }
+    }
+
+    /// The copies a device's import placed, for removal when its write rolls back.
+    private final class PlacedCopies: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [URL] = []
+        func append(_ urls: [URL]) { lock.withLock { stored += urls } }
+        var urls: [URL] { lock.withLock { stored } }
+    }
+
     private static let log = Logger(subsystem: "com.personal.budget", category: "DocumentImport")
 
     /// Runs `body` inside the security scope of each source folder in `folderIds`, with where

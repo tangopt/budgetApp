@@ -110,6 +110,10 @@ public struct DeviceWriter: Sendable {
         }) ?? 0
     }
 
+    /// Asks for a push after a write made outside `write` that committed as the actor (step 19: an Undo of an import
+    /// run, which `ImportUndo` writes in its own transaction).
+    public func didWrite() { afterWrite() }
+
     /// Runs `body` as the actor in `area`, stamped with `origin`. Throws `DeviceWriteRefusal.notLinkedYet` with no
     /// actor, `AccessDenied` outside her Edit areas, and whatever `body` throws (an `EvidenceLinkGuard.Failure`
     /// stays as it is); each writes nothing.
