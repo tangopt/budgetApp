@@ -49,6 +49,11 @@ public final class AccountDetailModel: ObservableObject {
         self.state = preloaded
     }
 
+    /// Shows an already read detail (the iPad's snapshot routes).
+    public func preload(_ state: State) {
+        self.state = state
+    }
+
     /// Reads off the main actor; a failed read keeps a detail already shown.
     public func load() async {
         let reader = dbQueue
@@ -175,17 +180,33 @@ public struct AccountDetailView: View {
             EmptyState(symbol: "exclamationmark.triangle", title: "This account couldn't load", message: message)
         case .loaded(let detail):
             BalanceChartCard(history: detail.history, currency: detail.account.currency)
-            Card(title: "Recent transactions") {
-                if detail.recent.isEmpty {
-                    Text("No transactions in this account yet.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                } else {
-                    ForEach(Array(detail.recent.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 { Divider() }
-                        let amount = AccountDetailModel.amount(row.amountMinorUnits, category: row.category)
-                        AmountRow(label: row.description, secondary: AccountDetailModel.secondary(row),
-                                  amount: MoneyText(minorUnits: amount.minorUnits, currency: row.currency, role: amount.role))
+            RecentTransactionsCard(recent: detail.recent)
+        }
+    }
+}
+
+/// The account's newest transactions. With `onSelect` (the iPad) a row is a button that opens the transaction.
+struct RecentTransactionsCard: View {
+    let recent: [TransactionSearch.Row]
+    var onSelect: ((TransactionSearch.Row) -> Void)?
+
+    var body: some View {
+        Card(title: "Recent transactions") {
+            if recent.isEmpty {
+                Text("No transactions in this account yet.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            } else {
+                ForEach(Array(recent.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider() }
+                    let amount = AccountDetailModel.amount(row.amountMinorUnits, category: row.category)
+                    let content = AmountRow(label: row.description, secondary: AccountDetailModel.secondary(row),
+                                            amount: MoneyText(minorUnits: amount.minorUnits, currency: row.currency, role: amount.role))
+                    if let onSelect {
+                        Button { onSelect(row) } label: { content.contentShape(Rectangle()) }
+                            .buttonStyle(.plain)
+                    } else {
+                        content
                     }
                 }
             }
@@ -194,7 +215,7 @@ public struct AccountDetailView: View {
 }
 
 /// The account's balance, large, with pounds beneath a non-GBP one and its caption.
-private struct BalanceCard: View {
+struct BalanceCard: View {
     let row: AccountRowPresentation
     @Environment(\.phoneTheme) private var theme
 
@@ -231,7 +252,7 @@ private struct BalanceCard: View {
 }
 
 /// The balance over time in the account's currency (`AccountHistory.points`): needs two points to draw a line.
-private struct BalanceChartCard: View {
+struct BalanceChartCard: View {
     let history: AccountHistory
     let currency: Currency
     @Environment(\.phoneTheme) private var theme
@@ -273,7 +294,7 @@ enum AccountDetailCopy {
 }
 
 /// Presents Update balance for the account the detail shows, where editing is on.
-private struct UpdateBalancePresenter: ViewModifier {
+struct UpdateBalancePresenter: ViewModifier {
     let model: QuickEditModel?
     @ObservedObject var detail: AccountDetailModel
 

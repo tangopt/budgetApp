@@ -7,7 +7,7 @@ final class PadRootTests: XCTestCase {
         let phone = DemoRoutes.all.filter { !$0.pad }.map(\.name)
         XCTAssertEqual(phone.first, "gallery")
         XCTAssertFalse(phone.contains("pad-root"))
-        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["quick-edit-sheet-pad", "pad-root", "pad-sidebar-expanded", "pad-sidebar-collapsed", "pad-this-month", "pad-this-month-empty", "pad-this-month-allDone", "pad-tenancies", "pad-tenancies-panel", "pad-tenancies-refusal", "pad-money", "pad-money-panel", "pad-calendar", "pad-calendar-month", "pad-checks", "pad-profile", "pad-mortgage-terms", "pad-documents",
+        XCTAssertEqual(DemoRoutes.all.filter(\.pad).map(\.name), ["quick-edit-sheet-pad", "pad-root", "pad-sidebar-expanded", "pad-sidebar-collapsed", "pad-this-month", "pad-this-month-empty", "pad-this-month-allDone", "pad-tenancies", "pad-tenancies-panel", "pad-tenancies-refusal", "pad-money", "pad-money-panel", "pad-calendar", "pad-calendar-month", "pad-checks", "pad-profile", "pad-mortgage-terms", "pad-accounts", "pad-account-detail", "pad-account-transaction", "pad-documents",
                                                                      "pad-bills-recharges", "pad-bills-panel", "pad-bills-refusal", "pad-prepare-email",
                                                                      "pad-evidence", "pad-evidence-panel", "pad-document-panel", "pad-document-fullview", "pad-document-refusal", "pad-browser", "pad-tray", "pad-check-utility", "pad-check-statement", "pad-check-refusal"])
         // The routes before this task, in order.
