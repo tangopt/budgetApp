@@ -36,7 +36,7 @@ public struct Card<Content: View>: View {
                 .environment(\.cardFillsHeight, false)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: fillsHeight ? .topLeading : .leading)
     }
 }
 
