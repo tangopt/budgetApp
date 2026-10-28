@@ -12,12 +12,14 @@ struct PropertyMonthTile: View {
     let rows: [DashboardReview.PropertyRow]
     let navigate: (AppScreen) -> Void
     @Environment(\.theme) private var theme
-    private let shown = 3
 
     var body: some View {
         let done = rows.reduce(0) { $0 + $1.stepsDone }
         let total = rows.reduce(0) { $0 + $1.stepsTotal }
-        DashTile("Property month", linkTitle: "Property", onLink: { navigate(.property) }) {
+        DashTile("Property month", linkTitle: "Property", onLink: { navigate(.property) }) { size in
+            // The figure with its ring first, then as many tenancies as fit, then how many more there are.
+            var room = TileBudget(height: Double(size.height), reserved: 52)
+            let shown = room.count(upTo: rows.count, cost: TileBudget.textLine, trailer: TileBudget.textLine)
             HStack(alignment: .center, spacing: 12) {
                 TileFigure(value: "\(done) of \(total)", caption: "steps done this month")
                 Spacer(minLength: 4)
@@ -65,9 +67,14 @@ struct MortgageTile: View {
     }
 
     var body: some View {
-        DashTile("Mortgage · \(mortgage.propertyName)", linkTitle: "Property", onLink: { navigate(.property) }) {
+        DashTile("Mortgage · \(mortgage.propertyName)", linkTitle: "Property", onLink: { navigate(.property) }) { size in
+            var room = TileBudget(height: Double(size.height), reserved: TileBudget.figure)
+            let showsInstalment = room.take(TileBudget.meterLine)
+            let showsRate = showsInstalment && room.take(TileBudget.textLine)
             TileFigure(value: mortgage.owedMinorUnits.map { Money.format($0, currency: mortgage.currency) } ?? "Not set", caption: "owed")
-            if let days = daysToDue, let due = mortgage.nextDue {
+            if !showsInstalment {
+                EmptyView()
+            } else if let days = daysToDue, let due = mortgage.nextDue {
                 MeterLine(label: "Next instalment \(DashboardFormat.day(due))",
                           figure: mortgage.nextInstalmentMinorUnits.map { Money.format($0, currency: mortgage.currency) } ?? "",
                           fraction: 1 - min(Double(days), 31) / 31, tint: theme.series(1))
@@ -75,8 +82,8 @@ struct MortgageTile: View {
             } else {
                 Text("Next instalment not set").font(.caption).foregroundStyle(.secondary)
             }
-            Text(mortgage.ratePercent.map { String(format: "%.2f%%", $0) + (mortgage.nextReview.map { " · review \(DashboardFormat.day($0))" } ?? "") } ?? "Rate not set")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            if showsRate { Text(mortgage.ratePercent.map { String(format: "%.2f%%", $0) + (mortgage.nextReview.map { " · review \(DashboardFormat.day($0))" } ?? "") } ?? "Rate not set")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
         }
     }
 }
@@ -88,12 +95,14 @@ struct TaxYearTile: View {
     let tax: DashboardReview.TaxPosition
     let navigate: (AppScreen) -> Void
     @Environment(\.theme) private var theme
-    private let shown = 2
 
     var body: some View {
         let estimates = tax.people.compactMap(\.estimateMinorUnits)
         let total = estimates.reduce(0, +)
-        DashTile("Tax year \(tax.year.label)", linkTitle: "Tax years", onLink: { navigate(.taxYears) }) {
+        DashTile("Tax year \(tax.year.label)", linkTitle: "Tax years", onLink: { navigate(.taxYears) }) { size in
+            var room = TileBudget(height: Double(size.height), reserved: TileBudget.figure)
+            let shown = room.count(upTo: tax.people.count, cost: TileBudget.listRow)
+            let showsNext = room.take(TileBudget.textLine)
             if estimates.isEmpty {
                 TileFigure(value: "—", caption: "no estimate available yet")
             } else {
@@ -114,7 +123,7 @@ struct TaxYearTile: View {
                 .font(.caption)
                 .monospacedDigit()
             }
-            if let next = tax.nextPaymentOnAccount {
+            if showsNext, let next = tax.nextPaymentOnAccount {
                 Text("\(next.label) · \(DashboardFormat.day(next.date).unbroken) · \(DashboardFormat.pounds(next.amountMinorUnits).unbroken)")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
@@ -135,12 +144,20 @@ struct EvidenceTile: View {
                 iconButton("doc.badge.ellipsis", "Missing documents") { navigate(.missingDocuments) }
                 iconButton("doc.text", "Documents") { navigate(.documents) }
             }
-        }, content: {
+        }, content: { size in
+            var room = TileBudget(height: Double(size.height), reserved: TileBudget.figure)
+            let showsMissing = room.take(TileBudget.meterLine)
+            let showsWaiting = showsMissing && room.take(TileBudget.meterLine)
+            let showsLinked = showsWaiting && room.take(TileBudget.textLine)
             TileFigure(value: "\(evidence.missingCount)", caption: evidence.missingCount == 1 ? "item of evidence missing" : "items of evidence missing",
                        tint: evidence.missingCount > 0 ? .orange : .primary)
-            MeterLine(label: "Missing", figure: "\(evidence.missingCount)", fraction: Double(evidence.missingCount) / largest, tint: .orange)
-            MeterLine(label: "Waiting for their payment", figure: "\(evidence.waitingForPayment)", fraction: Double(evidence.waitingForPayment) / largest, tint: theme.series(1))
-            if let linked = evidence.linkedSinceLastVisit {
+            if showsMissing {
+                MeterLine(label: "Missing", figure: "\(evidence.missingCount)", fraction: Double(evidence.missingCount) / largest, tint: .orange)
+            }
+            if showsWaiting {
+                MeterLine(label: "Waiting for their payment", figure: "\(evidence.waitingForPayment)", fraction: Double(evidence.waitingForPayment) / largest, tint: theme.series(1))
+            }
+            if showsLinked, let linked = evidence.linkedSinceLastVisit {
                 Text("\(linked) linked since your last visit").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         })
@@ -160,9 +177,11 @@ struct ImportsWaitingTile: View {
     let navigate: (AppScreen) -> Void
 
     var body: some View {
-        DashTile("Imports waiting", linkTitle: "Imports", onLink: { navigate(.imports) }) {
+        DashTile("Imports waiting", linkTitle: "Imports", onLink: { navigate(.imports) }) { size in
+            var room = TileBudget(height: Double(size.height), reserved: TileBudget.figure)
+            let showsMeter = room.take(TileBudget.meterLine)
             TileFigure(value: "\(count)", caption: count == 1 ? "file waiting for the Mac to import" : "files waiting for the Mac to import", tint: .orange)
-            MeterLine(label: "Waiting", figure: "\(count)", fraction: min(1, Double(count) / 10), tint: .orange)
+            if showsMeter { MeterLine(label: "Waiting", figure: "\(count)", fraction: min(1, Double(count) / 10), tint: .orange) }
         }
     }
 }
@@ -173,8 +192,6 @@ struct AttentionTile: View {
     /// The review's signals (tax deadline, late rent, evidence, waiting documents and imports, mortgage review).
     var extra: [DashboardReview.AttentionLine] = []
     let navigate: (AppScreen) -> Void
-    private let shown = 4
-
     private struct Row: Identifiable {
         let id: String
         let text: String
@@ -214,7 +231,9 @@ struct AttentionTile: View {
 
     var body: some View {
         let rows = rows
-        DashTile("Needs attention") {
+        DashTile("Needs attention") { size in
+            var room = TileBudget(height: Double(size.height), reserved: TileBudget.figure)
+            let shown = room.count(upTo: rows.count, cost: 24, trailer: TileBudget.textLine)
             if rows.isEmpty {
                 TileFigure(value: "0", caption: "all clear: everything categorised, balances up to date", tint: .green)
             } else {
