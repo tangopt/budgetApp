@@ -37,4 +37,31 @@ public enum LockCoverPolicy {
     public static func cover(hasSheetAbove: Bool) -> Cover {
         hasSheetAbove ? .backdrop : .lockScreen
     }
+
+    /// What a window that is neither the main window nor a sheet (Settings, any viewer window) does while locked.
+    public enum AuxiliaryWindow: Equatable, Sendable {
+        /// Ordered out: the main window carries the one lock screen.
+        case hide
+        /// Stays up and shows the lock screen: with no main window open it is the only place to unlock.
+        case carryLock
+    }
+
+    /// The whole app shows exactly one lock screen, in the main window. With the main window open, every other
+    /// window is hidden. With it closed, the window that has a lock overlay (Settings) carries the lock screen so
+    /// there is somewhere to unlock; a window without an overlay is hidden regardless (it would show its content).
+    public static func auxiliaryWindow(mainWindowOpen: Bool, hasLockOverlay: Bool) -> AuxiliaryWindow {
+        mainWindowOpen || !hasLockOverlay ? .hide : .carryLock
+    }
+
+    /// What a hidden window does when the lock lifts.
+    public enum AuxiliaryReturn: Equatable, Sendable {
+        /// Ordered back in as it was (same frame, same tab).
+        case orderBack
+        /// Stays closed: it was another person's.
+        case stayClosed
+    }
+
+    public static func auxiliaryOnUncover(coveredFor: Int64?, signedIn: Int64?) -> AuxiliaryReturn {
+        onUncover(coveredFor: coveredFor, signedIn: signedIn) == .restore ? .orderBack : .stayClosed
+    }
 }
