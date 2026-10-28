@@ -12,11 +12,10 @@ struct DashboardView: View {
     @State private var closeTarget: CloseMonthTarget?
     @AppStorage(DashboardCardVisibility.storageKey) private var hiddenCards = ""
     @AppStorage(DashboardLayout.storageKey) private var storedLayout = ""
-    @State private var isEditingLayout = false
 
-    /// The saved layout, with a way to change it (every change is saved at once; Done only leaves edit mode).
+    /// The saved layout, with a way to change it (every change is saved at once).
     private var layoutContext: DashboardLayoutContext {
-        DashboardLayoutContext(layout: DashboardLayout(storedString: storedLayout), isEditing: isEditingLayout, change: { section, mutate in
+        DashboardLayoutContext(layout: DashboardLayout(storedString: storedLayout), change: { mutate in
             var layout = DashboardLayout(storedString: storedLayout)
             mutate(&layout)
             storedLayout = layout.storedString
@@ -85,19 +84,17 @@ struct DashboardView: View {
         }
         .environment(\.dashboardLayoutContext, layoutContext)
         .screenToolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if isEditingLayout {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
                     Button("Reset layout") { storedLayout = "" }
                         .disabled(DashboardLayout(storedString: storedLayout).isDefault)
-                        .help("Put every tile back to its default size, place and columns")
+                } label: {
+                    Label("Layout", systemImage: "rectangle.3.group")
                 }
-                Button(isEditingLayout ? "Done" : "Edit layout", systemImage: isEditingLayout ? "checkmark" : "rectangle.3.group") {
-                    isEditingLayout.toggle()
-                }
-                .help(isEditingLayout ? "Save the layout" : "Resize and rearrange the Dashboard's tiles")
+                .help("Drag the gaps between tiles to resize them. Reset layout puts every tile back")
             }
         }
-        .onDisappear { viewModel.markVisited(); isEditingLayout = false }
+        .onDisappear { viewModel.markVisited() }
         .sheet(item: $closeTarget, onDismiss: { viewModel.clearCloseError() }) { target in
             if let calendar = viewModel.payCalendar {
                 CloseMonthView(month: target.month, calendar: calendar, errorMessage: viewModel.closeErrorMessage) { day in

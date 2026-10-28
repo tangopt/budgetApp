@@ -668,16 +668,39 @@ enum SnapshotCatalog {
         }
     }
 
+    static let dashboardMoneyTiles = [DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
+                                      DashboardTile.topCategories, DashboardTile.upcomingBills, DashboardTile.accounts]
+
     static var screens: [SnapshotRoute] {
         [
             screen("dashboard", "main", "Dashboard", .dashboard, settle: 1.5),
-            // A customised layout: net worth three columns wide, Tall rows in Money, 2 columns in Tax & documents.
-            screen("dashboard", "layout_custom", "Dashboard: net worth 3 wide, Tall rows, 2 columns in Tax & documents", .dashboard, settle: 1.5) { _, _ in
+            // A customised layout: net worth 70% of its row, the first Money row tall, Tax & documents rows resized.
+            screen("dashboard", "layout_custom", "Dashboard: net worth 70% of its row, a tall row", .dashboard, settle: 1.5) { _, _ in
+                let money = Self.dashboardMoneyTiles
                 var layout = DashboardLayout()
-                layout.setSpan(DashboardTile.netWorth, in: .money, to: .init(columns: 3, rows: 1))
-                layout.setSpan(DashboardTile.upcomingBills, in: .money, to: .init(columns: 1, rows: 2))
-                layout.setRowHeight(.tall, in: .money)
-                layout.setColumns(2, in: .tax)
+                layout.setFractions([0.7, 0.3], row: 0, in: .money, natural: money)
+                layout.setHeight(300, row: 0, in: .money, natural: money)
+                layout.setHeight(260, row: 2, in: .money, natural: money)
+                layout.setFractions([0.25, 0.5, 0.25], row: 2, in: .money, natural: money)
+                SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
+            },
+            // The same tiles squeezed to their minimum, and stretched: content adapts (chart drops, lists shorten / grow).
+            screen("dashboard", "layout_small", "Dashboard: tiles squeezed small (Money rows 100 / 130 / 120 pt)", .dashboard, settle: 1.5) { _, _ in
+                var layout = DashboardLayout()
+                let money = Self.dashboardMoneyTiles
+                layout.setHeight(100, row: 0, in: .money, natural: money)
+                layout.setHeight(130, row: 1, in: .money, natural: money)
+                layout.setHeight(120, row: 2, in: .money, natural: money)
+                layout.setFractions([0.25, 0.75], row: 0, in: .money, natural: money)
+                layout.setFractions([0.8, 0.2], row: 1, in: .money, natural: money)
+                SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
+            },
+            screen("dashboard", "layout_large", "Dashboard: tiles stretched tall (Money rows 340 / 300 / 330 pt)", .dashboard, settle: 1.5) { _, _ in
+                var layout = DashboardLayout()
+                let money = Self.dashboardMoneyTiles
+                layout.setHeight(340, row: 0, in: .money, natural: money)
+                layout.setHeight(300, row: 1, in: .money, natural: money)
+                layout.setHeight(330, row: 2, in: .money, natural: money)
                 SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
             },
             screen("search", "main", "Search", .search),
