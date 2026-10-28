@@ -2,7 +2,7 @@ import SwiftUI
 import BudgetCore
 
 /// The salary simulator on iPad and iPhone (step 13, Task 3): two salaries, what each leaves you, and the difference
-/// pinned above them. At regular width the two sit side by side; at compact width a "Current | Offer" switch shows one at
+/// pinned above them. At regular width the two sit side by side; at compact width a "Current | New" switch shows one at
 /// a time under the pinned comparison strip. At accessibility Dynamic Type sizes the strip scrolls with the page instead
 /// of taking the screen. Everything it shows is `SalaryComparisonViewModel`'s; nothing here changes the household's data.
 ///
@@ -14,7 +14,7 @@ public struct SalarySimulatorScreen: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     enum Side: String, CaseIterable, Identifiable {
-        case current = "Current", offer = "Offer"
+        case current = "Current", offer = "New"
         var id: String { rawValue }
     }
 
@@ -78,7 +78,7 @@ public struct SalarySimulatorScreen: View {
         let comparison = viewModel.comparison
         return Card {
             HStack {
-                Text("Offer against current").font(.headline).accessibilityAddTraits(.isHeader)
+                Text("New against current").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 Button(viewModel.resetTitle) { viewModel.reset() }.frame(minHeight: 44)
             }
@@ -142,29 +142,36 @@ struct SalaryResultsCard: View {
                     AmountRow(label: "A week", amount: money(result.takeHomeWeekly, .neutral))
                 }
                 Divider()
+                // Every row is always there (a dash when it doesn't apply), so nothing moves as figures are typed.
                 VStack(spacing: 0) {
-                    AmountRow(label: "Income tax", amount: money(result.incomeTax, .expense))
-                    AmountRow(label: "National Insurance", amount: money(result.employeeNI, .expense))
-                    if result.studentLoan > 0 { AmountRow(label: "Student loan", amount: money(result.studentLoan, .expense)) }
-                    if result.postgraduateLoan > 0 { AmountRow(label: "Postgraduate loan", amount: money(result.postgraduateLoan, .expense)) }
-                    if result.employeePension > 0 { AmountRow(label: "Your pension", amount: money(result.employeePension, .expense)) }
-                    if result.employerPension > 0 { AmountRow(label: "Employer pension", amount: money(result.employerPension, .neutral)) }
-                    if result.benefitsInKindTax > 0 { AmountRow(label: "Tax on benefits in kind", amount: money(result.benefitsInKindTax, .expense)) }
+                    optional("Income tax", result.incomeTax, .expense)
+                    optional("National Insurance", result.employeeNI, .expense)
+                    optional("Student loan", result.studentLoan, .expense)
+                    optional("Postgraduate loan", result.postgraduateLoan, .expense)
+                    optional("Your pension", result.employeePension, .expense)
+                    optional("Employer pension", result.employerPension, .neutral)
+                    optional("Tax on benefits in kind", result.benefitsInKindTax, .expense)
                 }
                 Divider()
                 VStack(spacing: 0) {
                     AmountRow(label: "Personal allowance", amount: money(result.personalAllowance, .neutral))
                     percent("Effective rate", result.effectiveRateBP)
                     percent("Marginal rate", result.marginalRateBP)
-                    if let caption = SalaryResult.marginalPensionCaption(result) {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    Text(SalaryResult.marginalPensionCaption(result) ?? " ").font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(3, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Divider()
                 bar
             }
             notices
+        }
+    }
+
+    @ViewBuilder private func optional(_ label: String, _ pence: Int, _ role: MoneyRole) -> some View {
+        if pence > 0 {
+            AmountRow(label: label, amount: money(pence, role))
+        } else {
+            FigureRow(label: label) { Text("—").font(.body).foregroundStyle(.secondary).accessibilityLabel("none") }
         }
     }
 
@@ -256,20 +263,18 @@ struct SalaryFormCard: View {
                         .autocorrectionDisabled()
                         .frame(minWidth: 80)
                 }
-                if let notice = TaxCode.parse(inputs.taxCode).notice {
-                    Text(notice).font(.caption).foregroundStyle(.orange)
-                }
+                Text(TaxCode.parse(inputs.taxCode).notice ?? " ").font(.caption).foregroundStyle(.orange)
+                    .lineLimit(3, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
                 Divider().padding(.vertical, 4)
                 stacked("Pension") { PensionInput(label: "Pension", amount: $inputs.pension) }
-                if inputs.pension != .percentOfGross(basisPoints: 0) {
-                    field("Taken") {
-                        Picker("Pension method", selection: $inputs.pensionMethod) {
-                            Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
-                            Text("Net pay").tag(PensionMethod.netPay)
-                            Text("Relief at source").tag(PensionMethod.reliefAtSource)
-                        }
-                        .labelsHidden()
+                field("Taken") {
+                    Picker("Pension method", selection: $inputs.pensionMethod) {
+                        Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
+                        Text("Net pay").tag(PensionMethod.netPay)
+                        Text("Relief at source").tag(PensionMethod.reliefAtSource)
                     }
+                    .labelsHidden()
+                    .disabled(inputs.pension == .percentOfGross(basisPoints: 0))
                 }
                 stacked("Employer pension") { PensionInput(label: "Employer pension", amount: $inputs.employerPension) }
                 Divider().padding(.vertical, 4)
@@ -327,19 +332,20 @@ struct PoundsInput: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("£").foregroundStyle(.secondary)
-            TextField("0", text: $text)
+            TextField("£0", text: $text)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
                 #if os(iOS)
                 .keyboardType(.decimalPad)
                 #endif
-                .frame(minWidth: 90)
+                .frame(width: 130)
                 .accessibilityLabel(label)
                 .onChange(of: text) { _, new in
-                    let trimmed = new.trimmingCharacters(in: .whitespaces)
-                    if trimmed.isEmpty { if pence != 0 { pence = 0 } }
-                    else if let value = Money.parseMinorUnits(trimmed), value != pence { pence = max(0, value) }
+                    // Shown as £65,000 as it is typed; the amount follows once it parses.
+                    let shown = Money.poundsFieldText(typed: new)
+                    if shown != new { text = shown; return }
+                    if shown.isEmpty { if pence != 0 { pence = 0 } }
+                    else if let value = Money.parseMinorUnits(shown), value != pence { pence = max(0, value) }
                 }
         }
         .onAppear { sync() }
@@ -348,7 +354,7 @@ struct PoundsInput: View {
         }
     }
 
-    private func sync() { text = pence == 0 ? "" : Money.formatInput(pence) }
+    private func sync() { text = Money.poundsFieldText(pence: pence) }
 }
 
 /// A pension amount: a percentage of pay or a yearly pounds figure.
@@ -369,14 +375,20 @@ struct PensionInput: View {
             Text("£ a year").tag(false)
         }
         .labelsHidden()
-        let amountField = TextField("0", text: $text)
+        let amountField = TextField(isPercent ? "0" : "£0", text: $text)
             .multilineTextAlignment(.trailing)
             .monospacedDigit()
             #if os(iOS)
             .keyboardType(.decimalPad)
             #endif
             .accessibilityLabel(label)
-            .onChange(of: text) { _, new in commit(new) }
+            .onChange(of: text) { _, new in
+                if !isPercent {
+                    let shown = Money.poundsFieldText(typed: new)
+                    if shown != new { text = shown; return }
+                }
+                commit(new)
+            }
         // Segments don't grow with Dynamic Type: a menu takes over at accessibility sizes.
         Group {
             if dynamicTypeSize.isAccessibilitySize {
@@ -409,7 +421,7 @@ struct PensionInput: View {
     private func sync() {
         switch amount {
         case .percentOfGross(let bp): text = bp == 0 ? "" : String(format: "%g", Double(bp) / 100)
-        case .fixedAnnual(let pence): text = pence == 0 ? "" : Money.formatInput(pence)
+        case .fixedAnnual(let pence): text = Money.poundsFieldText(pence: pence)
         }
     }
 }

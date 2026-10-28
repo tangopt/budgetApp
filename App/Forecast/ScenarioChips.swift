@@ -83,7 +83,7 @@ struct ScenarioChips: View {
             Button("Duplicate…") { prompts.nameSheet = .duplicate(scenario) }
             Button("Refresh from budget") { viewModel.refresh(scenario) }
             if let id = scenario.id, let spec = scenario.offerInputs.flatMap(OfferScenarioSpec.decode) {
-                Button("Edit offer…") { viewModel.offerToEdit = SalaryOfferEdit(scenarioId: id, scenarioName: scenario.name, spec: spec) }
+                Button("Edit new salary…") { viewModel.offerToEdit = SalaryOfferEdit(scenarioId: id, scenarioName: scenario.name, spec: spec) }
             }
             Divider()
             Button("Delete…", role: .destructive) { prompts.deleting = scenario }
