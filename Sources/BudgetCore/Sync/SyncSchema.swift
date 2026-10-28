@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 9
+    public static let version = 10
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -127,7 +127,7 @@ public enum SyncSchema {
         SyncTableSchema("payMonthClose",
                         synced: ["year", "month", "closeDate"]),
         SyncTableSchema("scenario",
-                        synced: ["name", "createdAt", "refreshedAt"]),
+                        synced: ["name", "createdAt", "refreshedAt", "offerInputs"]),
         SyncTableSchema("forecastGroup",
                         synced: ["name", "note", "isEnabled", "isSystemManaged"]),
         SyncTableSchema("forecastEntry",
@@ -412,6 +412,17 @@ extension SyncSchema {
             SyncJSONRule("createdGroupIds[]", .row("forecastGroup")),
             SyncJSONRule("lastEntryId", .row("forecastEntry")),
         ]), plainNumbers: ["boundary", "operations[].modified[].before.endDate"]),
+        // A job offer's simulator inputs (`OfferScenarioSpec`): the budget entries it replaces and the
+        // category it adds to; everything else is amounts, rates and counts.
+        SyncJSONReference(table: "scenario", column: "offerInputs", content: .rules([
+            SyncJSONRule("salaryEntryId", .row("forecastEntry")),
+            SyncJSONRule("pensionEntryId", .row("forecastEntry")),
+            SyncJSONRule("newIncomeCategoryId", .row("category")),
+        ]), plainNumbers: Set(["current", "offer"].flatMap { salary in
+            ["grossAnnual", "bonusAnnual", "taxYearStart", "benefitsInKindAnnual",
+             "pension.percentOfGross.basisPoints", "pension.fixedAnnual.pence",
+             "employerPension.percentOfGross.basisPoints", "employerPension.fixedAnnual.pence"].map { "\(salary).\($0)" }
+        } + ["noticeGapMonths", "oneOffs[].amountMinorUnits"])),
     ]
 
     /// JSON columns whose known shapes name no rows (`importRun.reasonsJSON` is keyed by plan item UUIDs).

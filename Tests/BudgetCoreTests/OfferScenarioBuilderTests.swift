@@ -1,0 +1,324 @@
+import XCTest
+import GRDB
+@testable import BudgetCore
+import struct BudgetCore.Category
+import TestSupport
+
+/// A job offer as a scenario (spec 2026-10-28-step14-job-offer-forecast-design.md): the salary entry's copy
+/// ends before the start month and the offer's take-home follows, the pension becomes the offer's, one-offs
+/// are added, the inputs are stored with the scenario and "Edit offer…" rebuilds it in place.
+final class OfferScenarioBuilderTests: XCTestCase {
+    private func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        return cal.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    private struct Fixture {
+        let manager: DatabaseManager
+        var salaryCategoryId: Int64 = 0
+        var pensionCategoryId: Int64 = 0
+        var salaryEntryId: Int64 = 0
+        var pensionEntryId: Int64 = 0
+        var groupId: Int64 = 0
+        var accountId: Int64 = 0
+    }
+
+    private let current = SalaryInputs(grossAnnual: 3_200_000, taxYearStart: 2026, pension: .percentOfGross(basisPoints: 500),
+                                       employerPension: .percentOfGross(basisPoints: 300))
+    private let offer = SalaryInputs(grossAnnual: 4_200_000, taxYearStart: 2026, pension: .percentOfGross(basisPoints: 500),
+                                     employerPension: .percentOfGross(basisPoints: 400))
+
+    /// Budget: "Salary" income £2,000.00 monthly from 1 Jan 2026 (no end, paid into an account), "Pension"
+    /// expense -£150.00 monthly from 1 Jan 2026, both in a "Regular" group.
+    private func fixture(salaryStart: Date? = nil, salaryEnd: Date? = nil, withPension: Bool = true) throws -> Fixture {
+        var f = Fixture(manager: try TestDatabase.migratedManager())
+        try f.manager.dbQueue.write { db in
+            var salary = Category(name: "Salary", type: .income)
+            try salary.insert(db)
+            var pension = Category(name: "Pension", type: .expense)
+            try pension.insert(db)
+            var group = ForecastGroup(name: "Regular", note: nil, isEnabled: true, isSystemManaged: false)
+            try group.insert(db)
+            var account = Account(name: "Current", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            f.salaryCategoryId = salary.id!
+            f.pensionCategoryId = pension.id!
+            f.groupId = group.id!
+            f.accountId = account.id!
+            var s = ForecastEntry(groupId: group.id!, categoryId: salary.id!, amountMinorUnits: 200_000, frequency: .monthly, interval: 1,
+                                  startDate: salaryStart ?? utc(2026, 1, 1), endDate: salaryEnd, isEnabled: true, status: .confirmed,
+                                  note: nil, accountId: account.id!)
+            try s.insert(db)
+            f.salaryEntryId = s.id!
+            if withPension {
+                var p = ForecastEntry(groupId: group.id!, categoryId: pension.id!, amountMinorUnits: -15_000, frequency: .monthly, interval: 1,
+                                      startDate: utc(2026, 1, 1), endDate: nil, isEnabled: true, status: .manual, note: nil)
+                try p.insert(db)
+                f.pensionEntryId = p.id!
+            }
+        }
+        return f
+    }
+
+    private func spec(_ f: Fixture, gap: Int = 0, oneOffs: [OfferOneOff] = [], salary: Bool = true, pension: Bool = true,
+                      newIncomeCategoryId: Int64? = nil, offer: SalaryInputs? = nil) -> OfferScenarioSpec {
+        OfferScenarioSpec(current: current, offer: offer ?? self.offer, salaryEntryId: salary ? f.salaryEntryId : nil,
+                          pensionEntryId: pension && f.pensionEntryId != 0 ? f.pensionEntryId : nil,
+                          startMonth: utc(2026, 4, 1), noticeGapMonths: gap, oneOffs: oneOffs, newIncomeCategoryId: newIncomeCategoryId)
+    }
+
+    private func create(_ f: Fixture, _ spec: OfferScenarioSpec, name: String = "New job") throws -> Scenario {
+        try f.manager.dbQueue.write { db in try OfferScenarioBuilder.create(db: db, name: name, spec: spec, now: self.utc(2026, 10, 28)) }
+    }
+
+    private func entries(_ f: Fixture, _ scenario: Scenario) throws -> [ForecastEntry] {
+        try f.manager.dbQueue.read { db in try ForecastEntry.inScenario(db, id: scenario.id!) }
+    }
+
+    private func budget(_ f: Fixture) throws -> [ForecastEntry] {
+        try f.manager.dbQueue.read { db in try ForecastEntry.budget(db) }
+    }
+
+    private var takeHome: Int { SalaryCalculator.calculate(offer).takeHomeMonthly }
+
+    // MARK: - Salary
+
+    func testReplacesSalaryFromStartMonth() throws {
+        let f = try fixture()
+        let before = try budget(f)
+        let scenario = try create(f, spec(f))
+        let all = try entries(f, scenario)
+        let copy = try XCTUnwrap(all.first { $0.sourceEntryId == f.salaryEntryId })
+        XCTAssertEqual(copy.endDate, utc(2026, 3, 31))
+        XCTAssertEqual(copy.scenarioChange, .changed)
+        XCTAssertEqual(copy.amountMinorUnits, 200_000)
+        let added = try XCTUnwrap(all.first { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId })
+        XCTAssertEqual(added.startDate, utc(2026, 4, 1))
+        XCTAssertNil(added.endDate)
+        XCTAssertEqual(added.frequency, .monthly)
+        XCTAssertEqual(added.amountMinorUnits, takeHome)
+        XCTAssertGreaterThan(takeHome, 200_000)
+        XCTAssertEqual(added.groupId, f.groupId)
+        XCTAssertEqual(added.accountId, f.accountId)
+        XCTAssertEqual(added.status, .confirmed)
+        XCTAssertEqual(added.note, "Offer: salary")
+        // The base forecast is untouched.
+        XCTAssertEqual(try budget(f), before)
+    }
+
+    func testStartBeforeEntryStart() throws {
+        let f = try fixture(salaryStart: utc(2026, 6, 1))
+        let scenario = try create(f, spec(f))
+        let all = try entries(f, scenario)
+        let copy = try XCTUnwrap(all.first { $0.sourceEntryId == f.salaryEntryId })
+        XCTAssertEqual(copy.scenarioChange, .removed)
+        XCTAssertFalse(copy.isEnabled)
+        let added = try XCTUnwrap(all.first { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId })
+        XCTAssertEqual(added.startDate, utc(2026, 4, 1))
+        XCTAssertEqual(added.amountMinorUnits, takeHome)
+    }
+
+    func testStartAfterEntryEndRefused() throws {
+        let f = try fixture(salaryEnd: utc(2026, 3, 15))
+        XCTAssertThrowsError(try create(f, spec(f))) { XCTAssertEqual($0 as? OfferScenarioError, .startAfterSalaryEnds) }
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try Scenario.fetchCount(db) }, 0)
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try ForecastEntry.filter(Column("scenarioId") != nil).fetchCount(db) }, 0)
+        XCTAssertNotNil(OfferScenarioError.startAfterSalaryEnds.errorDescription)
+    }
+
+    func testNoticeGapMonths() throws {
+        let f = try fixture()
+        let scenario = try create(f, spec(f, gap: 2))
+        let all = try entries(f, scenario)
+        XCTAssertEqual(all.first { $0.sourceEntryId == f.salaryEntryId }?.endDate, utc(2026, 3, 31))
+        let added = try XCTUnwrap(all.first { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId })
+        XCTAssertEqual(added.startDate, utc(2026, 6, 1))
+        // No salary in April or May.
+        let period = PayPeriod(startDate: utc(2026, 4, 1), endDate: utc(2026, 5, 31), type: .projected)
+        let salaryInGap = all.filter { $0.categoryId == f.salaryCategoryId && $0.isEnabled }
+            .flatMap { FrequencyExpander.occurrences(for: $0, in: period) }
+        XCTAssertEqual(salaryInGap, [])
+    }
+
+    func testMissingSalaryEntryAddsNewIncome() throws {
+        let f = try fixture()
+        // Neither a salary entry nor a category: refused, nothing created.
+        XCTAssertThrowsError(try create(f, spec(f, salary: false))) {
+            XCTAssertEqual($0 as? OfferScenarioError, .noSalaryEntryOrNewIncomeCategory)
+        }
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try Scenario.fetchCount(db) }, 0)
+
+        let scenario = try create(f, spec(f, salary: false, newIncomeCategoryId: f.salaryCategoryId))
+        let all = try entries(f, scenario)
+        // The budget's salary copy is left as it is; the offer is added as new income.
+        XCTAssertNil(all.first { $0.sourceEntryId == f.salaryEntryId }?.scenarioChange)
+        let added = try XCTUnwrap(all.first { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId })
+        XCTAssertEqual(added.startDate, utc(2026, 4, 1))
+        XCTAssertEqual(added.amountMinorUnits, takeHome)
+        XCTAssertEqual(added.note, "Offer: salary")
+
+        // A spec whose salary entry has since left the budget: "Edit offer…" keeps the offer where it was.
+        try f.manager.dbQueue.write { db in
+            _ = try ForecastEntry.deleteOne(db, key: f.salaryEntryId)
+            var later = try XCTUnwrap(try OfferScenarioBuilder.spec(db: db, scenarioId: scenario.id!))
+            later.newIncomeCategoryId = nil
+            later.salaryEntryId = f.salaryEntryId
+            try OfferScenarioBuilder.rebuild(db: db, scenarioId: scenario.id!, spec: later)
+        }
+        let rebuilt = try entries(f, scenario).filter { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId }
+        XCTAssertEqual(rebuilt.count, 1)
+    }
+
+    // MARK: - Pension
+
+    func testPensionAmountIsEmployeePlusEmployer() throws {
+        let f = try fixture()
+        let scenario = try create(f, spec(f))
+        let all = try entries(f, scenario)
+        let result = SalaryCalculator.calculate(offer)
+        let expected = -SalaryCalculator.roundHalfUp(result.employeePension + result.employerPension, 12)
+        XCTAssertEqual(expected, -31_500)   // 5% + 4% of £42,000 a year
+        let copy = try XCTUnwrap(all.first { $0.sourceEntryId == f.pensionEntryId })
+        XCTAssertEqual(copy.scenarioChange, .changed)
+        XCTAssertEqual(copy.endDate, utc(2026, 3, 31))
+        XCTAssertEqual(copy.amountMinorUnits, -15_000)
+        let next = try XCTUnwrap(all.first { $0.scenarioChange == .added && $0.categoryId == f.pensionCategoryId })
+        XCTAssertEqual(next.startDate, utc(2026, 4, 1))
+        XCTAssertEqual(next.amountMinorUnits, expected)
+        XCTAssertEqual(next.groupId, f.groupId)
+        XCTAssertEqual(next.note, "Offer: pension")
+    }
+
+    func testNoPensionEntryLeavesPensionAlone() throws {
+        let f = try fixture()
+        let scenario = try create(f, spec(f, pension: false))
+        let all = try entries(f, scenario)
+        XCTAssertNil(all.first { $0.sourceEntryId == f.pensionEntryId }?.scenarioChange)
+        XCTAssertFalse(all.contains { $0.categoryId == f.pensionCategoryId && $0.scenarioChange == .added })
+
+        let none = try fixture(withPension: false)
+        let other = try create(none, spec(none))
+        XCTAssertFalse(try entries(none, other).contains { $0.categoryId == none.pensionCategoryId })
+    }
+
+    // MARK: - One-offs, inputs
+
+    func testOneOffsAdded() throws {
+        let f = try fixture()
+        let bonus = OfferOneOff(label: "Signing bonus", amountMinorUnits: 300_000, month: utc(2026, 4, 1))
+        let scenario = try create(f, spec(f, oneOffs: [bonus]))
+        let once = try entries(f, scenario).filter { $0.frequency == .once }
+        XCTAssertEqual(once.count, 1)
+        XCTAssertEqual(once.first?.amountMinorUnits, 300_000)
+        XCTAssertEqual(once.first?.startDate, utc(2026, 4, 1))
+        XCTAssertEqual(once.first?.categoryId, f.salaryCategoryId)
+        XCTAssertEqual(once.first?.scenarioChange, .added)
+        XCTAssertEqual(once.first?.note, "Offer: Signing bonus")
+        XCTAssertFalse(try budget(f).contains { $0.frequency == .once })
+    }
+
+    func testInputsStoredAndRead() throws {
+        let f = try fixture()
+        let bonus = OfferOneOff(label: "Signing bonus", amountMinorUnits: 300_000, month: utc(2026, 5, 1))
+        let input = spec(f, gap: 1, oneOffs: [bonus])
+        let scenario = try create(f, input)
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try OfferScenarioBuilder.spec(db: db, scenarioId: scenario.id!) }, input)
+        let text = try XCTUnwrap(try f.manager.dbQueue.read { db in try Scenario.fetchOne(db, key: scenario.id!)?.offerInputs })
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(object["startMonth"] as? String, "2026-04-01T00:00:00Z")
+        XCTAssertEqual((object["salaryEntryId"] as? NSNumber)?.int64Value, f.salaryEntryId)
+        // A plain scenario has none.
+        let plain = try f.manager.dbQueue.write { db in try Scenarios.create(db: db, name: "Plain") }
+        XCTAssertNil(try f.manager.dbQueue.read { db in try OfferScenarioBuilder.spec(db: db, scenarioId: plain.id!) })
+    }
+
+    // MARK: - Rebuild, delete, names
+
+    func testRebuildReplacesOnlyOfferEntries() throws {
+        let f = try fixture()
+        let bonus = OfferOneOff(label: "Signing bonus", amountMinorUnits: 300_000, month: utc(2026, 4, 1))
+        let scenario = try create(f, spec(f, oneOffs: [bonus]))
+        // A manual edit of the scenario, unrelated to the offer.
+        let manual = try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.pensionCategoryId, amountMinorUnits: -9_900, frequency: .monthly, interval: 1,
+                                 startDate: self.utc(2026, 7, 1), endDate: nil, scenarioId: scenario.id!)
+        }
+        let countBefore = try entries(f, scenario).count
+
+        var richer = offer
+        richer.grossAnnual = 6_000_000
+        let newSpec = spec(f, gap: 1, offer: richer)
+        try f.manager.dbQueue.write { db in try OfferScenarioBuilder.rebuild(db: db, scenarioId: scenario.id!, spec: newSpec) }
+
+        let all = try entries(f, scenario)
+        let after = try f.manager.dbQueue.read { db in try Scenario.fetchAll(db) }
+        XCTAssertEqual(after.map(\.id), [scenario.id])
+        XCTAssertEqual(after.map(\.name), ["New job"])
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try OfferScenarioBuilder.spec(db: db, scenarioId: scenario.id!) }, newSpec)
+        XCTAssertTrue(all.contains { $0.id == manual.id && $0.amountMinorUnits == -9_900 })
+        let salaries = all.filter { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId && $0.frequency == .monthly }
+        XCTAssertEqual(salaries.map(\.amountMinorUnits), [SalaryCalculator.calculate(richer).takeHomeMonthly])
+        XCTAssertEqual(salaries.map(\.startDate), [utc(2026, 5, 1)])
+        XCTAssertFalse(all.contains { $0.frequency == .once })   // the bonus is gone with the old spec
+        // One copy per budget entry, still ended before the start month; no orphans.
+        XCTAssertEqual(all.filter { $0.sourceEntryId == f.salaryEntryId }.map(\.endDate), [utc(2026, 3, 31)])
+        XCTAssertEqual(all.filter { $0.sourceEntryId == f.pensionEntryId }.count, 1)
+        XCTAssertEqual(all.filter { $0.scenarioChange == .added && $0.categoryId == f.pensionCategoryId && $0.id != manual.id }.count, 1)
+        XCTAssertEqual(all.count, countBefore - 1)   // the bonus
+    }
+
+    func testDeleteScenarioRemovesOfferEntries() throws {
+        let f = try fixture()
+        let before = try budget(f)
+        let bonus = OfferOneOff(label: "Signing bonus", amountMinorUnits: 300_000, month: utc(2026, 4, 1))
+        let scenario = try create(f, spec(f, oneOffs: [bonus]))
+        try f.manager.dbQueue.write { db in try Scenarios.delete(db: db, scenarioId: scenario.id!) }
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try ForecastEntry.filter(Column("scenarioId") != nil).fetchCount(db) }, 0)
+        XCTAssertEqual(try budget(f), before)
+    }
+
+    func testDuplicateNameThrowsScenarioError() throws {
+        let f = try fixture()
+        _ = try create(f, spec(f))
+        XCTAssertThrowsError(try create(f, spec(f))) { XCTAssertEqual($0 as? ScenarioError, .duplicateName) }
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try Scenario.fetchCount(db) }, 1)
+    }
+
+    func testSalaryCandidates() throws {
+        let f = try fixture()
+        try f.manager.dbQueue.write { db in
+            var newer = ForecastEntry(groupId: f.groupId, categoryId: f.salaryCategoryId, amountMinorUnits: 10_000, frequency: .monthly, interval: 1,
+                                      startDate: self.utc(2026, 3, 1), endDate: nil, isEnabled: true, status: .manual, note: nil)
+            try newer.insert(db)
+            var disabled = newer
+            disabled.id = nil
+            disabled.isEnabled = false
+            try disabled.insert(db)
+            var once = newer
+            once.id = nil
+            once.frequency = .once
+            try once.insert(db)
+            _ = try Scenarios.create(db: db, name: "Copy")
+        }
+        let candidates = try f.manager.dbQueue.read { db in try OfferScenarioBuilder.salaryCandidates(db: db) }
+        XCTAssertEqual(candidates.map(\.startDate), [utc(2026, 3, 1), utc(2026, 1, 1)])
+        XCTAssertTrue(candidates.allSatisfy { $0.scenarioId == nil })
+    }
+
+    // MARK: - Migration
+
+    func testMigrationAddsColumnAndOldRowsReadNil() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate(upTo: "createScenarios")
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "INSERT INTO scenario (name, createdAt) VALUES ('Old', '2026-01-01 00:00:00.000')")
+        }
+        try manager.migrate()
+        try manager.dbQueue.read { db in
+            XCTAssertTrue(try db.columns(in: "scenario").map(\.name).contains("offerInputs"))
+            let old = try XCTUnwrap(try Scenario.fetchOne(db))
+            XCTAssertEqual(old.name, "Old")
+            XCTAssertNil(old.offerInputs)
+        }
+    }
+}
