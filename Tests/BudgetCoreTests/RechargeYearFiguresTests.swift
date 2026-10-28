@@ -199,6 +199,18 @@ final class RechargeYearFiguresTests: XCTestCase {
         XCTAssertTrue(lines[1].hasPrefix("\u{2212}€202.98 other items on statements"), lines[1])
     }
 
+    func testARefundTheBankAlreadyNettedIsNotAnOtherItem() throws {
+        // February 2025: a SIMAR refund passed on as a manual line, already netted in what the
+        // bank paid for the month's bills. It is part of the match, not an other item.
+        let debit = try movement(Self.date(2025, 2, 10), -8_000)
+        let bill = try invoice("water", issued: Self.date(2025, 2, 1), amount: 10_000, debit: debit)
+        try statement(Self.date(2025, 2, 1), [line(invoice: bill, 10_000), manual("SIMAR restitution", -2_000)])
+        let year = try figures(2025)
+        XCTAssertEqual(year.otherItems, 0)
+        XCTAssertEqual(year.difference, 0)
+        XCTAssertEqual(year.gaps, [])
+    }
+
     func testAManualLineWithABankDebitIsNotAnOtherItem() throws {
         let debit = try movement(Self.date(2026, 4, 10), -2_000)
         try statement(Self.date(2026, 4, 1), [manual("Repair", 2_000, debit: debit)])

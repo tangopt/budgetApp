@@ -122,6 +122,15 @@ extension Recharges {
             }
             figure.billsPaid += paid
 
+            // One-off lines with no movement and no document are other items (the landlord's own
+            // costs) only when they explain the gap; one the bank already matches (a utility
+            // refund netted against its bill's payments) stays an ordinary line.
+            let gapWith = statement.totalMinorUnits - paid - rounding.amount
+            if other.lines > 0, abs(gapWith - other.amount) >= abs(gapWith) {
+                oneOffs += other.lines
+                other = (0, 0)
+            }
+
             // The statement's difference: its rounding lines first, the rest put down to its
             // lines without a bank movement (bills, then one-offs), else to the amounts paid.
             var rest = statement.totalMinorUnits - paid - other.amount
