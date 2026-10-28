@@ -19,3 +19,18 @@ Status: 2026-10-28. User: "On the mac dashboard allow to resize rows and columns
 ## Constraints
 Layout model (spans, order, columns, row height, persistence, reset, packing) in BudgetCore/App model with tests;
 fits 1100×700 by default; works with window resize.
+
+## Revision 2026-10-28 (user): fluid, not a static grid
+User: "I would want a more fluid adjustment of the rows and columns with content within the affected tiles to
+adjust. You made it so I can change the layout but still works as a static grid."
+- Each section is laid out as **rows of tiles**. Between two tiles in a row there is a **draggable divider**: dragging
+  it moves the boundary continuously (any width, not snapped spans), the neighbouring tiles shrink/grow live.
+  Between rows a **horizontal divider** changes that row's height continuously. Dividers are always available on
+  hover (thin handle, resize cursor) — no separate edit mode needed for sizing; a menu keeps Reset layout and
+  moving tiles between rows/reordering *(my call)*.
+- **Content adapts live to the tile's size**, not just clipped: charts fill the space (more axis labels/points as
+  they grow); lists show more rows as the tile gets taller (top 2 → 3 → 5 categories, bills, accounts); secondary
+  lines appear/disappear by available height; the big figure stays and never wraps or truncates; below a minimum
+  size the chart drops before the figure. Minimum tile width/height so nothing breaks.
+- Proportions are saved (fractions of the row width, row heights), per Mac, and reapply when the window resizes
+  (tiles scale proportionally with the window). Reset layout restores the default.
