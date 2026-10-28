@@ -120,14 +120,24 @@ final class PadAccountEditsTests: XCTestCase {
         XCTAssertEqual(saved.bankName, "Test Bank")
         XCTAssertEqual(saved.sharingLevel, .categoryTotals)
 
-        // A level change the owner rule refuses takes the name with it: both or neither.
+        // The admin sees it only as category totals now: her edit is refused whole (the name doesn't change either).
         let error = await thrown {
             try await PadAccountEdits.update(writer: self.adminWriter, accountId: id, name: "Test Renamed", kind: .investment,
                                              details: details, includeInNetWorth: true, sharing: (.person(self.f.personB), .everything))
         }
-        XCTAssertEqual(error as? SharingError, .notOwner)
+        XCTAssertEqual(error as? AccessDenied, AccessDenied(area: .budgetAndAccounts))
         XCTAssertEqual(try account(id).name, "Test Savings")
         XCTAssertEqual(try account(id).sharingLevel, .categoryTotals)
+    }
+
+    func testEditRefusedOnAccountNotSeenInFull() async throws {
+        let before = try account(f.totals)
+        let error = await thrown {
+            try await PadAccountEdits.update(writer: self.memberWriter, accountId: self.f.totals, name: "Test Renamed", kind: before.kind,
+                                             details: AccountDetails(), includeInNetWorth: before.includeInNetWorth, sharing: nil)
+        }
+        XCTAssertEqual(error as? AccessDenied, AccessDenied(area: .budgetAndAccounts))
+        XCTAssertEqual(try account(f.totals).name, before.name)
     }
 
     func testSetLevelOnOthersAccountRefused() async throws {
