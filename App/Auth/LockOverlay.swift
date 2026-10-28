@@ -77,6 +77,9 @@ private struct LockOverlayModifier: ViewModifier {
     /// only a backdrop: one lock screen, not one here and another in the sheet (`LockCoverPolicy.cover`).
     private var sheetHasTheLock: Bool {
         if sheetCarriesLock { return true }
+        // Settings next to an open main window: the main window carries the lock, this one is hidden (and a
+        // backdrop until it is).
+        if scene == .settings, sheets.auxiliariesHidden { return true }
         guard let window = window.window else { return false }
         return LockCoverPolicy.cover(hasSheetAbove: window.attachedSheet != nil || sheets.carriesLock(over: window)) == .backdrop
     }
@@ -107,7 +110,10 @@ private struct LockOverlayModifier: ViewModifier {
                     }
                 }
             }
-            .background(WindowReader { window.window = $0 })
+            .background(WindowReader { newWindow in
+                window.window = newWindow
+                if let newWindow { SheetCovers.shared.register(newWindow, scene: scene) }
+            })
             .onChange(of: gate.session?.isCovered ?? false, initial: true) { _, covered in
                 if let session = gate.session { SheetCovers.shared.update(covered: covered, session: session) }
             }
@@ -837,10 +843,45 @@ final class SheetCovers: ObservableObject {
         let frame: CGRect
     }
     private var covers: [ObjectIdentifier: Cover] = [:]
+    /// Windows with a lock overlay, by scene (`register`).
+    private let mainWindows = NSHashTable<NSWindow>.weakObjects()
+    private let overlayWindows = NSHashTable<NSWindow>.weakObjects()
+    /// Auxiliary windows (Settings, viewers) ordered out by the lock, to come back when it lifts.
+    private var hiddenAuxiliaries: [WeakWindow] = []
+    private struct WeakWindow { weak var window: NSWindow? }
+    /// The main window is open and carries the one lock screen: every other window is hidden.
+    @Published private(set) var auxiliariesHidden = false
     /// The windows (at the bottom of their sheets) whose lock screen a sheet shows: their own overlay shows a backdrop.
     @Published private(set) var carriers: Set<ObjectIdentifier> = []
     private var observer: NSObjectProtocol?
     private var sheetEndObserver: NSObjectProtocol?
+
+    func register(_ window: NSWindow, scene: LockOverlayScene) {
+        switch scene {
+        case .main: mainWindows.add(window)
+        case .settings: overlayWindows.add(window)
+        }
+    }
+
+    /// One lock screen for the whole app, in the main window (`LockCoverPolicy.auxiliaryWindow`): every other
+    /// window is ordered out; with the main window closed, the one with an overlay (Settings) keeps the lock.
+    private func settleAuxiliaries() {
+        let mainOpen = mainWindows.allObjects.contains { $0.isVisible }
+        if auxiliariesHidden != mainOpen { auxiliariesHidden = mainOpen }
+        for window in NSApp.windows where Self.isAuxiliary(window) && !mainWindows.contains(window) {
+            let hasOverlay = overlayWindows.contains(window)
+            guard window.isVisible,
+                  LockCoverPolicy.auxiliaryWindow(mainWindowOpen: mainOpen, hasLockOverlay: hasOverlay) == .hide else { continue }
+            window.orderOut(nil)
+            hiddenAuxiliaries.removeAll { $0.window === window }
+            hiddenAuxiliaries.append(WeakWindow(window: window))
+        }
+    }
+
+    /// A window of its own that isn't a sheet, panel or popover.
+    private static func isAuxiliary(_ window: NSWindow) -> Bool {
+        !window.isSheet && !(window is NSPanel) && window.styleMask.contains(.titled) && window.canBecomeKey
+    }
 
     /// Whether a sheet over `window` shows the lock screen for it.
     func carriesLock(over window: NSWindow) -> Bool { carriers.contains(ObjectIdentifier(window)) }
@@ -896,6 +937,7 @@ final class SheetCovers: ObservableObject {
             for menu in menus.allObjects { menu.cancelTrackingWithoutAnimation() }
             for popover in popovers.allObjects where popover.isShown { Self.close(popover) }
             for window in NSApp.windows { coverOrCancel(window) }
+            settleAuxiliaries()
             settle()
             if sheetEndObserver == nil {
                 // A sheet that ends while covered (a background task closed it): the lock screen moves down to what
@@ -911,6 +953,7 @@ final class SheetCovers: ObservableObject {
                     MainActor.assumeIsolated {
                         guard let window = note.object as? NSWindow else { return }
                         self?.coverOrCancel(window)
+                        self?.settleAuxiliaries()
                         self?.settle()
                     }
                 }
@@ -930,6 +973,17 @@ final class SheetCovers: ObservableObject {
                 }
             }
             covers = [:]
+            // Hidden windows: back as they were for the person who locked, closed for anyone else.
+            let returning = LockCoverPolicy.auxiliaryOnUncover(coveredFor: coveredFor, signedIn: session.currentAppUserId)
+            for hidden in hiddenAuxiliaries {
+                guard let window = hidden.window else { continue }
+                switch returning {
+                case .orderBack: window.orderFront(nil)
+                case .stayClosed: window.close()
+                }
+            }
+            hiddenAuxiliaries = []
+            if auxiliariesHidden { auxiliariesHidden = false }
             if !carriers.isEmpty { carriers = [] }
             isCovering = false
             coveredFor = nil

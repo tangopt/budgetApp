@@ -42,4 +42,32 @@ final class LockCoverPolicyTests: XCTestCase {
             XCTAssertEqual(covers.last, .lockScreen, "the top one takes the keyboard")
         }
     }
+
+    // Settings open next to the main window: the main window carries the lock, Settings is hidden.
+    func testAuxiliaryWindowsHideWhileTheMainWindowIsOpen() {
+        XCTAssertEqual(LockCoverPolicy.auxiliaryWindow(mainWindowOpen: true, hasLockOverlay: true), .hide)
+        XCTAssertEqual(LockCoverPolicy.auxiliaryWindow(mainWindowOpen: true, hasLockOverlay: false), .hide)
+    }
+
+    // No main window: Settings keeps showing the lock screen, so there is somewhere to unlock.
+    func testSettingsCarriesTheLockWithoutAMainWindow() {
+        XCTAssertEqual(LockCoverPolicy.auxiliaryWindow(mainWindowOpen: false, hasLockOverlay: true), .carryLock)
+        XCTAssertEqual(LockCoverPolicy.auxiliaryWindow(mainWindowOpen: false, hasLockOverlay: false), .hide)
+    }
+
+    func testHiddenWindowsComeBackForTheSamePersonOnly() {
+        XCTAssertEqual(LockCoverPolicy.auxiliaryOnUncover(coveredFor: 1, signedIn: 1), .orderBack)
+        XCTAssertEqual(LockCoverPolicy.auxiliaryOnUncover(coveredFor: 1, signedIn: 2), .stayClosed)
+        XCTAssertEqual(LockCoverPolicy.auxiliaryOnUncover(coveredFor: nil, signedIn: 1), .stayClosed)
+        XCTAssertEqual(LockCoverPolicy.auxiliaryOnUncover(coveredFor: 1, signedIn: nil), .stayClosed)
+    }
+
+    // Exactly one lock screen across main + Settings, whichever are open.
+    func testOneLockScreenAcrossWindows() {
+        for mainOpen in [true, false] {
+            let settings = LockCoverPolicy.auxiliaryWindow(mainWindowOpen: mainOpen, hasLockOverlay: true)
+            let screens = (mainOpen ? 1 : 0) + (settings == .carryLock ? 1 : 0)
+            XCTAssertEqual(screens, 1)
+        }
+    }
 }
