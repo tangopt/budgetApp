@@ -679,6 +679,13 @@ enum SnapshotCatalog {
             },
             screen("budget", "main", "Budget grid", .budgetGrid, settle: 1.5),
             screen("forecast", "compare", "Forecast: Compare", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .compare },
+            // Four scenarios ticked (two added to the demo's two, one with a long name) and Combined on.
+            screen("forecast", "compare_combined", "Forecast: Compare, four scenarios and Combined", .forecast, settle: 1.5) { models, _ in
+                _ = models.scenarioLab.createScenario(name: "A scenario with a rather long name to truncate in the middle")
+                _ = models.scenarioLab.createScenario(name: "Second extra")
+                models.scenarioLab.tab = .compare
+                models.scenarioLab.showCombined = true
+            },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
             screen("forecast", "grid", "Forecast: Grid", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .grid },
             screen("salary", "main", "UK Salary Calculator: a £52,000 offer against £40,000", .salary) { models, _ in

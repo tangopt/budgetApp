@@ -35,6 +35,17 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let name: String
         let isBudget: Bool
         let years: [PlanYearSummary]
+        /// (Income − expenses) per month over the months shown, in pence.
+        let averageMonthlySurplus: Int
+        /// The Combined row's: each ticked scenario's own year-end difference vs the Budget, by year
+        /// (empty on every other row; "Together" is the row's own difference).
+        let contributions: [Int: [Contribution]]
+    }
+
+    /// One scenario's own year-end difference vs the Budget, listed under the Combined row.
+    struct Contribution: Equatable, Sendable {
+        let name: String
+        let difference: Int?
     }
 
     /// A result to show once (refresh report, apply / undo outcome).
@@ -54,9 +65,32 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     @Published var compareSelection: Set<Int64> = [] {
         didSet {
             guard oldValue != compareSelection, !isReading else { return }
+            let limited = CombinedComparison.limited(old: oldValue, new: compareSelection)
+            if limited != compareSelection {
+                compareSelection = limited // runs this observer again (and clears the note)
+                tickLimitNote = "Four scenarios at most: untick one first."
+                return
+            }
+            tickLimitNote = nil
+            if !canCombine { showCombined = false }
             recomputeComparison()
         }
     }
+    /// Draw the ticked scenarios combined as one more line (needs at least two ticked).
+    @Published var showCombined = false {
+        didSet {
+            guard oldValue != showCombined else { return }
+            if showCombined && !canCombine { showCombined = false; return }
+            guard !isReading else { return }
+            recomputeComparison()
+        }
+    }
+    /// Set when a fifth scenario was refused; cleared by the next selection change.
+    @Published private(set) var tickLimitNote: String?
+    /// Sentences about budget items two ticked scenarios both change (shown while Combined is on).
+    @Published private(set) var overlapNotices: [String] = []
+    /// Combined needs at least two scenarios ticked.
+    var canCombine: Bool { compareSelection.count >= 2 }
     /// Scenarios ticked on the Differences tab (the Budget is always its first column).
     @Published var differencesSelection: Set<Int64> = [] {
         didSet {
@@ -300,11 +334,12 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         isReading = true
         defer { isReading = false }
         if !hasLoaded {
-            compareSelection = ids
+            compareSelection = CombinedComparison.initialSelection(scenarios.compactMap(\.id))
             differencesSelection = ids
             hasLoaded = true
         } else {
-            compareSelection.formIntersection(ids)
+            compareSelection = CombinedComparison.pruned(selection: compareSelection, available: ids)
+            if !canCombine { showCombined = false }
             differencesSelection.formIntersection(ids)
         }
         if let selected = gridSelection, !ids.contains(selected) { gridSelection = nil }
@@ -352,10 +387,14 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let plan: PlanInput
     }
 
+    /// Chart colour index of the Combined line: past every scenario's.
+    private var combinedColorIndex: Int { scenarios.count + 1 }
+
     private struct ComparisonResult: Sendable {
         let actualLine: [NetWorthPoint]
         let lines: [PlanLine]
         let summaries: [SummaryRow]
+        let overlaps: [ScenarioOverlap]
     }
 
     /// Starts computing the comparison off the main actor, cancelling any computation still
@@ -368,35 +407,48 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
             guard let id = scenario.id, compareSelection.contains(id), let plan = scenarioPlans[id] else { return nil }
             return ComparedPlan(id: id, name: scenario.name, colorIndex: index + 1, plan: plan)
         }
+        let includeCombined = showCombined && canCombine
+        let combinedColor = combinedColorIndex
         isComputingComparison = true
         comparisonTask = Task { [weak self] in
-            let work = Task.detached(priority: .userInitiated) { Self.computeComparison(data, budget: budget, compared: compared) }
+            let work = Task.detached(priority: .userInitiated) {
+                Self.computeComparison(data, budget: budget, compared: compared, includeCombined: includeCombined, combinedColorIndex: combinedColor)
+            }
             let result = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
             guard !Task.isCancelled, let result, let self else { return }
             actualLine = result.actualLine
             lines = result.lines
             summaries = result.summaries
+            let scenarioNames = Dictionary(scenarios.compactMap { scenario in scenario.id.map { ($0, scenario.name) } }, uniquingKeysWith: { a, _ in a })
+            overlapNotices = result.overlaps.map { ScenarioCombinator.overlapNotice($0, scenarioNames: scenarioNames, categoryNames: categoryNameById) }
             isComputingComparison = false
         }
     }
 
-    /// Chart lines and summary rows for the Budget and the compared scenarios: the actual
-    /// line once for every plan, each plan's series once (shared by its line and its row).
-    /// Nil when cancelled.
-    nonisolated private static func computeComparison(_ data: ComparisonData, budget: PlanInput, compared: [ComparedPlan]) -> ComparisonResult? {
-        let actuals = ScenarioComparison.actuals(data)
-        let budgetSeries = ScenarioComparison.netWorthSeries(data, plan: budget, actuals: actuals)
-        var lines = [PlanLine(id: "budget", name: "Budget", colorIndex: 0, forecast: budgetSeries.forecast)]
-        var rows = [SummaryRow(id: "budget", name: "Budget", isBudget: true,
-                               years: ScenarioComparison.yearSummaries(data, plan: budget, series: budgetSeries, budgetSeries: budgetSeries))]
-        for scenario in compared {
-            if Task.isCancelled { return nil }
-            let series = ScenarioComparison.netWorthSeries(data, plan: scenario.plan, actuals: actuals)
-            lines.append(PlanLine(id: "scenario-\(scenario.id)", name: scenario.name, colorIndex: scenario.colorIndex, forecast: series.forecast))
-            rows.append(SummaryRow(id: "scenario-\(scenario.id)", name: scenario.name, isBudget: false,
-                                   years: ScenarioComparison.yearSummaries(data, plan: scenario.plan, series: series, budgetSeries: budgetSeries)))
+    /// Chart lines and summary rows for the Budget, the compared scenarios and, when asked, the
+    /// scenarios combined (`CombinedComparison.lines`). Nil when cancelled.
+    nonisolated private static func computeComparison(_ data: ComparisonData, budget: PlanInput, compared: [ComparedPlan], includeCombined: Bool, combinedColorIndex: Int) -> ComparisonResult? {
+        let result = CombinedComparison.lines(data, budget: budget, scenarios: compared.map { ScenarioPlan(id: $0.id, name: $0.name, plan: $0.plan) }, includeCombined: includeCombined)
+        if Task.isCancelled { return nil }
+        let colorIndexById = Dictionary(uniqueKeysWithValues: compared.map { ("scenario-\($0.id)", $0.colorIndex) })
+        let scenarioLines = result.lines.filter { $0.id.hasPrefix("scenario-") }
+        var lines: [PlanLine] = []
+        var rows: [SummaryRow] = []
+        for line in result.lines {
+            let colorIndex = line.id == "budget" ? 0 : line.id == "combined" ? combinedColorIndex : (colorIndexById[line.id] ?? 0)
+            lines.append(PlanLine(id: line.id, name: line.name, colorIndex: colorIndex, forecast: line.forecast))
+            var contributions: [Int: [Contribution]] = [:]
+            if line.id == "combined" {
+                for summary in line.years {
+                    contributions[summary.year] = scenarioLines.map { scenario in
+                        Contribution(name: scenario.name, difference: scenario.years.first { $0.year == summary.year }?.differenceVsBudget)
+                    }
+                }
+            }
+            rows.append(SummaryRow(id: line.id, name: line.name, isBudget: line.id == "budget", years: line.years,
+                                   averageMonthlySurplus: line.averageMonthlySurplus, contributions: contributions))
         }
-        return Task.isCancelled ? nil : ComparisonResult(actualLine: budgetSeries.actual, lines: lines, summaries: rows)
+        return ComparisonResult(actualLine: result.actual, lines: lines, summaries: rows, overlaps: result.overlaps)
     }
 
     /// Loads the ticked scenarios' differences into the Differences matrix, with what each
@@ -530,6 +582,31 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         var created: Scenario?
         let outcome = perform { db in created = try Scenarios.duplicate(db: db, scenarioId: id, name: name) }
         if outcome == .saved, let newId = created?.id { show(newId) }
+        return outcome
+    }
+
+    /// The ticked scenarios' ids in list order: the order a saved combination applies them in.
+    private var combinableIds: [Int64] { scenarios.compactMap(\.id).filter { compareSelection.contains($0) } }
+
+    /// "A + B": the suggested name for a saved combination.
+    var combinationName: String {
+        scenarios.filter { $0.id.map(compareSelection.contains) ?? false }.map(\.name).joined(separator: " + ")
+    }
+
+    /// "Save combination as a scenario…": the ticked scenarios combined into one new scenario,
+    /// then shown alone on Compare with Combined switched off.
+    func saveCombination(name: String) -> SaveOutcome {
+        let ids = combinableIds
+        guard ids.count >= 2 else { return .failed("Tick at least two scenarios to combine.") }
+        var created: Scenario?
+        let outcome = perform { db in created = try Scenarios.createCombined(db: db, name: name, from: ids) }
+        if case .failed(let message) = outcome { errorMessage = message; return outcome }
+        if let id = created?.id {
+            showCombined = false
+            compareSelection = [id]
+            differencesSelection.insert(id)
+            tab = .compare
+        }
         return outcome
     }
 
