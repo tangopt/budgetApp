@@ -14,10 +14,14 @@ public struct HomeView: View {
     let onSettings: () -> Void
     /// The clock the sync copy counts from ("Up to date · 5 minutes ago").
     let now: () -> Date
+    /// The iPad's recharges-status chart: the selected tenancy's bills by stage (empty: no card; the iPhone passes none).
+    let recharges: [PadBillsAndRechargesModel.StageCount]
     @Environment(\.phoneTheme) private var theme
 
     public init(model: HomeViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void,
-                onSettings: @escaping () -> Void, now: @escaping () -> Date = { Date() }) {
+                onSettings: @escaping () -> Void, now: @escaping () -> Date = { Date() },
+                recharges: [PadBillsAndRechargesModel.StageCount] = []) {
+        self.recharges = recharges
         self.model = model
         self.syncStatus = syncStatus
         self.onRefresh = onRefresh
@@ -83,6 +87,7 @@ public struct HomeView: View {
             FreshnessLine(summary: summary)
             NetWorthCard(netWorth: summary.netWorth)
             PayMonthCard(summary: summary)
+            if recharges.contains(where: { $0.count > 0 }) { RechargesStatusCard(counts: recharges) }
             AttentionCard(lines: AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now()))
             UpcomingCard(items: summary.upcoming)
         }

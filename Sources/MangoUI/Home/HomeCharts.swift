@@ -112,3 +112,48 @@ struct PayMonthInteractiveChart: View {
         }
     }
 }
+
+/// The year's utility bills by recharge stage as bars (Home on the iPad), with the same readout: touch or hover a bar for
+/// the stage's name and how many bills are in it.
+struct RechargesStatusChart: View {
+    let counts: [PadBillsAndRechargesModel.StageCount]
+    @Environment(\.phoneTheme) private var theme
+    @State private var selected: String?
+
+    var body: some View {
+        let picked = selected.flatMap { name in counts.first { $0.stage.padName == name } }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let picked {
+                    Text(picked.stage.padName).mangoFont(.subheadline).foregroundStyle(.secondary)
+                    Text(HomeCopy.billCount(picked.count)).mangoFont(.headline, figures: true)
+                } else {
+                    Text("Hover or touch a bar for its count").mangoFont(.footnote).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 28)
+            Chart(counts) { item in
+                BarMark(x: .value("Stage", item.stage.padName), y: .value("Bills", item.count))
+                    .foregroundStyle(item.stage.padColor(theme))
+                    .opacity(picked == nil || picked?.stage == item.stage ? 1 : 0.5)
+            }
+            .chartXSelection(value: $selected)
+            .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { _ in AxisGridLine(); AxisValueLabel().font(.caption2) } }
+            .frame(height: 160)
+            .accessibilityLabel("This year's bills by recharge stage")
+            .accessibilityValue(counts.map { "\($0.stage.padName), \(HomeCopy.billCount($0.count))" }.joined(separator: "; "))
+        }
+    }
+}
+
+/// Home's recharges card on the iPad: the chart, and what is waiting on you.
+struct RechargesStatusCard: View {
+    let counts: [PadBillsAndRechargesModel.StageCount]
+
+    var body: some View {
+        Card(title: "Recharges") {
+            RechargesStatusChart(counts: counts)
+        }
+    }
+}

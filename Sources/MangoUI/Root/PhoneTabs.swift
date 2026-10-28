@@ -73,9 +73,9 @@ public final class PhoneTabsModel: ObservableObject {
     public private(set) var viewer: PhoneViewer
 
     /// `hasProperty`: what `hasProperty(_:)` read when the database opened. `home`: an already loaded Home (the
-    /// snapshot harness's `tabs` route).
+    /// snapshot harness's `tabs` route). `search`: likewise for Search (the iPad's search routes).
     public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, hasProperty: Bool, viewer: PhoneViewer = .everyone,
-                home: HomeViewModel? = nil, writer: DeviceWriter? = nil) {
+                home: HomeViewModel? = nil, search: SearchViewModel? = nil, writer: DeviceWriter? = nil) {
         self.dbQueue = dbQueue
         self.hasProperty = hasProperty
         if case .iCloudUser = viewer { seesProperty = false } else { seesProperty = true }
@@ -84,7 +84,7 @@ public final class PhoneTabsModel: ObservableObject {
         month = MonthViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         accounts = AccountsViewModel(dbQueue: dbQueue, today: today, viewer: viewer)
         property = PropertyViewModel(dbQueue: dbQueue, today: today)
-        search = SearchViewModel(dbQueue: dbQueue, today: today)
+        self.search = search ?? SearchViewModel(dbQueue: dbQueue, today: today)
         padProperty = PadPropertyModel(dbQueue: dbQueue, today: today)
         padDocuments = PadDocumentsModel(dbQueue: dbQueue)
         padWrite = PadWriteModel(writer: writer)

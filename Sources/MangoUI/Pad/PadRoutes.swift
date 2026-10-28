@@ -15,6 +15,8 @@ public enum PadRoutes {
             let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin,
                                       home: HomeViewModel(dbQueue: context.dbQueue, today: { today }, viewer: .demoAdmin,
                                                           preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
+            // Home's recharges chart reads the bills of the selected tenancy.
+            tabs.padProperty.preload(PadPropertyModel.readNow(context.dbQueue, today: today))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, columns: .doubleColumn))
         },
         // Step 10, Task 3: the sidebar over This month (its progress and counts are the figures), expanded (pad-root shows it over Home) and collapsed to the icon rail.
@@ -158,6 +160,16 @@ public enum PadRoutes {
             let model = tabs.padDocuments
             model.preload(PadDocumentsModel.readNow(context.dbQueue))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
+        },
+        // Search under the iPad sidebar: the flat field under the title with its suggested chips, with the newest transactions
+        // (minimumFigures: day totals and amounts), and with a query and a token applied.
+        DemoRoute(name: "pad-search", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: searchTabs(context, query: "", tokens: []), syncStatus: context.syncStatus,
+                                initialSelection: .search, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-search-query", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: searchTabs(context, query: ">100", tokens: [.period(.thisMonth)]), syncStatus: context.syncStatus,
+                                initialSelection: .search, columns: .doubleColumn))
         },
         // Step 10, Task 11: Bills & recharges as one screen (summary, the year's grid by stage, statements), then with a bill's
         // document panel open, and with a filed-year refusal under a bill.
@@ -385,6 +397,14 @@ public enum PadRoutes {
     }
 
     /// Editing tabs with Bills & recharges read, the first bill `selecting` accepts (latest first) open in the panel.
+    @MainActor
+    static func searchTabs(_ context: PhoneDemoContext, query: String, tokens: [SearchToken]) -> PhoneTabsModel {
+        let today = context.today
+        let search = SearchViewModel(dbQueue: context.dbQueue, today: { today }, query: query, tokens: tokens,
+                                     preloaded: SearchViewModel.readNow(context.dbQueue))
+        return PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, search: search)
+    }
+
     @MainActor
     static func billsTabs(_ context: PhoneDemoContext, selecting: ((UtilityBill) -> Bool)? = nil) -> PhoneTabsModel {
         let tabs = editingTabs(context)

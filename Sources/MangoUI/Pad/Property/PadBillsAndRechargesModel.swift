@@ -267,6 +267,21 @@ public final class PadBillsAndRechargesModel: ObservableObject {
 
     public var year: Int { chosenYear ?? defaultYear }
 
+    // MARK: Status by stage (Home's chart)
+
+    /// One stage of the selected year's bills and how many are in it.
+    public struct StageCount: Equatable, Identifiable, Sendable {
+        public var stage: UtilityBillStage
+        public var count: Int
+        public var id: Int { stage.rawValue }
+    }
+
+    /// The selected tenancy's bills of `year` by stage, every stage in order (Home's recharges-status chart).
+    public func stageCounts(year: Int) -> [StageCount] {
+        let bills = (property.bills?.bills ?? []).filter { MonthRange.components(of: $0.month).year == year }
+        return UtilityBillStage.allCases.map { stage in StageCount(stage: stage, count: bills.filter { $0.stage == stage }.count) }
+    }
+
     // MARK: Summary
 
     public struct Summary: Equatable, Sendable {
