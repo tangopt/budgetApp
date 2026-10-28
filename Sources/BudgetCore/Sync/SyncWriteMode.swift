@@ -7,7 +7,7 @@ import Foundation
 ///   never writes to the server.
 /// - `device(zones:)`: an iPad or (step 7b) an iPhone whose user has Edit somewhere. It pushes only records placed
 ///   in `zones` (of the zones it syncs); any other record stays pending, counted in `SyncPushReport.heldBack`.
-///   Otherwise it is as read-only: it never makes a zone, a key or a lease, never rebuilds summaries, and never
+///   Otherwise it is as read-only: it never makes a zone or a key (step 19: it may take the import lease), never rebuilds summaries, and never
 ///   deletes a file record a pull names. What it pulls is tracked as on the Mac (its own edits merge with what
 ///   arrives).
 public enum SyncWriteMode: Equatable, Sendable {
@@ -17,6 +17,16 @@ public enum SyncWriteMode: Equatable, Sendable {
 
     /// Makes zones, keys and leases, rebuilds summaries and cleans files: the Mac only.
     var ownsZones: Bool { self == .full }
+
+    /// Takes the household's import lease (step 19): the Mac, and a device that pushes the household (an iPad importing
+    /// a statement). Never with a key it would have to make.
+    var takesLease: Bool {
+        switch self {
+        case .full: true
+        case .readOnly: false
+        case .device(let zones): zones.contains(SyncZones.household)
+        }
+    }
 
     /// Sends anything at all.
     var pushes: Bool { self != .readOnly }

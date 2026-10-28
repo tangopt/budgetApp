@@ -301,7 +301,12 @@ public struct CheckAndLinkResult: Equatable, Sendable {
     /// "Saved <title>", or "Sent to the Mac to import".
     public var summary: String
 
-    public init(documentId: Int64?, invoiceId: Int64? = nil, sentToMac: Bool = false, waitingFileId: Int64? = nil, summary: String) {
+    /// A bank statement imported on the iPad (step 19): its import run (Undo from either device).
+    public var importRunId: Int64?
+
+    public init(documentId: Int64?, invoiceId: Int64? = nil, sentToMac: Bool = false, waitingFileId: Int64? = nil, importRunId: Int64? = nil,
+                summary: String) {
+        self.importRunId = importRunId
         self.documentId = documentId
         self.invoiceId = invoiceId
         self.sentToMac = sentToMac
@@ -504,6 +509,38 @@ public struct CheckAndLink: @unchecked Sendable {
             default: throw error
             }
         }
+    }
+
+    /// Step 19: imports the checked bank statement here with the Mac's import engine (`PadStatementImport`: the
+    /// household's import lease, then one run through `writer`), its rows already in Mango skipped. Then the tray item
+    /// is discarded. Refused (`PadImportRefusal`, `CheckAndLinkRefusal`, `DeviceWriteRefusal`, `AccessDenied`,
+    /// `ImportApplyError`): nothing is written and the item stays in the tray.
+    public func importStatement(_ proposal: CheckAndLinkProposal, item trayItem: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
+                                importer: PadStatementImport, now: Date = Date()) async throws -> CheckAndLinkResult {
+        let check = proposal.check
+        if let of = check.duplicateOf { throw CheckAndLinkRefusal.alreadyInMango(of) }
+        let items = Self.applied(check.plan, rootId: check.itemId)
+        guard let root = items.first else { throw CheckAndLinkRefusal.notInTray }
+        guard Self.isStatement(root) else { throw CheckAndLinkRefusal.outdated("it isn't a bank statement") }
+        let reasons = items.flatMap(\.needsYouReasons)
+        guard reasons.isEmpty else { throw CheckAndLinkRefusal.needsAnswer(reasons) }
+        let url = try stage(trayItem, from: tray)
+        guard url.standardizedFileURL.path == root.file.url.standardizedFileURL.path else { throw CheckAndLinkRefusal.outdated("the file was read from elsewhere") }
+        // The plan as Save confirms it: the file's item and its children ticked off (`confirmed`); every other item as read.
+        var plan = check.plan
+        let rootId = check.itemId
+        plan.items = plan.items.map { $0.id == rootId || ($0.parentId == rootId && $0.duplicate == nil && !$0.isLeftOut) ? Self.confirmed($0) : $0 }
+        let summary: ImportRunSummary
+        do {
+            summary = try await importer.importStatement(plan, title: root.title, writer: writer, now: now)
+        } catch ImportApplyError.planOutdated(let detail) {
+            throw CheckAndLinkRefusal.outdated(detail)
+        } catch ImportApplyError.notConfirmable {
+            throw CheckAndLinkRefusal.outdated("its kind changed")
+        }
+        tray.discard(trayItem)
+        discard(trayItem)
+        return CheckAndLinkResult(documentId: nil, sentToMac: false, importRunId: summary.runId, summary: summary.text)
     }
 
     /// The areas Save needs Edit on, in the order they are checked: the record's, Documents (the document and its

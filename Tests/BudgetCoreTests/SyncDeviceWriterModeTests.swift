@@ -80,20 +80,60 @@ final class SyncDeviceWriterModeTests: XCTestCase {
         assertAuditsClean(h)
     }
 
-    func testDeviceModeTakesNoLease() async throws {
+    /// Step 19: an iPad that pushes the household takes the household's import lease (to import a statement there),
+    /// with the household key it already holds; it never makes one. One device at a time, in either direction.
+    func testDeviceModeTakesTheLease() async throws {
         let h = try TwoPersonHousehold.make()
         try await h.syncAll()
         try await h.adminTablet.engine.pull()
+        let callsBefore = await h.cloud.calls.count
+        try await h.adminTablet.engine.acquireImportLease()
+        XCTAssertNotNil(try read(h.adminTablet) { db in try SyncImportGate.heldLease(db: db) }, "held here")
+        let seen = try await h.adminMac.engine.importLeaseHolder()
+        XCTAssertEqual(seen?.holderName, "Admin iPad", "the Mac sees \"Importing on Admin iPad\"")
+        do {
+            try await h.adminMac.engine.acquireImportLease()
+            XCTFail("the Mac took the lease the iPad holds")
+        } catch let error as ImportLeaseError {
+            XCTAssertEqual(error.message, "Importing on Admin iPad")
+        }
+        try await h.adminTablet.engine.releaseImportLease()
+        XCTAssertNil(try read(h.adminTablet) { db in try SyncImportGate.heldLease(db: db) })
+        let after = try await h.adminTablet.engine.importLeaseHolder()
+        XCTAssertNil(after)
+
+        // The reverse: the Mac holds it, the iPad is refused and sees who.
+        try await h.adminMac.engine.acquireImportLease()
         do {
             try await h.adminTablet.engine.acquireImportLease()
-            XCTFail("a device takes no lease")
-        } catch SyncEngineCore.ReadOnlyError.readOnly {}
-        do {
-            try await h.adminTablet.engine.releaseImportLease()
-            XCTFail("nor releases one")
-        } catch SyncEngineCore.ReadOnlyError.readOnly {}
-        let holder = try await h.adminTablet.engine.importLeaseHolder()
-        XCTAssertNil(holder)
+            XCTFail("the iPad took the lease the Mac holds")
+        } catch let error as ImportLeaseError {
+            guard case .heldBy(let name, _) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(name, "Mac")
+        }
+        XCTAssertNil(try read(h.adminTablet) { db in try SyncImportGate.heldLease(db: db) }, "nothing held on the iPad")
+        let calls = await h.cloud.calls.dropFirst(callsBefore)
+        XCTAssertFalse(calls.contains { if case .createZone = $0 { true } else { false } }, "no zone made")
+    }
+
+    /// The member's iPad (household only) takes the lease too, on the household it follows.
+    func testMemberTabletTakesTheLease() async throws {
+        let h = try await memberTabletHousehold()
+        try await h.memberDevice.engine.acquireImportLease()
+        let seen = try await h.adminMac.engine.importLeaseHolder()
+        XCTAssertEqual(seen?.holderName, "iPad")
+        try await h.memberDevice.engine.releaseImportLease()
+        let after = try await h.adminMac.engine.importLeaseHolder()
+        XCTAssertNil(after)
+    }
+
+    /// The lease seam (`ImportLeasing`): the engine's device and the zones it pushes.
+    func testEngineIsTheLeaseSeam() async throws {
+        let h = try TwoPersonHousehold.make()
+        let leasing: any ImportLeasing = h.adminTablet.engine
+        XCTAssertEqual(leasing.leaseDevice.name, "Admin iPad")
+        let zones = await leasing.importZones()
+        XCTAssertEqual(Set(zones ?? []), [SyncZones.household, h.fixture.privateZone])
     }
 
     /// The household exists, but the Mac hasn't published its key yet (no marker) and none is held here: the device
