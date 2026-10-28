@@ -35,15 +35,9 @@ public struct SalarySimulatorScreen: View {
     public var body: some View {
         GeometryReader { proxy in
             let wide = proxy.size.width >= Self.sideBySideWidth
-            let pinned = !dynamicTypeSize.isAccessibilitySize
             VStack(spacing: 0) {
-                if pinned {
-                    strip.padding(.horizontal, usesPadPage ? PadMetrics.pageInset : 16)
-                        .padding(.top, usesPadPage ? PadSpacing.xs : 16).padding(.bottom, 8)
-                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if !pinned { strip }
                         if !wide {
                             Picker("Salary", selection: $side) {
                                 ForEach(Side.allCases) { Text($0.rawValue).tag($0) }
@@ -55,6 +49,7 @@ public struct SalarySimulatorScreen: View {
                         settingsCard
                         if viewModel.canUsePrefill && sides.contains(.current) { prefillCard }
                         SalaryFormCard(sides: sides, current: $viewModel.current, offer: $viewModel.offer)
+                        strip
                         SalaryResultsCard(sides: sides, comparison: viewModel.comparison, ready: viewModel.ready)
                         SalaryBarsCard(sides: sides, comparison: viewModel.comparison, ready: viewModel.ready)
                         Text("An estimate from published UK rates, not tax advice.")
@@ -137,15 +132,15 @@ public struct SalarySimulatorScreen: View {
 struct SalaryRow<Cell: View>: View {
     let label: String
     let cells: [Cell]
-    var minimumHeight: CGFloat = 36
+    var minimumHeight: CGFloat = 32
 
-    init(label: String, minimumHeight: CGFloat = 36, @ViewBuilder cell: () -> Cell) {
+    init(label: String, minimumHeight: CGFloat = 32, @ViewBuilder cell: () -> Cell) {
         self.label = label
         self.cells = [cell()]
         self.minimumHeight = minimumHeight
     }
 
-    init(label: String, minimumHeight: CGFloat = 36, cells: [Cell]) {
+    init(label: String, minimumHeight: CGFloat = 32, cells: [Cell]) {
         self.label = label
         self.cells = cells
         self.minimumHeight = minimumHeight
@@ -165,6 +160,9 @@ struct SalaryRow<Cell: View>: View {
 
 enum SalaryMetrics {
     static var labelWidth: CGFloat { 132 }
+    /// The £/% control and the amount beside it, the same for Bonus and Pension so they line up.
+    static var unitWidth: CGFloat { 84 }
+    static var fieldWidth: CGFloat { 96 }
 }
 
 /// A header over the cells: "Current" and "New" (nothing when one salary shows).
@@ -215,11 +213,11 @@ struct SalaryResultsCard: View {
             // Notes: the same height whatever they say, so nothing below or beside them moves while typing.
             SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
                 Text(SalaryResult.marginalPensionCaption(result(side)) ?? " ").mangoFont(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
+                    .lineLimit(1, reservesSpace: true).multilineTextAlignment(.trailing)
             })
             SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
                 Text(notes(result(side), ready: isReady(side))).mangoFont(.caption).foregroundStyle(.secondary)
-                    .lineLimit(4, reservesSpace: true).multilineTextAlignment(.trailing)
+                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
             })
         }
     }
@@ -342,7 +340,7 @@ struct SalaryFormCard: View {
             }
             SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
                 Text(TaxCode.parse(inputs(side).wrappedValue.taxCode).notice ?? " ").mangoFont(.caption).foregroundStyle(.orange)
-                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
+                    .lineLimit(1, reservesSpace: true).multilineTextAlignment(.trailing)
             })
             Divider()
             row("Pension") { PensionInput(label: "Pension", amount: $0.pension) }
@@ -402,7 +400,7 @@ struct BonusInput: View {
                 #if os(iOS)
                 .keyboardType(.decimalPad)
                 #endif
-                .frame(minWidth: 60, maxWidth: 110)
+                .frame(width: SalaryMetrics.fieldWidth)
                 .accessibilityLabel("Bonus a year")
                 .onChange(of: text) { _, new in
                     if isPercent {
@@ -501,7 +499,10 @@ struct PensionInput: View {
                 }
                 commit(new)
             }
-        HStack(spacing: 6) { unit.pickerStyle(.menu); amountField.frame(minWidth: 60, maxWidth: 110) }
+        HStack(spacing: 6) {
+            unit.pickerStyle(.menu).frame(width: SalaryMetrics.unitWidth, alignment: .trailing)
+            amountField.frame(width: SalaryMetrics.fieldWidth)
+        }
         .onAppear { sync() }
     }
 

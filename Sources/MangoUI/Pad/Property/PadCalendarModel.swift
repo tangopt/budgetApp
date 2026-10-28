@@ -46,7 +46,7 @@ public enum PadCalendarAction: String, CaseIterable, Sendable {
 @MainActor
 public final class PadCalendarModel: ObservableObject {
     public enum Layout: String, CaseIterable, Identifiable, Sendable {
-        case agenda = "Agenda", month = "Month"
+        case month = "Month", agenda = "Agenda"
         public var id: String { rawValue }
     }
 
@@ -66,7 +66,7 @@ public final class PadCalendarModel: ObservableObject {
     }
 
     @Published public private(set) var snapshot: Snapshot = .empty
-    @Published public var layout: Layout = .agenda
+    @Published public var layout: Layout = .month
     @Published public var range: Range = .upcoming {
         didSet { if range != oldValue { selectedDay = nil; selectedId = nil } }
     }

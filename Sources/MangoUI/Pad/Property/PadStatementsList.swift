@@ -124,7 +124,7 @@ struct PadStatementsList: View {
     }
 }
 
-/// One statement opened (from the list, a bill, or the summary's difference): its charges, the bank credits that pay it
+/// One statement opened in the side panel (from the list, a bill, or the summary's difference): its charges, the bank credits that pay it
 /// (each with Unlink), the credits that might, and the actions its status offers; a draft's Prepare email opens
 /// `PrepareEmailSheet` over it.
 struct PadStatementSheet: View {
@@ -132,29 +132,20 @@ struct PadStatementSheet: View {
     @ObservedObject var write: PadWriteModel
     let statementId: Int64
     let choosePayment: (PadBillsAndRechargesModel.Statement) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
     @Environment(\.phoneTheme) private var theme
     @Environment(\.documentPanelSource) private var documentSource
     @State private var confirmsDelete = false
     @State private var emailing = false
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    PadWriteNotices(write: write)
-                    if let statement = model.statements.first(where: { $0.id == statementId }) {
-                        content(statement)
-                    } else {
-                        Text("This statement is gone.").foregroundStyle(.secondary)
-                    }
-                }
-                .padding(20)
+        PadSidePanel(title: model.statements.first { $0.id == statementId }.map(model.monthTitle) ?? "Statement", onClose: onClose) {
+            PadWriteNotices(write: write)
+            if let statement = model.statements.first(where: { $0.id == statementId }) {
+                content(statement)
+            } else {
+                Text("This statement is gone.").foregroundStyle(.secondary)
             }
-            .background(theme.background)
-            .navigationTitle(model.statements.first { $0.id == statementId }.map(model.monthTitle) ?? "Statement")
-            .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
         }
         .sheet(isPresented: $emailing) {
             PrepareEmailSheet(model: model.prepareEmailModel(statementId: statementId, open: documentSource?.open), write: write)

@@ -174,9 +174,9 @@ public final class PadBillsAndRechargesModel: ObservableObject {
     /// The year the summary and the grid cover (nil: `defaultYear`).
     @Published public var chosenYear: Int?
     /// The bill whose panel is open (`UtilityBill.id`).
-    @Published public var selectedBillId: String?
+    @Published public var selectedBillId: String? { didSet { if selectedBillId != nil { openStatementId = nil } } }
     /// The statement whose sheet is open.
-    @Published public var openStatementId: Int64?
+    @Published public var openStatementId: Int64? { didSet { if openStatementId != nil { selectedBillId = nil } } }
     /// The draft statement whose email is being prepared (from the list, or This month's step 4).
     @Published public var emailStatementId: Int64?
 

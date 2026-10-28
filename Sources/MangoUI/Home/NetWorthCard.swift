@@ -8,6 +8,7 @@ import BudgetCore
 struct NetWorthCard: View {
     let netWorth: NetWorthSeries
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.usesPadPage) private var usesPadPage
 
     /// Months of history the sparkline shows.
     static let historyMonths = 12
@@ -22,7 +23,7 @@ struct NetWorthCard: View {
                         MoneyText(minorUnits: change, currency: .gbp, role: .income)
                     }
                 }
-                sparkline
+                if usesPadPage { NetWorthInteractiveChart(netWorth: netWorth) } else { sparkline }
                 if let yearEnd = netWorth.yearEnds.first {
                     FigureRow(label: "Forecast for the end of \(String(yearEnd.year))") {
                         MoneyText(minorUnits: yearEnd.valueMinorUnits, currency: .gbp, role: .balance)

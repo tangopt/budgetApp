@@ -129,7 +129,8 @@ public enum PadRoutes {
                 return PadAccountsModel.openNow(context.dbQueue, row: first)
             }
             guard let open = opened.first(where: { $0.documentId != nil }) ?? opened.first else { return AnyView(Text("The demo has no transaction")) }
-            return AnyView(PadAccountTransactionSheet(open: open, onClose: {})
+            return AnyView(PadAccountTransactionPanel(open: open, onClose: {}).frame(width: 440)
+                .environment(\.quickEdit, tabs.quickEdit)
                 .environment(\.documentPanelSource, tabs.padDocuments.panelSource))
         },
         // Step 11, Task 3: Add account, and Edit details with its Sharing section (the demo's first account, its owner's view).

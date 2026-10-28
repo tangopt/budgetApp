@@ -14,6 +14,7 @@ public struct SearchView: View {
     let syncStatus: SyncStatus
     let onRefresh: () async -> Void
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.usesPadPage) private var usesPadPage
 
     public init(model: SearchViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void = {}) {
         self.model = model
@@ -27,6 +28,7 @@ public struct SearchView: View {
                 // Not lazy: the list stops at about 150 rows (`SearchViewModel.resultRowLimit`), and the snapshot probe
                 // measures every figure.
                 VStack(alignment: .leading, spacing: 16) {
+                    if usesPadPage { PadFlatSearchField(model: model) }
                     content
                 }
                 .phonePageContent()
@@ -37,8 +39,8 @@ public struct SearchView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .phonePageTitle("Search", keepsSearchBar: true)
-            .modifier(SearchField(model: model))
+            .phonePageTitle("Search", keepsSearchBar: !usesPadPage)
+            .modifier(SearchFieldIfNeeded(model: model, usesPadPage: usesPadPage))
         }
         .sheet(item: $model.detail) { row in
             TransactionDetailSheet(row: row)
@@ -157,5 +159,64 @@ struct SearchDayHeader: View {
         .accessibilityAddTraits(.isHeader)
         .accessibilityLabel(PhoneDateFormat.spoken(day.day))
         .accessibilityValue("Day total, " + MoneyPresentation(minorUnits: day.totals.netMinorUnits, currency: .gbp, role: .income).spoken)
+    }
+}
+
+/// The system search field on the iPhone; on the iPad the page carries its own flat field (`PadFlatSearchField`).
+struct SearchFieldIfNeeded: ViewModifier {
+    @ObservedObject var model: SearchViewModel
+    let usesPadPage: Bool
+
+    func body(content: Content) -> some View {
+        if usesPadPage { content } else { content.modifier(SearchField(model: model)) }
+    }
+}
+
+/// The iPad's search field: flat, directly under the title, full width with a hairline under it; the applied tokens
+/// sit in it as chips and the suggested ones follow as chips to tap.
+struct PadFlatSearchField: View {
+    @ObservedObject var model: SearchViewModel
+    @Environment(\.phoneTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: PadSpacing.xs) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+                ForEach(model.tokens) { token in
+                    Button { model.tokens.removeAll { $0 == token } } label: {
+                        Label(token.title, systemImage: token.symbol).mangoFont(.subheadline, weight: .semibold)
+                            .padding(.horizontal, 10).frame(minHeight: 32)
+                            .background(Capsule().fill(theme.accent.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Removes this filter")
+                }
+                TextField(SearchCopy.prompt, text: $model.query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .mangoFont(.title3)
+                if !model.query.isEmpty {
+                    PadIconButton(systemImage: "xmark", label: "Clear search") { model.query = "" }
+                }
+            }
+            .frame(minHeight: 48)
+            Divider()
+            let suggested = model.suggestedTokens
+            if !suggested.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(suggested) { token in
+                            Button { model.tokens.append(token) } label: {
+                                Label(token.title, systemImage: token.symbol).mangoFont(.subheadline)
+                                    .padding(.horizontal, 12).frame(minHeight: 36)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
     }
 }

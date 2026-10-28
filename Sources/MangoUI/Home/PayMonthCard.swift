@@ -7,6 +7,7 @@ import BudgetCore
 struct PayMonthCard: View {
     let summary: HomeSummary
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.usesPadPage) private var usesPadPage
 
     var body: some View {
         let month = summary.month
@@ -17,7 +18,7 @@ struct PayMonthCard: View {
             FigureRow(label: "Spent") {
                 MoneyText(minorUnits: month.expenses.actual, currency: .gbp, role: .expense)
             }
-            bar
+            if usesPadPage { PayMonthInteractiveChart(summary: summary) } else { bar }
             FigureRow(label: "Still expected") {
                 MoneyText(minorUnits: summary.leftToSpendMinorUnits, currency: .gbp, role: .neutral)
             }

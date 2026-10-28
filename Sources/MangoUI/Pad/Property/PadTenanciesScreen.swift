@@ -195,8 +195,9 @@ struct PadTenanciesScreen: View {
             ForEach(model.years) { year in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(String(year.year)).mangoFont(.headline, figures: true).foregroundStyle(.secondary).padding(.top, 4)
-                    PadGrid(minimumColumnWidth: 300, balanced: false) {
-                        ForEach(year.receipts) { receipt in
+                    Card {
+                        ForEach(Array(year.receipts.enumerated()), id: \.element.id) { index, receipt in
+                            if index > 0 { Divider() }
                             PadRentReceiptRow(receipt: receipt, isSelected: receipt.id == model.selectedReceiptId,
                                               actions: model.actions(for: receipt), write: write,
                                               select: { model.select(receipt) },

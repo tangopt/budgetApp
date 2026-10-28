@@ -2,36 +2,24 @@ import SwiftUI
 import Charts
 import BudgetCore
 
-/// "Charts and figures" (step 10, Task 15): what the Mac's Money tab keeps beside and below its table, in one sheet: the
+/// "Charts and figures" (step 10, Task 15; inline on the Money page since round 2): what the Mac's Money tab keeps beside and below its table: the
 /// full figures table in its groups (a row with transactions opens them), cash flow by month, the mortgage's interest and
 /// capital by month, and the monthly figures. Amounts follow "Show in GBP".
-struct PadMoneyChartsSheet: View {
+struct PadMoneyChartsContent: View {
     @ObservedObject var model: PadMoneyModel
     let onShow: (PadMoneyModel.Figure) -> Void
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.phoneTheme) private var theme
 
     private static let utc = TimeZone(identifier: "UTC")!
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if let summary = model.summary {
-                        if model.offersGBP { Toggle("Show in GBP", isOn: $model.showsGBP).frame(minHeight: 44) }
-                        if let note = model.rateNote { Text(note.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary) }
-                        figures
-                        cashFlow(summary)
-                        mortgage(summary)
-                        monthly(summary)
-                    }
-                }
-                .padding(20)
+        VStack(alignment: .leading, spacing: PadSpacing.section) {
+            if let summary = model.summary {
+                figures
+                cashFlow(summary)
+                mortgage(summary)
+                monthly(summary)
             }
-            .background(theme.background)
-            .navigationTitle("Charts and figures")
-            .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
         }
     }
 

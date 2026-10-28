@@ -9,46 +9,39 @@ struct PadCalendarView: View {
     @ObservedObject var model: PadCalendarModel
     let syncStatus: SyncStatus
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private static let monthTitle = Date.FormatStyle(timeZone: MonthRange.calendar.timeZone).month(.wide).year()
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                let sideCard = geometry.size.width >= 860 && model.selected != nil
-                HStack(alignment: .top, spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: PadSpacing.section) {
-                            if model.isEmpty {
-                                EmptyState(symbol: "calendar.badge.clock", title: "Nothing due",
-                                           message: "Link the property's accounts and category groups in Profile so recurring costs and the mortgage show here.")
-                                    .frame(maxWidth: .infinity).padding(.top, 60)
-                            } else {
-                                controls
-                                if !sideCard, let obligation = model.selected {
-                                    PadObligationCard(obligation: obligation, onClose: model.closeCard)
-                                }
-                                switch model.layout {
-                                case .agenda: agenda
-                                case .month: monthGrid
-                                }
-                            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                    if model.isEmpty {
+                        EmptyState(symbol: "calendar.badge.clock", title: "Nothing due",
+                                   message: "Link the property's accounts and category groups in Profile so recurring costs and the mortgage show here.")
+                            .frame(maxWidth: .infinity).padding(.top, 60)
+                    } else {
+                        controls
+                        switch model.layout {
+                        case .agenda: agenda
+                        case .month: monthGrid
                         }
-                        .padPageContent()
-                    }
-                    .frame(maxWidth: .infinity)
-                    if sideCard, let obligation = model.selected {
-                        Divider()
-                        ScrollView {
-                            PadObligationCard(obligation: obligation, onClose: model.closeCard).padSidePanelContent()
-                        }
-                        .frame(width: 340)
                     }
                 }
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
             .padPage("Calendar")
+        }
+        .padSidePanel(isPresented: model.selected != nil, onClose: model.closeCard) {
+            if let obligation = model.selected {
+                PadSidePanel(title: PadCalendarModel.shortTitle(obligation), subtitle: PhoneDateFormat.day(obligation.date),
+                             onClose: model.closeCard) {
+                    PadObligationCard(obligation: obligation, showsHeader: false)
+                }
+            }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.property.reload()
@@ -127,32 +120,39 @@ struct PadCalendarView: View {
                         }
                     }
                 }
-                PadGrid(minimumColumnWidth: 320, balanced: false) {
-                    ForEach(month.obligations) { obligation in row(obligation) }
-                }
+                obligationList(month.obligations)
             }
         }
     }
 
+    private func obligationList(_ items: [PropertyObligation]) -> some View {
+        Card {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, obligation in
+                if index > 0 { Divider() }
+                row(obligation)
+            }
+        }
+    }
+
+    /// One obligation as a list row: its icon and title, the day and kind pill, the amount.
     private func row(_ obligation: PropertyObligation) -> some View {
         let isSelected = obligation.id == model.selectedId
         return Button { model.select(obligation) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary)
-                        .frame(width: 22).accessibilityHidden(true)
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary)
+                    .frame(width: 22).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                HStack(alignment: .center, spacing: 8) {
                     Text(PhoneDateFormat.day(obligation.date).unbroken).mangoFont(.subheadline, figures: true).foregroundStyle(.secondary)
-                    PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: pillTone(obligation.kind))
-                    Spacer(minLength: 4)
-                    PadObligationAmount(obligation: obligation, font: .headline)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: pillTone(obligation.kind))
+                PadObligationAmount(obligation: obligation, font: .headline)
+                    .frame(minWidth: 90, alignment: .trailing)
             }
-            .padCardSurface()
-            .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            .frame(minHeight: 44)
+            .padding(.horizontal, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isSelected ? theme.accent.opacity(0.12) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -178,16 +178,14 @@ struct PadCalendarView: View {
                 Text(model.shownMonth.formatted(Self.monthTitle)).mangoFont(.title3, weight: .semibold).lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
-                Button { model.shiftMonth(by: -1) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.pad(.secondary)).accessibilityLabel("Previous month")
-                Button { model.showToday() } label: { Text("Today") }
-                    .buttonStyle(.pad(.secondary))
-                Button { model.shiftMonth(by: 1) } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(.pad(.secondary)).accessibilityLabel("Next month")
+                PadIconButton(systemImage: "chevron.left", label: "Previous month", prominent: true) { model.shiftMonth(by: -1) }
+                Button { model.showToday() } label: { Text("Today").mangoFont(.subheadline, weight: .semibold).frame(minHeight: 44) }
+                    .buttonStyle(.plain).foregroundStyle(theme.accent)
+                PadIconButton(systemImage: "chevron.right", label: "Next month", prominent: true) { model.shiftMonth(by: 1) }
             }
             Card {
-                VStack(spacing: 6) {
-                    HStack(spacing: 4) {
+                VStack(spacing: 2) {
+                    HStack(spacing: 2) {
                         ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                             Text(symbol).mangoFont(.footnote, weight: .semibold).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                         }
@@ -195,7 +193,7 @@ struct PadCalendarView: View {
                     .accessibilityHidden(true)
                     let days = model.gridDays
                     ForEach(0..<PropertyCalendarGrid.weeks, id: \.self) { week in
-                        HStack(spacing: 4) {
+                        HStack(spacing: 2) {
                             ForEach(days[(week * 7)..<(week * 7 + 7)]) { day in cell(day) }
                         }
                     }
@@ -207,9 +205,7 @@ struct PadCalendarView: View {
             if items.isEmpty {
                 Text("Nothing is due.").mangoFont(.callout).foregroundStyle(.secondary)
             }
-            PadGrid(minimumColumnWidth: 320, balanced: false) {
-                ForEach(items) { row($0) }
-            }
+            if !items.isEmpty { obligationList(items) }
         }
     }
 
@@ -225,22 +221,28 @@ struct PadCalendarView: View {
         let number = calendar.component(.day, from: day.date)
         let isToday = calendar.isDate(day.date, inSameDayAs: model.snapshot.today)
         let isSelected = model.selectedDay.map { calendar.isDate($0, inSameDayAs: day.date) } ?? false
+        let weekend = calendar.isDateInWeekend(day.date)
+        let amounts = day.items.compactMap { item in item.expectedMinorUnits.flatMap { amount in item.currency.map { (amount, $0) } } }
+        let currencies = Set(amounts.map(\.1))
         return Button { model.tap(day) } label: {
-            VStack(spacing: 3) {
-                Text("\(number)").mangoFont(.body, weight: isToday ? .bold : .regular, figures: true)
-                    .foregroundStyle(day.isInMonth ? Color.primary : Color.secondary.opacity(0.6))
-                HStack(spacing: 3) {
-                    ForEach(Array(day.items.prefix(3).enumerated()), id: \.offset) { _, item in
-                        Circle().fill(theme.accent).frame(width: 6, height: 6)
-                            .accessibilityHidden(true)
-                            .opacity(item.id == model.selectedId ? 1 : 0.8)
-                    }
-                    if day.items.isEmpty { Circle().fill(Color.clear).frame(width: 6, height: 6) }
+            VStack(spacing: 2) {
+                Text("\(number)").mangoFont(.subheadline, weight: isToday ? .bold : .regular, figures: true)
+                    .foregroundStyle(isToday ? Color.white : (day.isInMonth ? Color.primary : Color.secondary.opacity(0.6)))
+                    .frame(minWidth: 26, minHeight: 26)
+                    .background(Circle().fill(isToday ? theme.accent : .clear))
+                if let currency = currencies.first, currencies.count == 1, dynamicTypeSize < .xLarge {
+                    MoneyText(minorUnits: amounts.reduce(0) { $0 + $1.0 }, currency: currency, role: .neutral, fit: .shrink(), font: .caption2)
+                        .opacity(day.isInMonth ? 1 : 0.5)
+                } else if day.items.isEmpty {
+                    Color.clear.frame(height: 12)
+                } else {
+                    Circle().fill(theme.accent).frame(width: 6, height: 6).frame(height: 12).accessibilityHidden(true)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(isToday ? theme.accent.opacity(0.12) : .clear))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(weekend ? Color.secondary.opacity(0.07) : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -272,17 +274,18 @@ struct PadObligationAmount: View {
 /// The selected obligation: its kind and date, the expected amount (or that it is a deadline), what it is.
 struct PadObligationCard: View {
     let obligation: PropertyObligation
-    let onClose: () -> Void
+    /// The title row (in the side panel the panel's own header says it).
+    var showsHeader = true
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary).accessibilityHidden(true)
-                    Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(3).truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
+                if showsHeader {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary).accessibilityHidden(true)
+                        Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(3).truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 HStack(spacing: 8) {
                     PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: .neutral)

@@ -17,29 +17,29 @@ struct PadRentReceiptRow: View {
     static let rowActions: [PadTenanciesAction] = [.viewReceipt, .linkPayment, .addDocument, .fetchFromPortal]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(action: select) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(PadTenanciesModel.monthTitle(receipt)).mangoFont(.headline).lineLimit(1)
-                        Text("Receipt \(receipt.receipt.receiptNumber)".figuresUnbroken)
-                            .mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 12) {
+                Button(action: select) {
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(PadTenanciesModel.monthTitle(receipt)).mangoFont(.headline).lineLimit(1)
+                            Text("Receipt \(receipt.receipt.receiptNumber)".figuresUnbroken)
+                                .mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        PadStatusPill(text: receipt.status.name, tone: tone)
+                        if receipt.status == .partPaid {
+                            MoneyText(minorUnits: receipt.coveredMinorUnits, currency: receipt.currency, role: .neutral, font: .footnote)
+                                .accessibilityLabel("Paid so far \(Money.format(receipt.coveredMinorUnits, currency: receipt.currency))")
+                        }
+                        MoneyText(minorUnits: receipt.receipt.amountMinorUnits, currency: receipt.currency, role: .neutral, font: .headline)
+                            .opacity(receipt.status == .cancelled ? 0.5 : 1)
+                            .frame(minWidth: 96, alignment: .trailing)
                     }
-                    Spacer(minLength: 8)
-                    MoneyText(minorUnits: receipt.receipt.amountMinorUnits, currency: receipt.currency, role: .neutral, font: .headline)
-                        .opacity(receipt.status == .cancelled ? 0.5 : 1)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the receipt")
-            HStack(alignment: .center, spacing: 8) {
-                PadStatusPill(text: receipt.status.name, tone: tone)
-                if receipt.status == .partPaid {
-                    MoneyText(minorUnits: receipt.coveredMinorUnits, currency: receipt.currency, role: .neutral, font: .footnote)
-                        .accessibilityLabel("Paid so far \(Money.format(receipt.coveredMinorUnits, currency: receipt.currency))")
-                }
-                Spacer(minLength: 4)
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the receipt")
                 ForEach(actions.filter { Self.rowActions.contains($0) && ($0 != .addDocument || receipt.row.documentCount == 0) }, id: \.self) { action in
                     if let row = action.rowAction {
                         RowIconButton(row, item: "receipt \(receipt.receipt.receiptNumber)", size: .small) { perform(action) }
@@ -48,8 +48,8 @@ struct PadRentReceiptRow: View {
             }
             PadRefusalBanner(message: write.message(for: receipt.rowId))
         }
-        .padCardSurface()
-        .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isSelected ? theme.accent.opacity(0.12) : .clear))
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-receipt-\(receipt.id)")
