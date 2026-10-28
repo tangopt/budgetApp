@@ -18,7 +18,11 @@ public enum SalaryPrefill {
                 var inputs = SalaryInputs.typicalCurrent(today: today)
                 inputs.grossAnnual = gross
                 inputs.region = .englandWalesNI
-                if let code = income.taxCode?.trimmingCharacters(in: .whitespaces), !code.isEmpty { inputs.taxCode = code.uppercased() }
+                if let code = income.taxCode?.trimmingCharacters(in: .whitespaces), !code.isEmpty {
+                    inputs.taxCode = code.uppercased()
+                    // An S code is a Scottish taxpayer's: the parser drops the prefix, so the region carries it.
+                    if inputs.taxCode.hasPrefix("S"), inputs.taxCode.count > 1 { inputs.region = .scotland }
+                }
                 // Later year first; a P60 over a payslip; the job still going; then the P60's pay or the payslip's date.
                 let rank = income.source == .p60 ? 1 : 0
                 let open = employment.endDate == nil ? 1 : 0

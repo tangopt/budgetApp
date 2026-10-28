@@ -56,6 +56,7 @@ public enum SalaryCalculator {
                             cashPay: cashPay, benefits: benefits,
                             netPayPension: netPayPension, reliefAtSourceGross: reliefAtSourceGross)
         if tax.capped { notices.append("K code: tax limited to half of pay") }
+        if tax.typedCodeInTaperZone { notices.append(typedCodeTaperNotice) }
         let incomeTaxTotal = roundHalfUp(tax.numerator, 10_000)
         var benefitsInKindTax = 0
         if benefits > 0 {
@@ -97,12 +98,17 @@ public enum SalaryCalculator {
             takeHomeWeekly: roundHalfUp(takeHome, 52), effectiveRateBP: effectiveRate, marginalRateBP: 0)
     }
 
+    /// Said when a typed code meets income above the taper threshold (the code may already be lowered).
+    public static let typedCodeTaperNotice = "Your code is used as given; above £100,000 HMRC usually lowers it already"
+
     private struct TaxWorking {
         /// Tax in pence × basis points (divide by 10 000 for pence).
         var numerator: Int
         var bands: [BandAmount]
         var allowance: Int
         var capped: Bool
+        /// A typed (non-default) allowance code with adjusted net income above the taper threshold.
+        var typedCodeInTaperZone = false
     }
 
     private struct Band {
@@ -126,6 +132,7 @@ public enum SalaryCalculator {
         }
         func rate(named name: String) -> Int { bands.first { $0.name == name }!.rateBP }
 
+        // BR, D0 and D1 are flat second-job codes: relief-at-source band extension doesn't change them.
         switch code.kind {
         case .nt:
             return TaxWorking(numerator: 0, bands: [], allowance: 0, capped: false)
@@ -146,12 +153,15 @@ public enum SalaryCalculator {
             if capped { numerator = limit }
             return TaxWorking(numerator: numerator, bands: amounts, allowance: 0, capped: capped)
         case .standard(let codeAllowance):
-            let base = code.isDefault ? rules.personalAllowance : codeAllowance
             let excessPounds = max(0, adjustedNetIncome - rules.taperThreshold) / 100
             let reduction = excessPounds * rules.taperRateNumerator / rules.taperRateDenominator * 100
-            let allowance = max(0, base - reduction)
+            let taperedAllowance = max(0, rules.personalAllowance - reduction)
+            // A typed code from HMRC already carries the taper (and any other adjustment): never taper it twice,
+            // but never give more than the tapered table allowance either (an offer that rises past £100,000).
+            let allowance = code.isDefault ? taperedAllowance : min(codeAllowance, taperedAllowance)
             let (numerator, amounts) = banded(max(0, taxablePay - allowance), bands)
-            return TaxWorking(numerator: numerator, bands: amounts, allowance: allowance, capped: false)
+            return TaxWorking(numerator: numerator, bands: amounts, allowance: allowance, capped: false,
+                              typedCodeInTaperZone: !code.isDefault && reduction > 0)
         }
     }
 

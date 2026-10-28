@@ -115,4 +115,10 @@ public struct SalaryResult: Codable, Equatable, Sendable {
 
     /// Pence kept of each extra £1 gross, in basis points (10 000 = all of it).
     public var keepPerExtraPoundBP: Int { 10_000 - marginalRateBP }
+
+    /// Said under the marginal rate when a percentage pension takes a share of each extra £1 too.
+    public static func marginalPensionCaption(_ result: SalaryResult) -> String? {
+        guard case .percentOfGross(let bp) = result.inputs.pension, bp > 0 else { return nil }
+        return "Includes the pension's share of each extra £1"
+    }
 }

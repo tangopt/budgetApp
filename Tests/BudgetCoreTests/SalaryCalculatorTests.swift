@@ -57,6 +57,25 @@ final class SalaryCalculatorTests: XCTestCase {
         XCTAssertEqual(r.employeeNI, 421_060)
         XCTAssertEqual(r.takeHomeAnnual, 7_235_740)
         XCTAssertEqual(r.marginalRateBP, 6_200)
+        XCTAssertEqual(r.notices, [], "the default code is tapered from the table, no notice")
+    }
+
+    func testTypedCodeAlreadyTaperedIsNotTaperedAgain() {
+        // HMRC's code for 115,000: 12,570 − 7,500 = 5,070 → 507L. Kept as given, not cut again to 0.
+        let r = calc(11_500_000) { $0.taxCode = "507L" }
+        XCTAssertEqual(r.personalAllowance, 507_000)
+        XCTAssertEqual(r.notices, [SalaryCalculator.typedCodeTaperNotice])
+    }
+
+    func testTypedCodeCappedAtTaperedAllowance() {
+        // 1185L (an adjustment of −720) on 110,000: never more than the tapered 7,570.
+        let r = calc(11_000_000) { $0.taxCode = "1185L" }
+        XCTAssertEqual(r.personalAllowance, 757_000)
+        XCTAssertEqual(r.notices, [SalaryCalculator.typedCodeTaperNotice])
+        // Below 100,000 the typed code is used as it is, with no notice.
+        let low = calc(6_000_000) { $0.taxCode = "1185L" }
+        XCTAssertEqual(low.personalAllowance, 1_185_000)
+        XCTAssertEqual(low.notices, [])
     }
 
     func testExample125140() {
@@ -286,11 +305,16 @@ final class SalaryCalculatorTests: XCTestCase {
         XCTAssertEqual(netPay.incomeTax, 0)
         XCTAssertEqual(netPay.takeHomeAnnual, 0)
         XCTAssertEqual(netPay.takeHomeMonthly, 0)
-        XCTAssertGreaterThanOrEqual(netPay.effectiveRateBP, 0)
+        XCTAssertEqual(netPay.employeeNI, 139_440)
+        XCTAssertEqual(netPay.effectiveRateBP, 465) // 1,394.40 / 30,000
+        XCTAssertTrue(netPay.notices.contains("Deductions are more than pay; take-home shown as £0"))
         // Relief at source: capped at 30,000 gross, 24,000 paid.
         let ras = calc(3_000_000) { $0.pension = .fixedAnnual(pence: 5_000_000); $0.pensionMethod = .reliefAtSource }
         XCTAssertEqual(ras.employeePension, 2_400_000)
-        XCTAssertGreaterThanOrEqual(ras.takeHomeAnnual, 0)
+        // Adjusted net income 0, full allowance; tax 17,430 × 20% = 3,486; NI 1,394.40
+        // Take-home 30,000 − 24,000 − 3,486 − 1,394.40 = 1,119.60
+        XCTAssertEqual(ras.incomeTax, 348_600)
+        XCTAssertEqual(ras.takeHomeAnnual, 111_960)
     }
 
     func testUnknownYearFallsBackWithNotice() {

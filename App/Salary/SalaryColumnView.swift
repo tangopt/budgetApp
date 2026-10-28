@@ -53,7 +53,7 @@ struct SalaryColumnView: View {
                     .multilineTextAlignment(.trailing).textFieldStyle(.roundedBorder).frame(width: 90)
             }
             if let notice = TaxCode.parse(inputs.taxCode).notice {
-                Text(notice).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                Text(notice).font(.caption).foregroundStyle(.orange).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             row("Pension") { PensionAmountField(label: "Pension", amount: $inputs.pension) }
@@ -115,6 +115,9 @@ struct SalaryColumnView: View {
             line("Personal allowance", result.personalAllowance, cost: false)
             percentLine("Effective rate", result.effectiveRateBP)
             percentLine("Marginal rate", result.marginalRateBP)
+            if let caption = SalaryResult.marginalPensionCaption(result) {
+                Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
         notices
     }
@@ -137,7 +140,7 @@ struct SalaryColumnView: View {
 
     @ViewBuilder private var notices: some View {
         ForEach(result.notices.filter { $0 != TaxCode.unreadableNotice }, id: \.self) { notice in
-            Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
         }
         if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
             Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").font(.caption).foregroundStyle(.secondary).lineLimit(1)

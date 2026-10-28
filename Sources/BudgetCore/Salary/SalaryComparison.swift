@@ -129,8 +129,9 @@ public final class SalaryComparisonViewModel {
 
     func setPrefill(_ inputs: SalaryInputs?, for personId: Int64?) {
         var dropped = false
-        if let personId, let owner, owner != personId { discard(); dropped = true }
-        if let personId { owner = personId }
+        // A draft made for someone else, or shown to a viewer who isn't known, goes.
+        if let owner, owner != personId { discard(); dropped = true }
+        owner = personId
         let hadPrefill = prefill != nil
         prefill = inputs
         guard !touched else { return }
@@ -148,7 +149,8 @@ public final class SalaryComparisonViewModel {
     /// Writes the draft now (what the delay would do).
     public func flushDraft() {
         saveTask?.cancel()
-        guard savesDrafts, let store else { return }
+        // No owner, no draft: what an unknown viewer types isn't kept for whoever comes next.
+        guard savesDrafts, let store, owner != nil else { return }
         store.save(SalaryDraft(current: current, offer: offer, personId: owner))
     }
 

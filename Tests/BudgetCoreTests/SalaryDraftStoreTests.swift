@@ -48,6 +48,7 @@ final class SalaryDraftStoreTests: XCTestCase {
     func testEditsAreSavedAfterTheDelayAndRestored() async throws {
         let store = SalaryDraftStore(defaults: defaults)
         let model = SalaryComparisonViewModel(store: store, saveDelay: .milliseconds(20))
+        model.setPrefill(nil, for: 3)
         model.offer.grossAnnual = 7_000_000
         XCTAssertNil(store.load(), "debounced")
         try await Task.sleep(for: .milliseconds(200))
@@ -90,6 +91,19 @@ final class SalaryDraftStoreTests: XCTestCase {
         model.setPrefill(nil, for: 9)
         XCTAssertNil(store.load())
         XCTAssertEqual(model.current, .typicalCurrent())
+    }
+
+    func testUnknownViewerDropsAnOwnedDraftAndSavesNone() {
+        let store = SalaryDraftStore(defaults: defaults)
+        store.save(draft)
+        let model = SalaryComparisonViewModel(store: store, saveDelay: .milliseconds(1))
+        model.setPrefill(nil, for: nil)
+        XCTAssertNil(store.load())
+        XCTAssertEqual(model.current, .typicalCurrent())
+        XCTAssertEqual(model.offer, .typicalCurrent())
+        model.offer.grossAnnual = 9_000_000
+        model.flushDraft()
+        XCTAssertNil(store.load(), "no owner, no draft")
     }
 
     func testForgetClearsDraftAndPrefill() {

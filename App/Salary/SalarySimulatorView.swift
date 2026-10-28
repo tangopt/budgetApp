@@ -25,7 +25,7 @@ struct SalarySimulatorView: View {
                 }
             }
             Text("An estimate from published UK rates, not tax advice.")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
         }
         .padding(ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

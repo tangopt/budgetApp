@@ -156,6 +156,10 @@ struct SalaryResultsCard: View {
                     AmountRow(label: "Personal allowance", amount: money(result.personalAllowance, .neutral))
                     percent("Effective rate", result.effectiveRateBP)
                     percent("Marginal rate", result.marginalRateBP)
+                    if let caption = SalaryResult.marginalPensionCaption(result) {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 Divider()
                 bar

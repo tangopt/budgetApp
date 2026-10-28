@@ -79,6 +79,12 @@ final class SalaryPrefillTests: XCTestCase {
         XCTAssertNil(try latest())
     }
 
+    func testScottishCodeSetsScotland() throws {
+        try add(person: me, year: 2025, source: .p60, pay: 4_000_000, code: "S1257L")
+        XCTAssertEqual(try latest()?.region, .scotland)
+        XCTAssertEqual(try latest()?.taxCode, "S1257L")
+    }
+
     func testOtherPersonIgnored() throws {
         try add(person: other, year: 2025, source: .p60, pay: 9_000_000)
         XCTAssertNil(try latest())
