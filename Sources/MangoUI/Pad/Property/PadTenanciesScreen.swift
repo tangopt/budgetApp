@@ -34,7 +34,7 @@ struct PadTenanciesScreen: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
                     PadWriteNotices(write: write)
                     if property.tenancies.isEmpty {
                         empty
@@ -47,12 +47,11 @@ struct PadTenanciesScreen: View {
                         }
                     }
                 }
-                .padding(20)
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Tenancies")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Tenancies")
         }
         .modifier(PadReceiptPanelHost(model: model) { receipt in
             PadReceiptPanelExtra(model: model, write: write, receipt: receipt, run: { run($0, receipt, $1) })
@@ -196,7 +195,7 @@ struct PadTenanciesScreen: View {
             ForEach(model.years) { year in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(String(year.year)).mangoFont(.headline, figures: true).foregroundStyle(.secondary).padding(.top, 4)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12, alignment: .top)], spacing: 12) {
+                    PadTileGrid(minimumColumnWidth: 300, balanced: false) {
                         ForEach(year.receipts) { receipt in
                             PadRentReceiptRow(receipt: receipt, isSelected: receipt.id == model.selectedReceiptId,
                                               actions: model.actions(for: receipt), write: write,

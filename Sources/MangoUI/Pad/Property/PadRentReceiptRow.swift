@@ -48,10 +48,8 @@ struct PadRentReceiptRow: View {
             }
             PadRefusalBanner(message: write.message(for: receipt.rowId))
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .padCardSurface()
+        .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-receipt-\(receipt.id)")

@@ -23,7 +23,7 @@ struct PadMoneyView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
                     PadWriteNotices(write: write)
                     if model.snapshot.property == nil, model.property.property == nil {
                         EmptyState(symbol: "sterlingsign.circle", title: "No property", message: "The property's money appears here once the Mac has shared it.")
@@ -42,12 +42,11 @@ struct PadMoneyView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Money")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Money")
         }
         .modifier(PadMoneyPanelHost(model: model) { line in
             PadMoneyPanelExtra(model: model, write: write, line: line, run: { run($0) })
@@ -147,24 +146,20 @@ struct PadMoneyView: View {
     // MARK: Tiles and chips
 
     private var tiles: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12, alignment: .top)], spacing: 12) {
+        PadTileGrid(minimumColumnWidth: 190) {
             ForEach(model.tiles) { tile in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(tile.title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                PadTile(tile.title) {
                     if let amount = tile.amount {
                         MoneyText(minorUnits: model.shown(amount), currency: model.displayCurrency, role: tile.role, fit: .shrink(),
                                   font: .title2.weight(.semibold))
                     } else if let text = tile.text {
                         Text(text).mangoFont(.title2, weight: .semibold, figures: true).lineLimit(1)
                     }
+                } caption: {
                     if let caption = tile.caption {
-                        Text(caption.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
+                        Text(caption.figuresUnbroken)
                     }
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
-                .accessibilityElement(children: .combine)
             }
         }
     }
@@ -174,7 +169,7 @@ struct PadMoneyView: View {
         let categories = model.categoryChips
         if !categories.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Costs by category").mangoFont(.headline)
+                PadSectionHeader("Costs by category")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         chip(PadMoneyModel.allCosts)
@@ -231,7 +226,7 @@ struct PadMoneyView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
+        .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
     }
 
     @ViewBuilder
@@ -289,7 +284,7 @@ struct PadMoneyView: View {
             if model.displayCurrency != model.currency || model.showsGBP && model.offersGBP {
                 Text("Transactions keep their own currency.").mangoFont(.footnote).foregroundStyle(.secondary)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], spacing: 12) {
+            PadTileGrid(minimumColumnWidth: 340, balanced: false) {
                 ForEach(lines) { line in
                     PadMoneyLineRow(model: model, line: line, isSelected: model.panel?.line.id == line.id, card: true) {
                         Task { await model.select(line) }
@@ -359,9 +354,10 @@ struct PadMoneyLineRow: View {
                 }
             }
             .padding(.vertical, card ? 14 : 8).padding(.horizontal, card ? 14 : 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(card ? theme.surface : theme.background))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            // As a card in a grid row, as tall as the row.
+            .frame(maxWidth: .infinity, maxHeight: card ? .infinity : nil, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: card ? PadMetrics.cardRadius : 12, style: .continuous).fill(card ? theme.surface : theme.background))
+            .overlay(RoundedRectangle(cornerRadius: card ? PadMetrics.cardRadius : 12, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

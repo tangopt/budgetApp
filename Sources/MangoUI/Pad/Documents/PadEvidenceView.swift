@@ -21,7 +21,7 @@ struct PadEvidenceView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: PadSpacing.section) {
                     PadWriteNotices(write: write)
                     header
                     if model.areas.isEmpty {
@@ -32,12 +32,11 @@ struct PadEvidenceView: View {
                     ForEach(model.shownAreas) { area in areaSection(area) }
                     utilityPointer
                 }
-                .padding(20)
+                .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .navigationTitle("Evidence")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Evidence", subtitle: "Whole tax year · all areas")
         }
         .modifier(PadEvidencePanelHost(isOpen: model.selectedItem != nil) { panel })
         .task(id: SyncReloadTrigger(syncStatus)) { await model.reload() }
@@ -48,7 +47,6 @@ struct PadEvidenceView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Whole tax year · all areas").mangoFont(.subheadline).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { yearSwitch; Spacer(minLength: 8); showSwitch }
                 VStack(alignment: .leading, spacing: 8) { yearSwitch; showSwitch }
@@ -140,8 +138,8 @@ struct PadEvidenceView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-evidence-\(item.id)")

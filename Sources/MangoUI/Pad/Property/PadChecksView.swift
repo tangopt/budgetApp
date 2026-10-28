@@ -23,7 +23,7 @@ struct PadChecksView: View {
                 let sideCard = geometry.size.width >= 860 && model.selected != nil
                 HStack(alignment: .top, spacing: 0) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: PadSpacing.section) {
                             PadWriteNotices(write: write)
                             if model.snapshot.property == nil, model.property.property == nil {
                                 EmptyState(symbol: "checkmark.seal", title: "No property",
@@ -38,12 +38,12 @@ struct PadChecksView: View {
                                 recurringSection
                             }
                         }
-                        .padding(20)
+                        .padPageContent()
                     }
                     .frame(maxWidth: .infinity)
                     if sideCard, let check = model.selected {
                         Divider()
-                        ScrollView { findings(check).padding(20) }
+                        ScrollView { findings(check).padSidePanelContent() }
                             .frame(width: 380)
                     }
                 }
@@ -65,8 +65,7 @@ struct PadChecksView: View {
                 model.expireToast(id)
             }
             .offlineBannerSlot()
-            .navigationTitle("Checks")
-            .navigationBarTitleDisplayModeInline()
+            .padPage("Checks")
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await write.refresh()
@@ -303,14 +302,12 @@ struct PadChecksView: View {
         if costs.isEmpty {
             Text("No cost repeats in the property's history yet.").mangoFont(.callout).foregroundStyle(.secondary)
         }
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
+        PadTileGrid(minimumColumnWidth: 360, balanced: false) {
             ForEach(costs) { cost in
                 VStack(alignment: .leading, spacing: 8) {
                     costRow(cost, compact: false)
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.surface))
+                .padCardSurface()
             }
         }
     }

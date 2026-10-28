@@ -16,14 +16,15 @@ struct PadDocumentsView: View {
 
     var body: some View {
         NavigationStack {
-            list
+            PadPageInsetReading { inset in list(inset: inset) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.background)
                 .documentPanel(selection: $model.selectedId) { documentId in
                     if let document = model.all.first(where: { $0.id == documentId }) { panelBlock(document) }
                 }
-            .navigationTitle("Documents")
-            .searchable(text: $model.query, prompt: "Search documents")
+            .padPage("Documents") {
+                PadSearchField(text: $model.query, prompt: "Search documents")
+            }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload()
@@ -37,13 +38,15 @@ struct PadDocumentsView: View {
         }
     }
 
-    private var list: some View {
+    private func list(inset: CGFloat) -> some View {
         VStack(spacing: 8) {
             Picker("Show", selection: $model.filter) {
                 ForEach(PadDocumentsModel.Filter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 16).padding(.top, 8)
+            .frame(maxWidth: 520, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, inset).padding(.top, PadSpacing.xs)
             let groups = model.groups
             if groups.isEmpty {
                 EmptyState(symbol: "folder", title: model.all.isEmpty ? "No documents" : "Nothing matches",
@@ -65,6 +68,7 @@ struct PadDocumentsView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .contentMargins(.horizontal, inset - PadSpacing.m, for: .scrollContent)
             }
         }
     }
