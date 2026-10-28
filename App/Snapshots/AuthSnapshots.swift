@@ -105,10 +105,11 @@ enum AuthSnapshots {
                 try await lockedContent(context, screen: .rules) { $0.rules.snapshotSearchText = rulesSearch }
             },
             // A sheet open when Mango locks: its cover is as big as the window's content (`SheetCovers`,
-            // `LockCoverPolicy.coveringFrame`), so the lock screen in it runs edge to edge. The harness has no
-            // window sheets: the cover is laid over the locked window at that size, and nothing of a sheet's
-            // frame (the dimmed edge, the rounded border, the shadow) may show.
-            SnapshotRoute(name: "auth-locked_over_sheet", title: "Lock screen with a sheet open: the sheet's cover is window-sized, no sheet frame shows",
+            // `LockCoverPolicy.coveringFrame`), so the lock screen in it runs edge to edge, and the window under
+            // it shows only a backdrop (`LockCoverPolicy.cover`): exactly one lock screen. The harness has no
+            // window sheets: the sheet's cover is laid over the locked window at that size, and nothing of a
+            // sheet's frame (the dimmed edge, the rounded border, the shadow) or a second lock screen may show.
+            SnapshotRoute(name: "auth-locked_over_sheet", title: "Locked with a sheet open: one lock screen (the sheet's), the window under it a backdrop",
                           settleFactor: 1.5) { context in
                 _ = try await demoUsers(context)
                 let locked = SessionModel(dbQueue: context.dbQueue, isSetUp: true, biometrics: StandInTouchID(enrolled: []),
@@ -117,7 +118,7 @@ enum AuthSnapshots {
                 await locked.refreshCandidates()
                 return AnyView(ZStack {
                     ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .property, prepare: { _ in }))
-                        .lockOverlay(.main, session: locked)
+                        .lockOverlay(.main, session: locked, sheetCarriesLock: true)
                     LockScreenHost(session: locked)
                 })
             },

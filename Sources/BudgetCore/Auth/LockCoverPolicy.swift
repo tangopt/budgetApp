@@ -24,4 +24,17 @@ public enum LockCoverPolicy {
         guard area.width >= sheet.width, area.height >= sheet.height else { return sheet.union(area) }
         return area
     }
+
+    /// What a covered window shows: the lock screen, or a plain backdrop with nothing on it.
+    public enum Cover: Equatable, Sendable {
+        case lockScreen
+        case backdrop
+    }
+
+    /// A window and the sheets stacked on it show one lock screen between them, in the top one: it's the one that
+    /// takes the keyboard (a window with a sheet on it can't). Every window under a sheet shows a backdrop, so the
+    /// lock screen isn't drawn twice, once in the window and again in its sheet.
+    public static func cover(hasSheetAbove: Bool) -> Cover {
+        hasSheetAbove ? .backdrop : .lockScreen
+    }
 }
