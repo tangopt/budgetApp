@@ -129,11 +129,19 @@ public struct DeviceWriter: Sendable {
     public func writeCheckingFiledYears<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit, edit: String,
                                                      scope: FiledYearEditCheck.Scope,
                                                      _ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writeWithActor(area, origin: origin, edit: edit, scope: scope) { db, _ in try body(db) }
+    }
+
+    /// `writeCheckingFiledYears`, with the actor it writes as handed to `body` (step 11: an account added as hers,
+    /// `AccountSharing.apply` as her). Same checks, same refusals, same single transaction.
+    public func writeWithActor<T: Sendable>(_ area: AccessArea, origin: WriteOrigin = .edit, edit: String,
+                                            scope: FiledYearEditCheck.Scope,
+                                            _ body: @escaping @Sendable (Database, AccessActor) throws -> T) async throws -> T {
         let viewer = viewer()
         let result = try await db.write { db -> T in
             let actor = try Self.requireActor(viewer, db: db)
             let outcome = try ActorWrite.perform(actor, area: area, origin: origin, db: db) {
-                try FiledYearEditCheck.save(db: db, edit: edit, scope: scope, resolution: nil) { try body(db) }
+                try FiledYearEditCheck.save(db: db, edit: edit, scope: scope, resolution: nil) { try body(db, actor) }
             }
             switch outcome {
             case .saved(let value): return value
