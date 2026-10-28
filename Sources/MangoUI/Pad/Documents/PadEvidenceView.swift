@@ -30,13 +30,14 @@ struct PadEvidenceView: View {
                             .padding(.top, 40)
                     }
                     ForEach(model.shownAreas) { area in areaSection(area) }
+                    otherRows
                     utilityPointer
                 }
                 .padPageContent()
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("Evidence", subtitle: "Whole tax year · all areas")
+            .padPage("Missing documents", subtitle: "Whole tax year · tax, tenancy and property")
         }
         .modifier(PadEvidencePanelHost(isOpen: model.selectedItem != nil) { panel })
         .task(id: SyncReloadTrigger(syncStatus)) { await model.reload() }
@@ -152,6 +153,30 @@ struct PadEvidenceView: View {
         else if let slot = item.expectedPeriod { parts.append(PadEvidenceFormat.slot(slot)) }
         if let amount = item.expectedAmountMinorUnits { parts.append(Money.format(amount, currency: item.currency ?? .eur).unbroken) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The centre's other rows for the year: a tenancy's utility payments with no invoice, documents waiting for their payment.
+    @ViewBuilder
+    private var otherRows: some View {
+        if !model.others.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("TENANCY BILLS AND PAYMENTS · \(model.others.count) MISSING".figuresUnbroken)
+                    .mangoFont(.caption, weight: .bold).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(model.others) { row in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(row.title.figuresUnbroken).mangoFont(.body, weight: .semibold).lineLimit(2).truncationMode(.middle)
+                        Text([row.context, PhoneDateFormat.day(row.due), row.amountMinorUnits.map { Money.format($0, currency: row.currency ?? .eur) }]
+                            .compactMap { $0 }.joined(separator: " · ").figuresUnbroken)
+                            .mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
     }
 
     private var utilityPointer: some View {
