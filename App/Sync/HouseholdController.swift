@@ -31,6 +31,8 @@ final class HouseholdController: ObservableObject {
     private let session: SessionModel
     /// This Mac's real sync runs, as the admin's iCloud user (set by `RealSync`).
     var isRunning: () -> Bool = { false }
+    /// The running engine (set by `RealSync`): removing the member gives the household a new key through it (step 15).
+    var engine: SyncEngineCore?
     private var transport: CloudKitTransport?
     private var share: SyncZoneShare?
     private var granter: (member: String, granter: SyncKeyExchange.Granter)?
@@ -44,6 +46,8 @@ final class HouseholdController: ObservableObject {
     /// Where "Invite…" has got to (the pane's progress line).
     private var stage: HouseholdInvite.Stage = .checkingThisMac
     private var refreshing = false
+    /// The re-seal sweep's counts while it runs here (the pane's "Securing the household… n of m").
+    private var securing: SyncKeyRotation.Progress?
 
     init(dbQueue: DatabaseQueue, session: SessionModel) {
         self.dbQueue = dbQueue
@@ -93,8 +97,33 @@ final class HouseholdController: ObservableObject {
         let running = contactCloud && isRunning()
         if running {
             await contactICloud()
+            await resumeSecuring()
         }
         await publish()
+    }
+
+    /// A removal's new key or re-seal sweep left unfinished (offline, a quit, a crash) goes on after a sync.
+    private func resumeSecuring() async {
+        guard !busy, let engine else { return }
+        do {
+            let outcome = try await HouseholdRemoval.resumeIfPending(engine: engine, db: dbQueue, progress: securingProgress())
+            if outcome != nil { Self.log.notice("Household: securing resumed") }
+        } catch {
+            Self.log.error("Household: securing failed (\(String(describing: type(of: error)), privacy: .public))")
+        }
+        securing = nil
+    }
+
+    /// Hands the sweep's counts to the pane.
+    private func securingProgress() -> @Sendable (SyncKeyRotation.Progress) -> Void {
+        { [weak self] progress in
+            Task { @MainActor in
+                guard let self else { return }
+                self.securing = progress
+                let line = HouseholdCopy.securing(progress)
+                if self.state.progress != line { self.state.progress = line }
+            }
+        }
     }
 
     /// The share, the bind, the exchange. A passing failure (offline) keeps what was known.
@@ -144,16 +173,24 @@ final class HouseholdController: ObservableObject {
     private func publish() async {
         let share = share
         let request = request
-        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool, PermissionGrid?) in
+        let read = try? await dbQueue.read { db -> (AppUser?, [String], Bool, PermissionGrid?, SyncKeyRotation.Progress?) in
             let member = try HouseholdInvite.member(db: db)
             let grid = try member?.id.flatMap { try? PermissionGrid.load(db: db, appUserId: $0) }
-            return (member, try AppUserStore.unclaimedPeople(db).map(\.name), try HouseholdInvite.wasRemoved(db: db), grid)
+            return (member, try AppUserStore.unclaimedPeople(db).map(\.name), try HouseholdInvite.wasRemoved(db: db), grid,
+                    try SyncKeyRotation.progress(db: db))
         }
-        guard let (member, unclaimed, removed, grid) = read else { return }
+        guard let (member, unclaimed, removed, grid, owed) = read else { return }
         var next = HouseholdPaneState()
         next.unclaimed = unclaimed
         next.busy = busy
-        next.progress = busy && checking ? HouseholdCopy.inviteProgress(stage) : nil
+        if busy && checking {
+            next.progress = HouseholdCopy.inviteProgress(stage)
+        } else if let securing {
+            next.progress = HouseholdCopy.securing(securing)
+        } else if owed != nil {
+            // A removal's new key or sweep is still owed: it goes on after the next sync.
+            next.progress = HouseholdCopy.securingLater
+        }
         next.error = error
         if let member {
             next.member = member.displayName
@@ -263,10 +300,27 @@ final class HouseholdController: ObservableObject {
         }
     }
 
+    /// "Remove": she comes off the share, then the household gets a new key and every record is sealed again
+    /// (`HouseholdRemoval`, step 15). Offline, nothing changes and the pane says to connect.
     func remove() async {
         await run {
             guard let member = try await dbQueue.read({ db in try HouseholdInvite.member(db: db) }) else { return }
-            try await HouseholdInvite.remove(transport: cloud(), member: member, db: dbQueue)
+            guard isRunning(), let engine else {
+                blockers = [HouseholdCopy.blocker(.syncNotOn, alreadyShared: true)]
+                return
+            }
+            defer { securing = nil }
+            let outcome = try await HouseholdRemoval.remove(transport: cloud(), engine: engine, member: member, db: dbQueue,
+                                                            progress: securingProgress())
+            switch outcome {
+            case .offline:
+                error = HouseholdCopy.removeOffline
+                return
+            case .securingLater:
+                Self.log.notice("Household: removed; securing goes on after a later sync")
+            case .removed(let report):
+                Self.log.notice("Household: removed; \(report.progress.done, privacy: .public) record(s) secured")
+            }
             share = try? await cloud().zoneShare(SyncZones.household)
             granter = nil
             request = nil
