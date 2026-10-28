@@ -22,6 +22,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case rules = "Rules"
     case categories = "Categories"
     case uncategorized = "Uncategorized"
+    /// Everything Mango expects a document for and has none: tax, tenancy and property (step 20).
+    case missingDocuments = "Missing documents"
     var id: String { rawValue }
 
     var systemImage: String {
@@ -40,6 +42,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .taxYears: return "doc.text"
         case .documents: return "doc.on.doc"
         case .missingEvidence: return "checklist"
+        case .missingDocuments: return "doc.badge.ellipsis"
         }
     }
 
@@ -53,7 +56,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     /// distinct value first appears in `allCases` (not alphabetically).
     var sidebarSection: String {
         switch self {
-        case .imports, .uncategorized: return "Workflow"
+        case .imports, .uncategorized, .missingDocuments: return "Workflow"
         case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
         case .taxYears, .documents, .missingEvidence, .salary: return "Tax"
         case .rules, .categories: return "Settings"
@@ -120,6 +123,8 @@ struct ContentView: View {
     @StateObject private var documentKindsModel: DocumentKindsModel
     /// Kept for the app session: the period and filters survive navigation.
     @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
+    /// The Missing documents centre; also counts for the sidebar badge.
+    @StateObject private var missingDocumentsViewModel: MissingDocumentsViewModel
     /// The property page on show (`propertyId`), kept for the session like the others. Held,
     /// not observed: the page observes it, so its frequent changes (a side panel opening, a
     /// receipt selected) redraw the page alone rather than the whole window. The window's
@@ -165,6 +170,7 @@ struct ContentView: View {
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _documentKindsModel = StateObject(wrappedValue: DocumentKindsModel(dbQueue: environment.dbQueue))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _missingDocumentsViewModel = StateObject(wrappedValue: MissingDocumentsViewModel(dbQueue: environment.dbQueue))
         _propertyViewModel = State(initialValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
                                                                                      indexAutoFetch: environment.interestIndexAutoFetch))
         _taxYearsViewModel = StateObject(wrappedValue: TaxYearsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
@@ -188,8 +194,7 @@ struct ContentView: View {
         switch screen {
         case .imports: return importActive || selection == .imports
         case .uncategorized: return uncategorizedCount > 0
-        // Hidden until it's rebuilt as the missing-documents centre (step 20); Tax years keeps its own list,
-        // and links that open it directly still work.
+        // The per-record checklist stays reachable from Tax years and a property's Checks; Missing documents is the sidebar's.
         case .missingEvidence: return selection == .missingEvidence
         default: return true
         }
@@ -228,6 +233,7 @@ struct ContentView: View {
                                 }
                             } else {
                                 Label(screen.sidebarTitle(uncategorizedCount: uncategorizedCount), systemImage: screen.systemImage)
+                                    .badge(screen == .missingDocuments ? missingDocumentsViewModel.result.missingCount : 0)
                                     .tag(SidebarItem.screen(screen))
                             }
                         }
@@ -290,8 +296,17 @@ struct ContentView: View {
                         .onAppear { accountsViewModel.load() }
                 case .taxYears:
                     TaxYearsView(viewModel: taxYearsViewModel, missingEvidenceViewModel: missingEvidenceViewModel, openTransaction: openTransaction)
+                        .environment(\.openMissingDocuments, { startYear in
+                            missingDocumentsViewModel.area = nil
+                            missingDocumentsViewModel.year = .taxYear(startYear)
+                            selection = .missingDocuments
+                        })
                 case .documents:
                     DocumentsView(viewModel: documentsViewModel, openTransaction: openTransaction)
+                case .missingDocuments:
+                    MissingDocumentsView(viewModel: missingDocumentsViewModel, openProperty: { id in
+                        refreshProperties(select: id)
+                    })
                 case .missingEvidence:
                     MissingEvidenceView(viewModel: missingEvidenceViewModel, openTransaction: openTransaction)
                 case .property:
@@ -367,10 +382,11 @@ struct ContentView: View {
                 sidebarSelectionChanged(to: .screen(.rules))
             }
             refreshSharedState()
+            missingDocumentsViewModel.claim("sidebar")
             snapshotSetup?.prepare(SnapshotScreenModels(
                 dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel, salary: salaryViewModel,
                 accounts: accountsViewModel, categories: categoriesViewModel, search: searchViewModel,
-                documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, property: propertyViewModel,
+                documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, missingDocuments: missingDocumentsViewModel, property: propertyViewModel,
                 taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel))
         }
         .onChange(of: uncategorizedViewModel.transactions) {

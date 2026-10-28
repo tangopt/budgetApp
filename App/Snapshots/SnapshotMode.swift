@@ -66,6 +66,7 @@ struct SnapshotScreenModels {
     let search: SearchViewModel
     let documents: DocumentsViewModel
     let missingEvidence: MissingEvidenceViewModel
+    let missingDocuments: MissingDocumentsViewModel
     let property: PropertyViewModel
     let taxYears: TaxYearsViewModel
     let rules: RulesViewModel

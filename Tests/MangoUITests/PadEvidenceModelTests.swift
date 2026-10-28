@@ -55,6 +55,16 @@ final class PadEvidenceModelTests: XCTestCase {
         XCTAssertEqual(model.shownAreas.flatMap(\.items).count, model.items.count)
     }
 
+    /// The page reads through the Missing documents centre: its non-evidence rows for the year sit beside the areas, and
+    /// they are exactly the centre's own.
+    func testOtherRowsAreTheCentresOwn() async throws {
+        let model = await model()
+        let centre = try await db.read { db in try MissingDocuments.read(db: db, now: self.today, earliest: UKTaxYear(startYear: 2025)).rows }
+        let expected = centre.filter { $0.source != .evidence && $0.state == .missing && $0.taxYears.contains(2025) }
+        XCTAssertEqual(model.others.map(\.id), expected.map(\.id))
+        XCTAssertTrue(model.others.allSatisfy { $0.source != .evidence })
+    }
+
     func testLinkExistingDocumentThroughWriter() async throws {
         let model = await model()
         XCTAssertTrue(model.canLink)

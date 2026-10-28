@@ -27,11 +27,13 @@ public final class PadEvidenceModel: ObservableObject {
         public var id: Int64 { document.id }
     }
 
-    /// What one read gives: the year's areas and the kinds' names.
+    /// What one read gives: the year's areas, the kinds' names, and the Missing documents centre's other rows for the year
+    /// (a tenancy's utility payments with no invoice, documents waiting for their payment).
     public struct Snapshot: Equatable, Sendable {
         var areas: [EvidenceArea]
         var catalog: DocumentKindCatalog
-        public static func == (a: Snapshot, b: Snapshot) -> Bool { a.areas == b.areas }
+        var others: [MissingDocumentRow] = []
+        public static func == (a: Snapshot, b: Snapshot) -> Bool { a.areas == b.areas && a.others == b.others }
     }
 
     @Published public var year: UKTaxYear {
@@ -43,6 +45,8 @@ public final class PadEvidenceModel: ObservableObject {
     @Published public var missingOnly = true
     @Published public private(set) var areas: [EvidenceArea] = []
     @Published public private(set) var catalog = DocumentKindCatalog(customKinds: [])
+    /// The centre's rows that are not evidence items, for this year.
+    @Published public private(set) var others: [MissingDocumentRow] = []
     @Published public var selectedItemId: String? {
         didSet {
             guard selectedItemId != oldValue else { return }
@@ -104,23 +108,27 @@ public final class PadEvidenceModel: ObservableObject {
         await propertyWrite.refresh()
         // Her own view; nothing while she isn't known (or can't be read), everything only for demo data.
         let scope = await write.readScope()
-        guard let snapshot = await Self.read(dbQueue, year: year, scope: scope) else { return }
+        guard let snapshot = await Self.read(dbQueue, year: year, scope: scope, now: today()) else { return }
         apply(snapshot)
         await loadPanel()
     }
 
     /// The areas for `year` as `viewer` sees them (nil: everything).
-    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, year: UKTaxYear, viewer: AccessActor? = nil) -> Snapshot? {
+    public nonisolated static func readNow(_ dbQueue: any DatabaseReader, year: UKTaxYear, viewer: AccessActor? = nil, now: Date = Date()) -> Snapshot? {
         let scope: DeviceReadScope = viewer.map(DeviceReadScope.actor) ?? .everything
-        return try? dbQueue.read { db in try snapshot(db, year: year, scope: scope) }
+        return try? dbQueue.read { db in try snapshot(db, year: year, scope: scope, now: now) }
     }
 
-    nonisolated static func read(_ dbQueue: any DatabaseReader, year: UKTaxYear, scope: DeviceReadScope) async -> Snapshot? {
-        try? await dbQueue.read { db in try snapshot(db, year: year, scope: scope) }
+    nonisolated static func read(_ dbQueue: any DatabaseReader, year: UKTaxYear, scope: DeviceReadScope, now: Date = Date()) async -> Snapshot? {
+        try? await dbQueue.read { db in try snapshot(db, year: year, scope: scope, now: now) }
     }
 
-    nonisolated static func snapshot(_ db: Database, year: UKTaxYear, scope: DeviceReadScope) throws -> Snapshot {
-        Snapshot(areas: try TaxYearEvidence.areas(db: db, taxYear: year, scope: scope), catalog: try DocumentKindCatalog.load(db: db))
+    /// The year's evidence areas and, from the Missing documents centre, its rows that are not evidence items.
+    nonisolated static func snapshot(_ db: Database, year: UKTaxYear, scope: DeviceReadScope, now: Date = Date()) throws -> Snapshot {
+        let areas = try TaxYearEvidence.areas(db: db, taxYear: year, scope: scope)
+        let others = scope == .nothing ? [] : try MissingDocuments.read(db: db, now: now, viewer: scope.viewer, earliest: year).rows
+            .filter { $0.source != .evidence && $0.state == .missing && $0.taxYears.contains(year.startYear) }
+        return Snapshot(areas: areas, catalog: try DocumentKindCatalog.load(db: db), others: others)
     }
 
     /// Shows an already read snapshot (the snapshot routes' first frame).
@@ -132,6 +140,7 @@ public final class PadEvidenceModel: ObservableObject {
 
     private func apply(_ snapshot: Snapshot) {
         areas = snapshot.areas
+        others = snapshot.others
         catalog = snapshot.catalog
         if let id = selectedItemId, !items.contains(where: { $0.id == id }) { selectedItemId = nil }
     }
@@ -256,16 +265,6 @@ public final class PadEvidenceModel: ObservableObject {
     /// ("HMRC / bank": HMRC's, else the bank's), else the first of that kind; nil when none of that kind is saved (the
     /// browser then opens on its strip, where "+ Add site" is).
     public static func site(for item: EvidenceItem, in sites: [SavedSite]) -> SavedSite? {
-        guard let kind = item.suggestedSiteKind else { return nil }
-        let ofKind = sites.filter { $0.kind == kind }
-        func folded(_ text: String) -> String {
-            text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).trimmingCharacters(in: .whitespaces)
-        }
-        for part in (item.source ?? "").split(separator: "/").map({ folded(String($0)) }) where !part.isEmpty {
-            if let named = ofKind.first(where: { let site = folded($0.name); return site.contains(part) || part.contains(site) }) {
-                return named
-            }
-        }
-        return ofKind.first
+        MissingDocuments.site(kind: item.suggestedSiteKind, source: item.source, in: sites)
     }
 }
