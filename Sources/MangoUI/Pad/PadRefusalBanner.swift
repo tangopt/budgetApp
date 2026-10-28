@@ -61,6 +61,11 @@ public final class PadWriteModel: ObservableObject {
         refusal = Refusal(rowId: rowId, message: message)
     }
 
+    /// Forgets the refusal kept under `rowId` (a form saved).
+    public func clearRefusal(rowId: String) {
+        if refusal?.rowId == rowId { refusal = nil }
+    }
+
     /// Reads again whether the user has Edit on the area, and what is left unsent.
     public func refresh() async {
         guard let writer else {

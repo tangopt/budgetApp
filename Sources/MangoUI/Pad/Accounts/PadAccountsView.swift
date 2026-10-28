@@ -71,6 +71,13 @@ struct PadAccountsView: View {
             canAdd = await model.canAdd()
             if model.selectedId == nil, isSplit { model.selectedId = accounts.state.page?.sections.first?.rows.first?.id }
         }
+        .sheet(item: $model.form) { form in
+            if form.model.isAdding {
+                PadAddAccountSheet(model: form.model) { _ in Task { await model.formSaved(form.model) } }
+            } else {
+                PadEditAccountSheet(model: form.model) { _ in Task { await model.formSaved(form.model) } }
+            }
+        }
         .sheet(item: Binding(get: { model.openTransaction }, set: { if $0 == nil { model.closeTransaction() } })) { open in
             PadAccountTransactionSheet(open: open, onClose: { model.closeTransaction() })
         }

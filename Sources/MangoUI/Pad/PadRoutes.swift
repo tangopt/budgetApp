@@ -132,6 +132,26 @@ public enum PadRoutes {
             return AnyView(PadAccountTransactionSheet(open: open, onClose: {})
                 .environment(\.documentPanelSource, tabs.padDocuments.panelSource))
         },
+        // Step 11, Task 3: Add account, and Edit details with its Sharing section (the demo's first account, its owner's view).
+        DemoRoute(name: "pad-account-add", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = editingTabs(context)
+            let model = PadAccountFormModel(mode: .add, write: tabs.padAccountWrite, dbQueue: context.dbQueue, today: context.today)
+            model.preload(PadAccountFormModel.Context(isAdmin: true))
+            model.name = "Synthetic savings"
+            return AnyView(PadAddAccountSheet(model: model))
+        },
+        DemoRoute(name: "pad-account-edit", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = editingTabs(context)
+            let rows = AccountsViewModel.readNow(context.dbQueue, today: context.today).page?.sections.flatMap(\.rows) ?? []
+            let account = rows.first.flatMap { row in try? context.dbQueue.read { db in try Account.fetchOne(db, key: row.id) } }
+            guard let account, let id = account.id else { return AnyView(Text("The demo has no account")) }
+            let loaded = try? context.dbQueue.read { db in
+                try PadAccountFormModel.readContext(db: db, actor: try AccessActor.admin(db: db), accountId: id)
+            }
+            let model = PadAccountFormModel(mode: .edit(account), write: tabs.padAccountWrite, dbQueue: context.dbQueue, today: context.today)
+            model.preload(loaded ?? PadAccountFormModel.Context(isAdmin: true))
+            return AnyView(PadEditAccountSheet(model: model))
+        },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
             let model = tabs.padDocuments

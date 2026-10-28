@@ -21,6 +21,13 @@ public final class PadAccountsModel: ObservableObject {
     /// The transaction open in its sheet, with the first document linked to it.
     @Published public private(set) var openTransaction: OpenTransaction?
     private let dbQueue: any DatabaseReader
+    /// The form open in its sheet (Add account or Edit): nothing is written until its Save.
+    @Published public var form: OpenForm?
+
+    public struct OpenForm: Identifiable {
+        public let id = UUID()
+        public let model: PadAccountFormModel
+    }
 
     public struct OpenTransaction: Identifiable, Equatable, Sendable {
         public var row: TransactionSearch.Row
@@ -42,6 +49,26 @@ public final class PadAccountsModel: ObservableObject {
         if await PhoneQuickEdits.canUpdateBalance(accountId: accountId, writer: writer, dbReader: dbQueue) { actions.insert(.updateBalance) }
         if (try? await PadAccountEdits.canSetSharing(accountId: accountId, writer: writer, dbReader: dbQueue)) == true { actions.insert(.setSharing) }
         return actions
+    }
+
+    /// Opens Add account.
+    public func openAddForm() {
+        form = OpenForm(model: PadAccountFormModel(mode: .add, write: write, dbQueue: dbQueue))
+    }
+
+    /// Opens Edit details for the account, from its stored details (nothing when it is gone).
+    public func openEditForm(accountId: Int64) async {
+        guard let account = try? await dbQueue.read({ db in try Account.fetchOne(db, key: accountId) }) else { return }
+        form = OpenForm(model: PadAccountFormModel(mode: .edit(account), write: write, dbQueue: dbQueue))
+    }
+
+    /// A form saved: the list and the account's detail read again; a new account is the selected one.
+    public func formSaved(_ saved: PadAccountFormModel) async {
+        await accounts.load()
+        if let added = saved.addedId { selectedId = added }
+        if let id = saved.addedId ?? saved.editedId {
+            await accounts.detailModel(for: AccountDestination(accountId: id)).load()
+        }
     }
 
     /// "Add account" shows above the list: Edit on Budget & accounts.

@@ -108,7 +108,9 @@ public struct PadRootView: View {
             MonthView(model: tabs.month, syncStatus: syncStatus, onRefresh: onRefresh)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .accounts:
-            PadAccountsView(model: tabs.padAccounts, write: tabs.padAccountWrite, syncStatus: syncStatus, onRefresh: onRefresh)
+            PadAccountsView(model: tabs.padAccounts, write: tabs.padAccountWrite, syncStatus: syncStatus, onRefresh: onRefresh,
+                            onAdd: { tabs.padAccounts.openAddForm() },
+                            onEdit: { id in Task { await tabs.padAccounts.openEditForm(accountId: id) } })
                 .environment(\.quickEdit, tabs.quickEdit)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .search:
