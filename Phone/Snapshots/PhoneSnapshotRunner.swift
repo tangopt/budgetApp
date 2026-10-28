@@ -77,6 +77,10 @@ enum PhoneSnapshotRunner {
             fail("couldn't create \(outDir.path): \(error.localizedDescription)")
         }
 
+        // Every catalogue font name resolves on iOS and every font and licence file is in this app bundle.
+        let fontProblems = FontBundleCheck.problems()
+        if !fontProblems.isEmpty { fail("fonts: " + fontProblems.joined(separator: "; ")) }
+
         // The demo database, in the temporary folder: never the phone's own (Application Support/Mango).
         let demoFolder = fileManager.temporaryDirectory.appendingPathComponent("snapshot-demo-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: demoFolder) }

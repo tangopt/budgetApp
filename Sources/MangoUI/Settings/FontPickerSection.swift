@@ -20,21 +20,49 @@ public struct FontPickerModel {
     }
 }
 
-/// The Font picker: a navigation-link picker whose rows are each drawn in their own font.
+/// The collapsed Font row (the font's name, drawn in its own font) that pushes the list of every font with its sample.
 struct FontPickerSection: View {
     @Binding var fontId: String
 
     var body: some View {
-        Picker("Font", selection: $fontId) {
-            ForEach(FontPickerModel.rows(selected: fontId)) { row in
-                FontPickerRow(row: row, face: FontCatalog.font(id: row.id))
-                    .tag(row.id)
+        let face = FontCatalog.font(id: fontId)
+        NavigationLink {
+            FontPickerList(fontId: $fontId)
+        } label: {
+            LabeledContent("Font") {
+                Text(face.name)
+                    .font(TypefaceResolver.font(face, style: .body, weight: nil, isFigure: false))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
-        #if os(iOS)
-        .pickerStyle(.navigationLink)
-        #endif
         .frame(minHeight: 44)
+    }
+}
+
+private struct FontPickerList: View {
+    @Binding var fontId: String
+
+    var body: some View {
+        List {
+            ForEach(FontPickerModel.rows(selected: fontId)) { row in
+                Button {
+                    fontId = row.id
+                } label: {
+                    HStack {
+                        FontPickerRow(row: row, face: FontCatalog.font(id: row.id))
+                        if row.isSelected {
+                            Image(systemName: "checkmark").foregroundStyle(.tint)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .navigationTitle("Font")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 }
 

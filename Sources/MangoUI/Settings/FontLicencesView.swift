@@ -1,5 +1,8 @@
 import SwiftUI
 import BudgetCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The ten bundled fonts and where each one's SIL Open Font Licence sits under `Phone/Fonts` (and, in the app,
 /// under the bundle's `Fonts` folder).
@@ -22,6 +25,29 @@ public enum FontLicences {
     public static func text(_ entry: Entry, bundle: Bundle = .main) -> String? {
         guard let url = bundle.resourceURL?.appending(path: "Fonts").appending(path: entry.path) else { return nil }
         return try? String(contentsOf: url, encoding: .utf8)
+    }
+}
+
+/// What a built app's `Fonts` folder is missing: a catalogue PostScript name that doesn't resolve to exactly that font
+/// (a silent fall back to SF Pro), or a licence file that isn't bundled. The snapshot run fails on any.
+public enum FontBundleCheck {
+    public static func problems(bundle: Bundle = .main) -> [String] {
+        var found: [String] = []
+        for font in FontCatalog.all where font.kind == .bundled {
+            for name in Set(font.postScriptNames.values).sorted() {
+                #if canImport(UIKit)
+                if UIFont(name: name, size: 12)?.fontName != name { found.append("\(font.name): \(name) doesn't resolve") }
+                #endif
+            }
+            let folder = bundle.resourceURL?.appending(path: "Fonts")
+            for file in font.files where folder.map({ !FileManager.default.fileExists(atPath: $0.appending(path: file).path) }) ?? true {
+                found.append("\(font.name): \(file) isn't in the app bundle")
+            }
+        }
+        for entry in FontLicences.entries where FontLicences.text(entry, bundle: bundle) == nil {
+            found.append("\(entry.name): \(entry.path) isn't in the app bundle")
+        }
+        return found
     }
 }
 
