@@ -32,6 +32,8 @@ public final class PadAccountsModel: ObservableObject {
     public struct OpenTransaction: Identifiable, Equatable, Sendable {
         public var row: TransactionSearch.Row
         public var documentId: Int64?
+        /// Every document linked to the transaction (the panel lists them, the first previewed).
+        public var documents: [TransactionDocument] = []
         public var id: Int64 { row.id }
     }
 
@@ -114,19 +116,19 @@ public final class PadAccountsModel: ObservableObject {
     public func open(_ row: TransactionSearch.Row) async {
         let id = row.id
         let reader = dbQueue
-        let documentId = (try? await reader.read { db in
-            try TransactionDocuments.documents(db: db, transactionId: id, catalog: try DocumentKindCatalog.load(db: db)).first?.id
-        }) ?? nil
-        openTransaction = OpenTransaction(row: row, documentId: documentId)
+        let documents = (try? await reader.read { db in
+            try TransactionDocuments.documents(db: db, transactionId: id, catalog: try DocumentKindCatalog.load(db: db))
+        }) ?? []
+        openTransaction = OpenTransaction(row: row, documentId: documents.first?.id, documents: documents)
     }
 
     /// `row` opened as the sheet shows it, read now (the snapshot routes).
     public nonisolated static func openNow(_ dbQueue: any DatabaseReader, row: TransactionSearch.Row) -> OpenTransaction {
         let id = row.id
-        let documentId = (try? dbQueue.read { db in
-            try TransactionDocuments.documents(db: db, transactionId: id, catalog: try DocumentKindCatalog.load(db: db)).first?.id
-        }) ?? nil
-        return OpenTransaction(row: row, documentId: documentId)
+        let documents = (try? dbQueue.read { db in
+            try TransactionDocuments.documents(db: db, transactionId: id, catalog: try DocumentKindCatalog.load(db: db))
+        }) ?? []
+        return OpenTransaction(row: row, documentId: documents.first?.id, documents: documents)
     }
 
     public func closeTransaction() {
