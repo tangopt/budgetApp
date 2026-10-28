@@ -16,10 +16,21 @@ final class PadSectionTests: XCTestCase {
 
     func testEvidenceSitsUnderEverythingElseNotProperty() {
         let groups = PadSection.groups(hasProperty: true)
-        XCTAssertEqual(groups[2].sections, [.evidence, .documents])
-        XCTAssertEqual(groups[2].sections.map(\.title), ["Evidence", "Documents"])
+        XCTAssertEqual(groups[2].sections, [.salary, .evidence, .documents])
+        XCTAssertEqual(groups[2].sections.map(\.title), ["Salary simulator", "Evidence", "Documents"])
         XCTAssertFalse(groups[1].sections.contains(.evidence))
         XCTAssertFalse(PadSection.evidence.requiresProperty)
+    }
+
+    func testSalaryIsInEverythingElseGroup() {
+        for hasProperty in [true, false] {
+            XCTAssertTrue(PadSection.groups(hasProperty: hasProperty).last?.sections.contains(.salary) ?? false)
+        }
+        XCTAssertEqual(PadSection.salary.systemImage, "sterlingsign.circle")
+    }
+
+    func testSalaryNotAPropertySection() {
+        XCTAssertFalse(PadSection.salary.requiresProperty)
     }
 
     func testNoPropertyHidesPropertyGroup() {

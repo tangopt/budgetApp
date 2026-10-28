@@ -59,6 +59,9 @@ struct PhoneRoot: View {
     @ObservedObject private var outputs = PhoneOutputs.shared
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
+    @State private var showingSalary = false
+    /// Kept on this device (`SalaryDraftStore`); gone on leaving the household and with demo data.
+    @State private var salary = SalaryComparisonViewModel(store: SalaryDraftStore())
     /// "Show what's here" on the iCloud explanation, for this run of the app.
     @State private var showsLocalData = false
     /// A PDF shared to Mango where it isn't collected (the iPhone, demo data): said once, then gone.
@@ -91,6 +94,9 @@ struct PhoneRoot: View {
                     .sheet(isPresented: $showingSettings) {
                         settings(environment, tabs)
                     }
+                    .sheet(isPresented: $showingSalary) {
+                        salarySheet
+                    }
             case .failed(let message):
                 ContentUnavailableView("Mango couldn't open its data", systemImage: "exclamationmark.triangle",
                                        description: Text(message))
@@ -108,6 +114,7 @@ struct PhoneRoot: View {
                 return
             }
             showingSettings = false
+            showingSalary = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
             // The browser closes too: nothing of a site shows behind the lock or after it.
             PhoneBrowser.shared?.isPresented = false
@@ -120,6 +127,10 @@ struct PhoneRoot: View {
             case .background: sync.sceneEnteredBackground()
             default: break
             }
+        }
+        .onChange(of: sync.householdNotice) { _, notice in
+            // Removed from the household: the salary draft and the prefill leave with its data.
+            if notice != nil { salary.forget() }
         }
         .onChange(of: sync.account) { _, account in
             // Signed in again: the explanation may show again if it goes once more.
@@ -191,6 +202,12 @@ struct PhoneRoot: View {
                     tabs.padDocuments.open = { path in try await sync.openDocument(storedRelativePath: path) }
                 }
             }
+            // The salary simulator: no drafts in demo data; otherwise the signed-in person's own latest pay as Current.
+            salary.savesDrafts = !environment.isDemo
+            salary.loadPrefill = { [weak tabs] in
+                guard let tabs else { return (nil, nil) }
+                return await tabs.salaryPrefill(today: environment.today())
+            }
             stage = .ready(environment, tabs)
             await PhoneBrowser.attach(environment)
             await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
@@ -208,6 +225,7 @@ struct PhoneRoot: View {
         showingSettings = false
         Task {
             await sync.enterDemo()
+            salary.forget()
             PhoneDemoData.turnOn()
             stage = .loading
             await load()
@@ -230,6 +248,7 @@ struct PhoneRoot: View {
             // Demo data's sites, sessions and downloads go before the phone's own database opens.
             await PhoneBrowser.purge()
             sync.leaveDemo()
+            salary.forget()
             await load()
         }
     }
@@ -238,7 +257,7 @@ struct PhoneRoot: View {
     private func content(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         if environment.isDemo {
             if UIDevice.current.userInterfaceIdiom == .pad {
-                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, salary: salary, onRefresh: {}, onSettings: { showingSettings = true })
             } else {
                 PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
             }
@@ -256,7 +275,7 @@ struct PhoneRoot: View {
         } else {
             if UIDevice.current.userInterfaceIdiom == .pad {
                 PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, waitingChanges: sync.waitingChanges,
-                            browser: PhoneBrowser.shared, onRefresh: { await sync.syncNow() },
+                            browser: PhoneBrowser.shared, salary: salary, onRefresh: { await sync.syncNow() },
                             onSettings: { showingSettings = true })
             } else {
                 PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
@@ -285,12 +304,23 @@ struct PhoneRoot: View {
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
                              outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
-                             onAllowNotifications: { Task { await outputs.allowNotifications() } })
+                             onAllowNotifications: { Task { await outputs.allowNotifications() } },
+                             onOpenSalary: { showingSalary = true })
             .task { await outputs.refreshNotificationAccess() }
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))
             .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
+    }
+
+    /// The salary simulator (opened from Settings' Tools): a tool, nothing of the household's data.
+    private var salarySheet: some View {
+        NavigationStack {
+            SalarySimulatorScreen(viewModel: salary)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSalary = false } } }
+        }
+        .environment(\.phoneTheme, PhoneTheme.named(themeId))
+        .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Demo")

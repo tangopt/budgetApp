@@ -1,5 +1,6 @@
 // App/Snapshots/SnapshotMode.swift
 import SwiftUI
+import BudgetCore
 
 /// The UI snapshot harness (`--render-snapshots <outDir>`, run by
 /// `scripts/render-snapshots.sh` against the demo database only): renders every screen, tab
@@ -59,6 +60,7 @@ struct SnapshotScreenModels {
     let dashboard: DashboardViewModel
     let budgetGrid: BudgetGridViewModel
     let scenarioLab: ScenarioLabViewModel
+    let salary: SalaryComparisonViewModel
     let accounts: AccountsViewModel
     let categories: CategoriesViewModel
     let search: SearchViewModel

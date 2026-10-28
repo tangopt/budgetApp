@@ -65,6 +65,7 @@ typeset -gA FOLDER_ROUTES=(
     Search         "search"
     Budget         "budget,sheet-,search"
     Forecast       "forecast,auth-locked_over_scenario_lab"
+    Salary         "salary"
     Accounts       "accounts,sheet-,imports-review_remap"
     Categories     "categories,sheet-"
     Uncategorized  "uncategorized,sheet-"

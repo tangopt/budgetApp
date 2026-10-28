@@ -81,7 +81,7 @@ public enum DemoRoutes {
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
     ] + HomeRoutes.all + MonthRoutes.all + AccountsRoutes.all + PropertyRoutes.all
-        + SearchRoutes.all + QuickEditRoutes.all + SyncRoutes.all + SharingRoutes.all + OutputsSettingsRoutes.all + JoinRoutes.all + PadRoutes.all
+        + SearchRoutes.all + QuickEditRoutes.all + SyncRoutes.all + SharingRoutes.all + OutputsSettingsRoutes.all + JoinRoutes.all + PadRoutes.all + SalaryRoutes.all
 }
 
 /// Step 7b's Settings ▸ Notifications in its own list (the section sits low in Settings; `settings-widgets` shows the
