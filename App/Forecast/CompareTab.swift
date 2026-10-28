@@ -12,8 +12,32 @@ struct CompareTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.compareSelection), prompts: $chipPrompts)
+            combinedControls
             content
         }
+    }
+
+    /// The Combined toggle, the note when a fifth tick was refused, and what two ticked scenarios
+    /// both change (while Combined is on).
+    private var combinedControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Toggle("Combined", isOn: $viewModel.showCombined)
+                    .disabled(!viewModel.canCombine)
+                    .help(viewModel.canCombine ? "Draw the ticked scenarios applied together" : "Tick at least two scenarios")
+                if let note = viewModel.tickLimitNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if viewModel.showCombined {
+                ForEach(viewModel.overlapNotices, id: \.self) { notice in
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.bottom, 12)
     }
 
     private var content: some View {
@@ -109,7 +133,7 @@ struct ScenarioNetWorthChart: View {
                 ForEach(plot(line.forecast, series: line.id)) { point in
                     LineMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Plan", point.series))
                         .foregroundStyle(by: .value("Plan", point.series))
-                        .lineStyle(StrokeStyle(lineWidth: 2, dash: line.colorIndex == 0 ? [] : [6, 3]))
+                        .lineStyle(StrokeStyle(lineWidth: 2, dash: line.colorIndex == 0 ? [] : line.id == "combined" ? [2, 3] : [6, 3]))
                 }
             }
             RuleMark(x: .value("Today", today))
@@ -204,7 +228,7 @@ struct SummaryTable: View {
     let horizon: (year: Int, month: Int)
     @Environment(\.theme) private var theme
 
-    private static let columns = ["Year-end net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
+    private static let columns = ["Avg monthly surplus", "Year-end net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
 
     /// The columns' minimum widths; they share out any extra width.
     private static let columnWidth: CGFloat = 120
@@ -253,14 +277,15 @@ struct SummaryTable: View {
                 ForEach(rows) { row in
                     GridRow {
                         Text(row.name).fontWeight(row.isBudget ? .semibold : .regular)
-                            .lineLimit(1)
+                            .lineLimit(1).truncationMode(.middle)
                             .frame(minWidth: Self.planWidth, maxWidth: .infinity, alignment: .leading)
                         if let summary = row.years.first(where: { $0.year == year }) {
+                            amount(row.averageMonthlySurplus)
                             amount(summary.yearEndNetWorth)
                             if row.isBudget {
                                 amount(nil)
                             } else {
-                                amount(summary.differenceVsBudget, signed: true)
+                                differenceCell(summary.differenceVsBudget, contributions: row.contributions[year] ?? [])
                             }
                             amount(summary.income)
                             amount(-summary.expenses)
@@ -274,6 +299,29 @@ struct SummaryTable: View {
                 }
             }
             .padding(.horizontal, Self.horizontalPadding)
+        }
+    }
+
+    /// Δ vs Budget; the Combined row lists each scenario's own difference under "Together".
+    @ViewBuilder
+    private func differenceCell(_ difference: Int?, contributions: [ScenarioLabViewModel.Contribution]) -> some View {
+        if contributions.isEmpty {
+            amount(difference, signed: true)
+        } else {
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Together").font(.caption).foregroundStyle(.secondary)
+                    amountContent(difference, signed: true)
+                }
+                ForEach(Array(contributions.enumerated()), id: \.offset) { _, contribution in
+                    HStack(spacing: 4) {
+                        Text(contribution.name).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        amountContent(contribution.difference, signed: true).font(.caption)
+                    }
+                }
+            }
+            .frame(minWidth: Self.columnWidth, maxWidth: .infinity, alignment: .trailing)
         }
     }
 
