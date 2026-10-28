@@ -49,6 +49,10 @@ public final class PhoneTabsModel: ObservableObject {
     /// Profile (step 10, Task 16): the property's details, map, owners, accounts, groups, documents and mortgage terms;
     /// every edit through `padWrite`.
     public let padProfile: PadProfileModel
+    /// The iPad's Accounts edits (step 11), through the device writer in Budget & accounts.
+    public let padAccountWrite: PadWriteModel
+    /// The iPad's Accounts screen (step 11, Task 2): the selected account and what each offers.
+    public let padAccounts: PadAccountsModel
     /// The iPad's Documents and Evidence edits (step 8, Task 10), through the device writer in Documents.
     public let padDocumentWrite: PadWriteModel
     public let padDocumentActions: PadDocumentActions
@@ -87,6 +91,8 @@ public final class PhoneTabsModel: ObservableObject {
         padBills = PadBillsAndRechargesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padTenancies = PadTenanciesModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padDocumentWrite = PadWriteModel(writer: writer, area: .documents)
+        padAccountWrite = PadWriteModel(writer: writer, area: .budgetAndAccounts)
+        padAccounts = PadAccountsModel(accounts: accounts, write: padAccountWrite, dbQueue: dbQueue)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMoney = PadMoneyModel(property: padProperty, write: padDocumentWrite, dbQueue: dbQueue, today: today)
         padCalendar = PadCalendarModel(property: padProperty, dbQueue: dbQueue, today: today)

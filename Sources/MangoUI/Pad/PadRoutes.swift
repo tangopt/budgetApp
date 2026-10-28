@@ -108,6 +108,50 @@ public enum PadRoutes {
             let form = tabs.padProfile.mortgageForm() ?? MortgageTermsEditing.Form(terms: PropertyMortgageTerms(propertyId: 0), overrides: [])
             return AnyView(PadMortgageTermsSheet(model: tabs.padProfile, write: tabs.padWrite, form: form))
         },
+        // Step 11, Task 2: Accounts (net worth and the grouped cards, the first account's detail beside them or pushed), the
+        // detail itself, and a transaction's sheet with its document in the panel.
+        DemoRoute(name: "pad-accounts", sizes: DemoRoute.padSizes, minimumFigures: 17, pad: true) { context in
+            let tabs = accountsTabs(context, pushed: false)
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .accounts,
+                                       browser: sampleBrowser("pad-accounts", items: 0), columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-account-detail", sizes: DemoRoute.padSizes, minimumFigures: 21, pad: true) { context in
+            let tabs = accountsTabs(context, pushed: true)
+            return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .accounts,
+                                       browser: sampleBrowser("pad-account-detail", items: 0), columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-account-transaction", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
+            let tabs = editingTabs(context)
+            let rows = AccountsViewModel.readNow(context.dbQueue, today: context.today).page?.sections.flatMap(\.rows) ?? []
+            let opened = rows.compactMap { row -> PadAccountsModel.OpenTransaction? in
+                guard case .loaded(let detail) = AccountDetailModel.readNow(context.dbQueue, accountId: row.id, today: context.today),
+                      let first = detail.recent.first else { return nil }
+                return PadAccountsModel.openNow(context.dbQueue, row: first)
+            }
+            guard let open = opened.first(where: { $0.documentId != nil }) ?? opened.first else { return AnyView(Text("The demo has no transaction")) }
+            return AnyView(PadAccountTransactionSheet(open: open, onClose: {})
+                .environment(\.documentPanelSource, tabs.padDocuments.panelSource))
+        },
+        // Step 11, Task 3: Add account, and Edit details with its Sharing section (the demo's first account, its owner's view).
+        DemoRoute(name: "pad-account-add", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = editingTabs(context)
+            let model = PadAccountFormModel(mode: .add, write: tabs.padAccountWrite, dbQueue: context.dbQueue, today: context.today)
+            model.preload(PadAccountFormModel.Context(isAdmin: true))
+            model.name = "Synthetic savings"
+            return AnyView(PadAddAccountSheet(model: model))
+        },
+        DemoRoute(name: "pad-account-edit", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            let tabs = editingTabs(context)
+            let rows = AccountsViewModel.readNow(context.dbQueue, today: context.today).page?.sections.flatMap(\.rows) ?? []
+            let account = rows.first.flatMap { row in try? context.dbQueue.read { db in try Account.fetchOne(db, key: row.id) } }
+            guard let account, let id = account.id else { return AnyView(Text("The demo has no account")) }
+            let loaded = try? context.dbQueue.read { db in
+                try PadAccountFormModel.readContext(db: db, actor: try AccessActor.admin(db: db), accountId: id)
+            }
+            let model = PadAccountFormModel(mode: .edit(account), write: tabs.padAccountWrite, dbQueue: context.dbQueue, today: context.today)
+            model.preload(loaded ?? PadAccountFormModel.Context(isAdmin: true))
+            return AnyView(PadEditAccountSheet(model: model))
+        },
         DemoRoute(name: "pad-documents", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
             let tabs = tabs(context)
             let model = tabs.padDocuments
@@ -277,6 +321,23 @@ public enum PadRoutes {
         let tabs = tabs(context, writer: DeviceWriter(db: context.dbQueue, viewer: { .demoAdmin }, afterWrite: {}))
         tabs.padWrite.preload(canEdit: true)
         tabs.padDocumentWrite.preload(canEdit: true)
+        tabs.padAccountWrite.preload(canEdit: true)
+        return tabs
+    }
+
+    /// Editing tabs with Accounts read; the first cash account selected, and with `pushed` its detail on the navigation
+    /// stack (portrait; side by side the panel shows it).
+    @MainActor
+    static func accountsTabs(_ context: PhoneDemoContext, pushed: Bool) -> PhoneTabsModel {
+        let tabs = editingTabs(context)
+        let state = AccountsViewModel.readNow(context.dbQueue, today: context.today)
+        tabs.accounts.preload(state)
+        if let row = state.page?.sections.first?.rows.first {
+            let destination = AccountDestination(accountId: row.id)
+            tabs.padAccounts.selectedId = row.id
+            tabs.accounts.detailModel(for: destination).preload(AccountDetailModel.readNow(context.dbQueue, accountId: row.id, today: context.today))
+            if pushed { tabs.accounts.path = [destination] }
+        }
         return tabs
     }
 

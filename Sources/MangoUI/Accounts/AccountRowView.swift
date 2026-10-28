@@ -111,6 +111,8 @@ struct AccountRowView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(row.name)
                 .font(.body)
+                .lineLimit(2)
+                .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
             Text(row.caption.figuresUnbroken)
                 .font(.subheadline)

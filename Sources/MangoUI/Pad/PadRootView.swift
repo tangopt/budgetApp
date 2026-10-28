@@ -3,7 +3,7 @@ import BudgetCore
 
 /// The iPad's unlocked app (step 8, Task 6; step 10, Task 3): the sidebar (`PadSidebar`: Home, Month, Accounts, Search;
 /// Property; Everything else; collapsible to an icon rail; footer with the person, sync and Settings) and the selected
-/// screen as its detail. Home, Month, Accounts and Search reuse the iPhone's views over the same
+/// screen as its detail. Home, Month and Search reuse the iPhone's views over the same
 /// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
 ///
@@ -108,7 +108,10 @@ public struct PadRootView: View {
             MonthView(model: tabs.month, syncStatus: syncStatus, onRefresh: onRefresh)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .accounts:
-            AccountsView(model: tabs.accounts, syncStatus: syncStatus, onRefresh: onRefresh)
+            PadAccountsView(model: tabs.padAccounts, write: tabs.padAccountWrite, syncStatus: syncStatus, onRefresh: onRefresh,
+                            onAdd: { tabs.padAccounts.openAddForm() },
+                            onEdit: { id in Task { await tabs.padAccounts.openEditForm(accountId: id) } })
+                .environment(\.quickEdit, tabs.quickEdit)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .search:
             SearchView(model: tabs.search, syncStatus: syncStatus, onRefresh: onRefresh)
