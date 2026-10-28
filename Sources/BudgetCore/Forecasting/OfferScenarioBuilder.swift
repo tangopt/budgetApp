@@ -12,9 +12,9 @@ extension OfferScenarioError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .startAfterSalaryEnds:
-            return "This salary ends in your forecast before the offer starts. Pick an earlier start month or another salary."
+            return "This salary ends in your forecast before the new salary starts. Pick an earlier start month or another salary."
         case .noSalaryEntryOrNewIncomeCategory:
-            return "There's no salary in your forecast to replace. Choose an income category to add the offer as new income."
+            return "There's no salary in your forecast to replace. Choose an income category to add the new salary as new income."
         }
     }
 }

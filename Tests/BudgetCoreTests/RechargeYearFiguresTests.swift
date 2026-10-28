@@ -157,7 +157,11 @@ final class RechargeYearFiguresTests: XCTestCase {
         let april = try statement(Self.date(2026, 4, 1), [line(invoice: bill, 3_000), manual("Repair", 2_000)])
         let year = try figures(2026)
         XCTAssertEqual(year.billsPaid, 0)
-        XCTAssertEqual(year.gaps, [.init(statementId: april, month: Self.date(2026, 4, 1), reason: .noPayment, amountMinorUnits: 5_000, lines: 1)])
+        XCTAssertEqual(year.gaps, [
+            .init(statementId: april, month: Self.date(2026, 4, 1), reason: .noPayment, amountMinorUnits: 3_000, lines: 1),
+            .init(statementId: april, month: Self.date(2026, 4, 1), reason: .otherItems, amountMinorUnits: 2_000, lines: 1)
+        ])
+        XCTAssertEqual(year.difference, 3_000)
     }
 
     func testDraftsAndProratedLines() throws {
@@ -173,5 +177,43 @@ final class RechargeYearFiguresTests: XCTestCase {
         XCTAssertEqual(year.statements, 1)
         XCTAssertEqual(year.recharged, 1_700)
         XCTAssertEqual(year.billsPaid, 1_700)
+    }
+
+    func testOtherItemsAreSummedApartAndLeaveOnlyTheRounding() throws {
+        // 2024: a bill paid in full, the landlord's own dishwasher cost taken off the rent
+        // (no bank movement, no document), and a 1-cent rounding.
+        let debit = try movement(Self.date(2024, 5, 10), -10_000)
+        let bill = try invoice("water", issued: Self.date(2024, 5, 1), amount: 10_000, debit: debit)
+        let may = try statement(Self.date(2024, 5, 1), [line(invoice: bill, 10_000), manual("Dishwasher", -20_298), manual("Rounding", 1, rounding: true)])
+        let year = try figures(2024)
+        XCTAssertEqual(year.recharged, 10_000 - 20_298 + 1)
+        XCTAssertEqual(year.billsPaid, 10_000)
+        XCTAssertEqual(year.otherItems, -20_298)
+        XCTAssertEqual(year.difference, 1)
+        XCTAssertEqual(year.gaps, [
+            .init(statementId: may, month: Self.date(2024, 5, 1), reason: .rounding, amountMinorUnits: 1, lines: 1),
+            .init(statementId: may, month: Self.date(2024, 5, 1), reason: .otherItems, amountMinorUnits: -20_298, lines: 1)
+        ])
+        let lines = year.explanations(currency: .eur).map(\.text)
+        XCTAssertEqual(lines[0], "+€0.01 rounding on May 2024's statement")
+        XCTAssertTrue(lines[1].hasPrefix("\u{2212}€202.98 other items on statements"), lines[1])
+    }
+
+    func testAManualLineWithABankDebitIsNotAnOtherItem() throws {
+        let debit = try movement(Self.date(2026, 4, 10), -2_000)
+        try statement(Self.date(2026, 4, 1), [manual("Repair", 2_000, debit: debit)])
+        let year = try figures(2026)
+        XCTAssertEqual(year.otherItems, 0)
+        XCTAssertEqual(year.difference, 0)
+    }
+
+    func testExplanationsAreSignedAndNameUnmatchedRefunds() throws {
+        let refund = try invoice("gas", issued: Self.date(2026, 5, 2), amount: -1_351, debit: nil)
+        try statement(Self.date(2026, 5, 1), [line(invoice: refund, -1_351)])
+        let year = try figures(2026)
+        XCTAssertEqual(year.explanations(currency: .eur).map(\.text), ["\u{2212}€13.51 refund not matched to a bank credit, on May 2026's statement"])
+        XCTAssertEqual(year.difference, -1_351)
+        XCTAssertEqual(RechargeYearFigures.differenceCaption(1_649), "Statements asked for more than the bills")
+        XCTAssertEqual(RechargeYearFigures.differenceCaption(-5), "Statements asked for less than the bills")
     }
 }

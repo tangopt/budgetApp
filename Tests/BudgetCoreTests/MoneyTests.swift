@@ -36,4 +36,26 @@ final class MoneyTests: XCTestCase {
             XCTAssertEqual(Money.parseMinorUnits(Money.formatInput(value)), value, "round trip \(value)")
         }
     }
+
+    func testPoundsFieldTextGroupsWhatIsTyped() {
+        XCTAssertEqual(Money.poundsFieldText(typed: ""), "")
+        XCTAssertEqual(Money.poundsFieldText(typed: "6"), "£6")
+        XCTAssertEqual(Money.poundsFieldText(typed: "65000"), "£65,000")
+        XCTAssertEqual(Money.poundsFieldText(typed: "£65,0000"), "£650,000")
+        XCTAssertEqual(Money.poundsFieldText(typed: "1234."), "£1,234.")
+        XCTAssertEqual(Money.poundsFieldText(typed: "1234.567"), "£1,234.56")
+        XCTAssertEqual(Money.poundsFieldText(typed: ".5"), "£0.5")
+        XCTAssertEqual(Money.poundsFieldText(typed: "007"), "£7")
+        XCTAssertEqual(Money.poundsFieldText(typed: "abc"), "")
+    }
+
+    func testPoundsFieldTextRoundTripsWithParsing() {
+        XCTAssertEqual(Money.poundsFieldText(pence: 0), "")
+        XCTAssertEqual(Money.poundsFieldText(pence: 6_500_000), "£65,000")
+        XCTAssertEqual(Money.poundsFieldText(pence: 123_450), "£1,234.50")
+        for pence in [5, 100, 123_450, 6_500_000, 123_456_789] {
+            XCTAssertEqual(Money.parseMinorUnits(Money.poundsFieldText(pence: pence)), pence)
+        }
+        XCTAssertEqual(Money.parseMinorUnits(Money.poundsFieldText(typed: "65000")), 6_500_000)
+    }
 }

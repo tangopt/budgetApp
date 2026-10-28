@@ -6,6 +6,7 @@ import BudgetCore
 /// hatched "still expected" part) with the net as a line. Solid = actual, hatched = forecast.
 struct YearAtAGlanceChart: View {
     let flows: [MonthlyFlow]
+    var height: CGFloat = 220
 
     @State private var selectedMonth: String?
     @Environment(\.theme) private var theme
@@ -73,7 +74,7 @@ struct YearAtAGlanceChart: View {
                 }
             }
         }
-        .frame(height: 220)
+        .frame(height: height)
         .accessibilityLabel("Monthly income, expenses (with reserves) and net for the selected year, actual and forecast")
     }
 

@@ -467,10 +467,8 @@ struct RechargesTenancyView: View {
             let figures = model.figures(year)
             VStack(alignment: .leading, spacing: 10) {
                 FigureStrip(tiles(figures))
-                if figures.difference != 0 {
-                    ForEach(differenceReasons(figures), id: \.reason) { reason in
-                        differenceLine(reason)
-                    }
+                ForEach(figures.explanations(currency: currency), id: \.reason) { reason in
+                    differenceLine(reason)
                 }
             }
         }
@@ -493,35 +491,13 @@ struct RechargesTenancyView: View {
             FigureTile(title: "Bills paid for those months", value: .money(figures.billsPaid, currency, .cost),
                        caption: "What the bank paid for their bills"),
             FigureTile(title: "Difference", value: .money(difference, currency, .signed),
-                       caption: difference == 0 ? "Every statement matches its bills"
-                           : difference > 0 ? "Recharged more than paid" : "Recharged less than paid")
+                       caption: RechargeYearFigures.differenceCaption(difference))
         ]
     }
 
-    /// A reason for the year's difference, over its statements.
-    private struct DifferenceReason {
-        let reason: RechargeYearFigures.GapReason
-        let gaps: [RechargeYearFigures.Gap]
-        var amount: Int { gaps.reduce(0) { $0 + $1.amountMinorUnits } }
-    }
-
-    private func differenceReasons(_ figures: RechargeYearFigures) -> [DifferenceReason] {
-        Dictionary(grouping: figures.gaps, by: \.reason).map { DifferenceReason(reason: $0.key, gaps: $0.value) }
-            .sorted { $0.reason < $1.reason }
-    }
-
     /// "€0.08 rounding on January's statement", with a link to each statement behind it.
-    private func differenceLine(_ item: DifferenceReason) -> some View {
-        let amount = Money.format(abs(item.amount), currency: currency)
-        let months = item.gaps.map { RechargeEmail.monthName($0.month, language: .english) }
-        let on = item.gaps.count == 1 ? "on \(months[0])'s statement" : "on \(item.gaps.count) statements"
-        let lines = item.gaps.reduce(0) { $0 + $1.lines }
-        let text: String = switch item.reason {
-        case .rounding: "\(amount) rounding \(on)"
-        case .noPayment: "\(amount) from \(lines) bill\(lines == 1 ? "" : "s") with no bank payment linked, \(on)"
-        case .oneOff: "\(amount) from \(lines) one-off line\(lines == 1 ? "" : "s") with no bank movement, \(on)"
-        case .otherAmount: "\(amount) where the bank paid a different amount than recharged, \(on)"
-        }
+    private func differenceLine(_ item: RechargeYearFigures.Explanation) -> some View {
+        let text = item.text
         return HStack(spacing: 6) {
             Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
             Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(1).figureText()

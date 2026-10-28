@@ -32,10 +32,11 @@ struct SalarySimulatorView: View {
                                          result: model.comparison.current, ready: model.ready.current,
                                          usePrefill: model.canUsePrefill ? { model.usePrefill() } : nil)
                         VStack(alignment: .leading, spacing: 8) {
-                            SalaryColumnView(title: "Offer", inputs: $model.offer,
+                            SalaryColumnView(title: "New", inputs: $model.offer,
                                              result: model.comparison.offer, ready: model.ready.offer)
                             tryInForecast
                         }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     chart
                 }
@@ -53,7 +54,7 @@ struct SalarySimulatorView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button(forecastTitle) { openSheet() }
                     .disabled(offerReason != nil)
-                    .help(offerReason ?? "Make a forecast scenario with this offer")
+                    .help(offerReason ?? "Make a forecast scenario with this new salary")
             }
         }
         .navigationTitle("UK Salary Calculator")
@@ -63,7 +64,7 @@ struct SalarySimulatorView: View {
 
     private var offerReason: String? {
         if forecast == nil { return "The forecast isn't available here." }
-        if model.offer.grossAnnual <= 0 { return "Enter a gross salary for the offer first." }
+        if model.offer.grossAnnual <= 0 { return "Enter a gross salary for the new salary first." }
         return nil
     }
 
@@ -79,7 +80,7 @@ struct SalarySimulatorView: View {
                 Button(forecastTitle) { openSheet() }.disabled(offerReason != nil)
             }
         }, content: {
-            Text("Editing the offer in \(edit.scenarioName). Change the salaries, then update the scenario. Your own figures come back when you stop.")
+            Text("Editing the new salary in \(edit.scenarioName). Change the salaries, then update the scenario. Your own figures come back when you stop.")
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         })
     }
@@ -115,7 +116,7 @@ struct SalarySimulatorView: View {
     // MARK: Comparison strip
 
     private var strip: some View {
-        Panel("Offer against current", accessory: {
+        Panel("New against current", accessory: {
             Button(model.resetTitle) { model.reset() }.buttonStyle(.link).font(.caption)
         }, content: {
             FigureStrip([
@@ -139,7 +140,7 @@ struct SalarySimulatorView: View {
     }
 
     private var bars: [Bar] {
-        [("Current", model.comparison.current), ("Offer", model.comparison.offer)].flatMap { side, result in
+        [("Current", model.comparison.current), ("New", model.comparison.offer)].flatMap { side, result in
             SalaryBarSegments.segments(result).filter { $0.pence > 0 }.map { Bar(side: side, part: $0.label, pounds: Double($0.pence) / 100) }
         }
     }

@@ -17,7 +17,7 @@ struct TryInForecastSheet: View {
     init(host: TryInForecastViewModel, onSaved: @escaping () -> Void) {
         self.host = host
         self.onSaved = onSaved
-        _bonusText = State(initialValue: host.model.signingBonus.map { Money.formatInput($0) } ?? "")
+        _bonusText = State(initialValue: host.model.signingBonus.map { Money.poundsFieldText(pence: $0) } ?? "")
     }
 
     private var bonusInvalid: Bool {
@@ -27,7 +27,7 @@ struct TryInForecastSheet: View {
 
     var body: some View {
         @Bindable var model = host.model
-        SheetScaffold(title: model.isEditing ? "Edit offer" : "Try in Forecast",
+        SheetScaffold(title: model.isEditing ? "Edit new salary" : "Try in Forecast",
                       subtitle: model.subtitle,
                       error: errorMessage, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: model.canSave && !bonusInvalid) { save() }) {
@@ -84,14 +84,16 @@ struct TryInForecastSheet: View {
                 }
                 SheetFormNote("A notice period: the old salary ends before the start month and the new one (and any signing bonus) begins this many months later.")
                 LabeledContent("Signing bonus") {
-                    TextField("Signing bonus", text: $bonusText, prompt: Text("0.00"))
-                        .multilineTextAlignment(.trailing).monospacedDigit().frame(width: 120)
+                    TextField("Signing bonus", text: $bonusText, prompt: Text("£0"))
+                        .multilineTextAlignment(.trailing).monospacedDigit().frame(width: 130)
                         .onChange(of: bonusText) { _, text in
+                            let shown = Money.poundsFieldText(typed: text)
+                            if shown != text { bonusText = shown; return }
                             model.signingBonus = Money.parseMinorUnits(text)
                             errorMessage = nil
                         }
                 }
-                if bonusInvalid { SheetFormNote("Enter an amount like 5,000.00.", isError: true) }
+                if bonusInvalid { SheetFormNote("Enter an amount like £5,000.", isError: true) }
                 LabeledContent("In the forecast") {
                     Text(model.preview).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }

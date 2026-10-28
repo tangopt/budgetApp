@@ -30,6 +30,34 @@ public enum Money {
         return "\(minorUnits < 0 ? "-" : "")\(grouped(magnitude / 100)).\(String(format: "%02d", Int(magnitude % 100)))"
     }
 
+    /// What a pounds field shows for what was typed: "£" then the digits grouped in threes, at most two
+    /// decimals, with a trailing "." kept so the next digits can follow ("65000" gives "£65,000", "1234.5"
+    /// gives "£1,234.5"). Anything else typed is dropped; nothing typed gives "". Parses back with
+    /// `parseMinorUnits`.
+    public static func poundsFieldText(typed: String) -> String {
+        var whole = ""
+        var fraction = ""
+        var sawPoint = false
+        for character in typed {
+            if character.isASCII, character.isNumber {
+                if sawPoint { if fraction.count < 2 { fraction.append(character) } } else if whole.count < 12 { whole.append(character) }
+            } else if character == ".", !sawPoint {
+                sawPoint = true
+            }
+        }
+        if whole.isEmpty, fraction.isEmpty, !sawPoint { return "" }
+        let trimmed = String(whole.drop(while: { $0 == "0" }))
+        let digits = trimmed.isEmpty ? "0" : trimmed
+        return "£" + grouped(UInt(digits) ?? .max) + (sawPoint ? "." + fraction : "")
+    }
+
+    /// What a pounds field shows for an amount: "" for nothing, "£65,000" for whole pounds, "£1,234.50" otherwise.
+    public static func poundsFieldText(pence: Int) -> String {
+        if pence == 0 { return "" }
+        let magnitude = pence.magnitude
+        return poundsFieldText(typed: magnitude % 100 == 0 ? String(magnitude / 100) : "\(magnitude / 100).\(String(format: "%02d", Int(magnitude % 100)))")
+    }
+
     /// Whole units grouped in threes with "," ("1,234,567"), independent of the locale.
     private static func grouped(_ whole: UInt) -> String {
         var result = ""

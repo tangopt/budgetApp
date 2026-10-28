@@ -10,7 +10,10 @@ import Foundation
 ///   manual one), refunds and credits netting, every movement counted once. A prorated line
 ///   takes its share of its invoice's movements. A line with no movement linked, and a rounding
 ///   line, pay nothing.
-/// - `difference`: recharged less bills paid, with the statements that make it (`gaps`).
+/// - `otherItems`: one-off statement lines with no bank movement and no document (the landlord's
+///   own costs taken off the rent); kept out of the difference.
+/// - `difference`: recharged less bills paid and less the other items, with the statements that
+///   make it (`gaps`). Positive: the statements asked for more than the bills cost.
 public struct RechargeYearFigures: Equatable, Sendable {
     /// Why a statement's recharges differ from its bills' bank payments.
     public enum GapReason: Int, CaseIterable, Comparable, Sendable {
@@ -22,6 +25,9 @@ public struct RechargeYearFigures: Equatable, Sendable {
         case oneOff
         /// The bank paid a different amount than the lines recharge.
         case otherAmount
+        /// One-off lines with no bank movement and no document: shown on their own, not part of
+        /// the difference.
+        case otherItems
 
         public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     }
@@ -46,10 +52,12 @@ public struct RechargeYearFigures: Equatable, Sendable {
     public var received = 0
     /// What the bank paid for the bills on those statements.
     public var billsPaid = 0
-    /// The statements' parts of the difference, by month then reason.
+    /// The sum of the statements' other items (see above).
+    public var otherItems = 0
+    /// The statements' parts of the difference, by month then reason, and their other items.
     public var gaps: [Gap] = []
 
-    public var difference: Int { recharged - billsPaid }
+    public var difference: Int { recharged - billsPaid - otherItems }
 
     public init(year: Int) {
         self.year = year
@@ -78,11 +86,17 @@ extension Recharges {
             var rounding = (amount: 0, lines: 0)
             var noPayment = 0
             var oneOffs = 0
+            var other = (amount: 0, lines: 0)
             for detail in try lineDetails(db: db, statementId: statement.id!) {
                 let line = detail.line
                 if line.isRounding {
                     rounding.amount += line.amountMinorUnits
                     rounding.lines += 1
+                    continue
+                }
+                if line.isOneOff, line.transactionId == nil, line.documentId == nil {
+                    other.amount += line.amountMinorUnits
+                    other.lines += 1
                     continue
                 }
                 let movements: [Transaction]
@@ -110,7 +124,7 @@ extension Recharges {
 
             // The statement's difference: its rounding lines first, the rest put down to its
             // lines without a bank movement (bills, then one-offs), else to the amounts paid.
-            var rest = statement.totalMinorUnits - paid
+            var rest = statement.totalMinorUnits - paid - other.amount
             if rounding.lines > 0, rounding.amount != 0 {
                 figure.gaps.append(.init(statementId: statement.id!, month: statement.month, reason: .rounding,
                                         amountMinorUnits: rounding.amount, lines: rounding.lines))
@@ -121,9 +135,51 @@ extension Recharges {
                     noPayment > 0 ? (.noPayment, noPayment) : oneOffs > 0 ? (.oneOff, oneOffs) : (.otherAmount, 0)
                 figure.gaps.append(.init(statementId: statement.id!, month: statement.month, reason: reason, amountMinorUnits: rest, lines: lines))
             }
+            if other.lines > 0, other.amount != 0 {
+                figure.otherItems += other.amount
+                figure.gaps.append(.init(statementId: statement.id!, month: statement.month, reason: .otherItems,
+                                        amountMinorUnits: other.amount, lines: other.lines))
+            }
             figures[year] = figure
             counted[year] = seen
         }
         return figures
+    }
+}
+
+extension RechargeYearFigures {
+    /// What the Difference tile says, in a direction nobody can misread.
+    public static func differenceCaption(_ difference: Int) -> String {
+        difference == 0 ? "Every statement matches its bills"
+            : difference > 0 ? "Statements asked for more than the bills" : "Statements asked for less than the bills"
+    }
+
+    /// The year's explanation lines, one per reason, signed as the figure is (recharged less paid:
+    /// "+" the statements asked for more, "\u{2212}" for less). Other items come last and are not
+    /// part of the difference.
+    public func explanations(currency: Currency) -> [Explanation] {
+        Dictionary(grouping: gaps, by: \.reason).sorted { $0.key < $1.key }.map { reason, gaps in
+            let total = gaps.reduce(0) { $0 + $1.amountMinorUnits }
+            let amount = (total < 0 ? "\u{2212}" : "+") + Money.format(abs(total), currency: currency)
+            let months = gaps.map { RechargeEmail.monthName($0.month, language: .english) }
+            let on = gaps.count == 1 ? "on \(months[0])'s statement" : "on \(gaps.count) statements"
+            let lines = gaps.reduce(0) { $0 + $1.lines }
+            let text: String = switch reason {
+            case .rounding: "\(amount) rounding \(on)"
+            case .noPayment where total < 0: "\(amount) refund not matched to a bank credit, \(on)"
+            case .noPayment: "\(amount) from \(lines) bill\(lines == 1 ? "" : "s") with no bank payment linked, \(on)"
+            case .oneOff where total < 0: "\(amount) refund not matched to a bank credit, \(on)"
+            case .oneOff: "\(amount) from \(lines) one-off line\(lines == 1 ? "" : "s") with no bank movement, \(on)"
+            case .otherAmount: "\(amount) where the bank paid a different amount than recharged, \(on)"
+            case .otherItems: "\(amount) other items on statements (\(lines) line\(lines == 1 ? "" : "s"), not in the difference), \(on)"
+            }
+            return Explanation(reason: reason, text: text, gaps: gaps)
+        }
+    }
+
+    public struct Explanation: Equatable, Sendable {
+        public var reason: GapReason
+        public var text: String
+        public var gaps: [Gap]
     }
 }

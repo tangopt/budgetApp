@@ -25,6 +25,7 @@ struct SalaryColumnView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: Form
@@ -52,20 +53,19 @@ struct SalaryColumnView: View {
                 TextField("1257L", text: $inputs.taxCode)
                     .multilineTextAlignment(.trailing).textFieldStyle(.roundedBorder).frame(width: 90)
             }
-            if let notice = TaxCode.parse(inputs.taxCode).notice {
-                Text(notice).font(.caption).foregroundStyle(.orange).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            }
+            // Always two lines tall, so a notice appearing as the code is typed moves nothing.
+            Text(TaxCode.parse(inputs.taxCode).notice ?? " ").font(.caption).foregroundStyle(.orange)
+                .lineLimit(2, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             row("Pension") { PensionAmountField(label: "Pension", amount: $inputs.pension) }
-            if inputs.pension != .percentOfGross(basisPoints: 0) {
-                row("Taken") {
-                    Picker("Pension method", selection: $inputs.pensionMethod) {
-                        Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
-                        Text("Net pay").tag(PensionMethod.netPay)
-                        Text("Relief at source").tag(PensionMethod.reliefAtSource)
-                    }
-                    .labelsHidden().fixedSize()
+            row("Taken") {
+                Picker("Pension method", selection: $inputs.pensionMethod) {
+                    Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
+                    Text("Net pay").tag(PensionMethod.netPay)
+                    Text("Relief at source").tag(PensionMethod.reliefAtSource)
                 }
+                .labelsHidden().fixedSize()
+                .disabled(inputs.pension == .percentOfGross(basisPoints: 0))
             }
             row("Employer pension") { PensionAmountField(label: "Employer pension", amount: $inputs.employerPension) }
             Divider()
@@ -95,9 +95,9 @@ struct SalaryColumnView: View {
     // MARK: Results
 
     @ViewBuilder private var results: some View {
-        if !ready {
-            Text("Enter a salary to see the take-home.").foregroundStyle(.secondary)
-        } else {
+        // Every row is always there (a dash when it doesn't apply, the whole block faded until there is
+        // a salary), so nothing moves as the figures are typed.
+        VStack(alignment: .leading, spacing: 8) {
             FigureStrip([
                 FigureTile(title: "A year", value: .money(result.takeHomeAnnual, .gbp, .neutral)),
                 FigureTile(title: "A month", value: .money(result.takeHomeMonthly, .gbp, .neutral)),
@@ -106,18 +106,21 @@ struct SalaryColumnView: View {
             Divider()
             line("Income tax", result.incomeTax, cost: true)
             line("National Insurance", result.employeeNI, cost: true)
-            if result.studentLoan > 0 { line("Student loan", result.studentLoan, cost: true) }
-            if result.postgraduateLoan > 0 { line("Postgraduate loan", result.postgraduateLoan, cost: true) }
-            if result.employeePension > 0 { line("Your pension", result.employeePension, cost: true) }
-            if result.employerPension > 0 { line("Employer pension", result.employerPension, cost: false) }
-            if result.benefitsInKindTax > 0 { line("Tax on benefits in kind", result.benefitsInKindTax, cost: true) }
+            line("Student loan", result.studentLoan, cost: true)
+            line("Postgraduate loan", result.postgraduateLoan, cost: true)
+            line("Your pension", result.employeePension, cost: true)
+            line("Employer pension", result.employerPension, cost: false)
+            line("Tax on benefits in kind", result.benefitsInKindTax, cost: true)
             Divider()
             line("Personal allowance", result.personalAllowance, cost: false)
             percentLine("Effective rate", result.effectiveRateBP)
             percentLine("Marginal rate", result.marginalRateBP)
-            if let caption = SalaryResult.marginalPensionCaption(result) {
-                Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            Text(SalaryResult.marginalPensionCaption(result) ?? " ").font(.caption).foregroundStyle(.secondary)
+                .lineLimit(2, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .opacity(ready ? 1 : 0.35)
+        .overlay(alignment: .top) {
+            if !ready { Text("Enter a salary to see the take-home.").foregroundStyle(.secondary).padding(.top, 4) }
         }
         notices
     }
@@ -126,7 +129,8 @@ struct SalaryColumnView: View {
         HStack(spacing: 8) {
             Text(label).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
-            MoneyText(minorUnits: pence, role: cost ? .cost : .neutral)
+            if pence > 0 { MoneyText(minorUnits: pence, role: cost ? .cost : .neutral) }
+            else { Text("—").foregroundStyle(.secondary).accessibilityLabel("none") }
         }
     }
 
@@ -138,13 +142,17 @@ struct SalaryColumnView: View {
         }
     }
 
-    @ViewBuilder private var notices: some View {
-        ForEach(result.notices.filter { $0 != TaxCode.unreadableNotice }, id: \.self) { notice in
-            Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+    /// Notices come and go with the figures: their room is kept (two lines).
+    private var notices: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(result.notices.filter { $0 != TaxCode.unreadableNotice }, id: \.self) { notice in
+                Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
+                Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
-        if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
-            Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .topLeading)
     }
 }
 
@@ -158,25 +166,27 @@ struct PoundsField: View {
     @State private var text = ""
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text("£").foregroundStyle(.secondary)
-            TextField("0", text: $text)
-                .multilineTextAlignment(.trailing).monospacedDigit()
-                .textFieldStyle(.roundedBorder).frame(width: 110)
-                .accessibilityLabel(label)
-                .onChange(of: text) { _, new in
-                    let trimmed = new.trimmingCharacters(in: .whitespaces)
-                    if trimmed.isEmpty { if pence != 0 { pence = 0 } }
-                    else if let value = Money.parseMinorUnits(trimmed), value != pence { pence = max(0, value) }
-                }
-        }
-        .onAppear { sync() }
+        TextField("£0", text: $text)
+            .multilineTextAlignment(.trailing).monospacedDigit()
+            .textFieldStyle(.roundedBorder).frame(width: Self.width)
+            .accessibilityLabel(label)
+            .onChange(of: text) { _, new in
+                // Shown as £65,000 as it is typed; the amount follows once it parses.
+                let shown = Money.poundsFieldText(typed: new)
+                if shown != new { text = shown; return }
+                if shown.isEmpty { if pence != 0 { pence = 0 } }
+                else if let value = Money.parseMinorUnits(shown), value != pence { pence = max(0, value) }
+            }
+            .onAppear { sync() }
         .onChange(of: pence) { _, new in
             if Money.parseMinorUnits(text) != new && !(text.isEmpty && new == 0) { sync() }
         }
     }
 
-    private func sync() { text = pence == 0 ? "" : Money.formatInput(pence) }
+    private func sync() { text = Money.poundsFieldText(pence: pence) }
+
+    /// Fixed, so the column doesn't move as the figure grows (room for £1,234,567.89).
+    static let width: CGFloat = 124
 }
 
 /// A pension amount: a percentage of pay or a yearly pounds figure.
@@ -197,10 +207,17 @@ struct PensionAmountField: View {
                 Text("£ a year").tag(false)
             }
             .labelsHidden().pickerStyle(.segmented).fixedSize()
-            TextField("0", text: $text)
+            TextField(isPercent ? "0" : "£0", text: $text)
                 .multilineTextAlignment(.trailing).monospacedDigit()
-                .textFieldStyle(.roundedBorder).frame(width: 70)
-                .onChange(of: text) { _, new in commit(new) }
+                .textFieldStyle(.roundedBorder).frame(width: PoundsField.width - 54)
+                .accessibilityLabel(label)
+                .onChange(of: text) { _, new in
+                    if !isPercent {
+                        let shown = Money.poundsFieldText(typed: new)
+                        if shown != new { text = shown; return }
+                    }
+                    commit(new)
+                }
         }
         .onAppear { sync() }
     }
@@ -225,7 +242,7 @@ struct PensionAmountField: View {
     private func sync() {
         switch amount {
         case .percentOfGross(let bp): text = bp == 0 ? "" : String(format: "%g", Double(bp) / 100)
-        case .fixedAnnual(let pence): text = pence == 0 ? "" : Money.formatInput(pence)
+        case .fixedAnnual(let pence): text = Money.poundsFieldText(pence: pence)
         }
     }
 }

@@ -103,18 +103,18 @@ public final class OfferSheetModel {
     /// The sheet's subtitle.
     public var subtitle: String {
         isEditing
-            ? "Builds this scenario's offer again. Any changes you made in the scenario to the offer's entries, or to the salary and pension it replaces, are replaced. The budget is not changed."
-            : "Makes a scenario where this offer replaces your salary from the start month. The budget is not changed."
+            ? "Builds this scenario's new salary again. Any changes you made in the scenario to the new salary's entries, or to the salary and pension it replaces, are replaced. The budget is not changed."
+            : "Makes a scenario where this new salary replaces your salary from the start month. The budget is not changed."
     }
 
     /// Said under the salary picker: a budget salary edited later isn't followed by the scenario.
-    public static let refreshNote = "If you later change this salary in the budget and use Refresh from budget, open Edit offer again so the offer replaces the new salary."
+    public static let refreshNote = "If you later change this salary in the budget and use Refresh from budget, open Edit new salary again so the new salary replaces the new salary."
 
     /// What a pension choice does, said under the picker; nil when the pension is left alone.
     public var pensionNote: String? {
         guard let id = pensionEntryId, let candidate = pensionCandidates.first(where: { $0.id == id }) else { return nil }
         return candidate.isTransfer
-            ? "Becomes the offer's employee and employer contributions a month."
+            ? "Becomes the new salary's employee and employer contributions a month."
             : "Changes by the difference in what you pay in (the employer's share isn't your spending)."
     }
 
@@ -153,7 +153,7 @@ public final class OfferSheetModel {
 
     // MARK: Wording
 
-    public static func defaultName(for month: Date) -> String { "Job offer \(monthLabel(month))" }
+    public static func defaultName(for month: Date) -> String { "New salary \(monthLabel(month))" }
 
     public static func monthLabel(_ month: Date) -> String {
         let formatter = DateFormatter()

@@ -28,7 +28,7 @@ final class OfferSheetModelTests: XCTestCase {
         let m = model(candidates: [entry(id: 1, start: utc(2024, 1, 1)), entry(id: 2, start: utc(2026, 1, 1)), entry(id: 3, start: utc(2025, 1, 1))])
         XCTAssertEqual(m.salaryEntryId, 2)
         XCTAssertEqual(m.startMonth, utc(2026, 4, 1))
-        XCTAssertEqual(m.name, "Job offer Apr 2026")
+        XCTAssertEqual(m.name, "New salary Apr 2026")
         XCTAssertTrue(m.canSave)
     }
 
