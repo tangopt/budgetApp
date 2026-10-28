@@ -28,7 +28,7 @@ struct DocumentsView: View {
         // minimums plus 145 pt of its own), more than a 1100-wide window has. The list takes the
         // width; the column beside keeps one width whether or not a document is selected (so the
         // list's columns don't jump) and can be dragged wider or narrower.
-        ResizableDock(kind: "documents", defaultWidth: 420, minimumWidth: 320, maximumWidth: 720, pageMinimum: 560) {
+        ResizableDock(kind: "documents", defaultWidth: 420, minimumWidth: 320, maximumWidth: 4000, pageMinimum: 560) {
             libraryList
         } panel: {
             detail

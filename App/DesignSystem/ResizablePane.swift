@@ -43,7 +43,7 @@ struct ResizableDock<Page: View, Panel: View>: View {
     var isOpen = true
     var defaultWidth: CGFloat = 320
     var minimumWidth: CGFloat = 280
-    var maximumWidth: CGFloat = 640
+    var maximumWidth: CGFloat = 4000
     var pageMinimum: CGFloat = 360
     @ViewBuilder let page: Page
     @ViewBuilder let panel: Panel
@@ -53,7 +53,7 @@ struct ResizableDock<Page: View, Panel: View>: View {
     @State private var live: CGFloat?
 
     init(kind: String, isOpen: Bool = true, defaultWidth: CGFloat = 320, minimumWidth: CGFloat = 280,
-         maximumWidth: CGFloat = 640, pageMinimum: CGFloat = 360,
+         maximumWidth: CGFloat = 4000, pageMinimum: CGFloat = 360,
          @ViewBuilder page: () -> Page, @ViewBuilder panel: () -> Panel) {
         self.kind = kind
         self.isOpen = isOpen
@@ -68,10 +68,18 @@ struct ResizableDock<Page: View, Panel: View>: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let panelWidth = isOpen ? width(in: proxy.size.width) : 0
+            let pageWidth = max(pageMinimum, proxy.size.width - (isOpen ? panelWidth + 1 : 0))
             HStack(spacing: 0) {
-                page.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                // The page keeps its minimum width and scrolls sideways inside its own box when the
+                // panel leaves it less (it never pushes the panel out of the window).
+                ScrollView(.horizontal) {
+                    page.frame(width: pageWidth, height: proxy.size.height, alignment: .topLeading)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 if isOpen {
-                    let width = width(in: proxy.size.width)
+                    let width = panelWidth
                     PaneDivider(onDrag: { translation in
                         let start = dragStart ?? width
                         dragStart = start
@@ -88,6 +96,8 @@ struct ResizableDock<Page: View, Panel: View>: View {
                 }
             }
         }
+        // The window grows to what the page and panel need at least.
+        .frame(minWidth: pageMinimum + (isOpen ? minimumWidth + 1 : 0))
     }
 
     private func width(in available: CGFloat) -> CGFloat {
@@ -96,8 +106,9 @@ struct ResizableDock<Page: View, Panel: View>: View {
     }
 
     private func clamped(_ wanted: Double, in available: CGFloat) -> CGFloat {
+        // At most 55% of the area (the page keeps the other 45% and lays out narrower).
         CGFloat(PaneSizing.panelWidth(stored: wanted, defaultWidth: Double(defaultWidth), minimum: Double(minimumWidth),
-                                      maximum: Double(maximumWidth), available: Double(available), pageMinimum: Double(pageMinimum)))
+                                      maximum: Double(maximumWidth), available: Double(available), pageMinimum: Double(available) * 0.45))
     }
 }
 

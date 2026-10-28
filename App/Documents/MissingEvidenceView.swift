@@ -59,12 +59,12 @@ struct MissingEvidenceView: View {
     /// The side panel's item (nil: closed).
     private var panelItem: MissingEvidence.Item? { viewModel.selectedItem }
     /// Embedded with the panel open: the narrow layout.
-    private var narrow: Bool { embedded && panelItem != nil }
+    private var narrow: Bool { panelItem != nil }
 
     var body: some View {
         // Selecting a row docks its panel beside the page, which narrows to make room (the list
         // keeps its scroll position, filters and search); ✕ or Escape closes it.
-        PropertyPanelDock(kind: "missingEvidence", pageMinimum: embedded ? Self.embeddedBesidePanelMinimumWidth : 520, isOpen: panelItem != nil) {
+        PropertyPanelDock(kind: "missingEvidence", pageMinimum: panelItem == nil ? (embedded ? 600 : 290) : Self.embeddedBesidePanelMinimumWidth, isOpen: panelItem != nil) {
             page
         } panel: {
             if let item = panelItem {

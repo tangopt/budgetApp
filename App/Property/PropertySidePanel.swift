@@ -19,7 +19,7 @@ struct PropertyPanelDock<Page: View, SidePanel: View>: View {
     @ViewBuilder let panel: SidePanel
 
     var body: some View {
-        ResizableDock(kind: kind, isOpen: isOpen, defaultWidth: 320, minimumWidth: 280, maximumWidth: 680, pageMinimum: pageMinimum) {
+        ResizableDock(kind: kind, isOpen: isOpen, defaultWidth: 320, minimumWidth: 280, maximumWidth: 4000, pageMinimum: pageMinimum) {
             page
         } panel: {
             panel

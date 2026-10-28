@@ -55,7 +55,7 @@ enum SnapshotCatalog {
                 }
             },
             screen("property", "recharges_statement_wide", "Property: Recharges, the statement panel dragged wide", .property, settle: 1.5) { models, context in
-                width("property", 560)
+                width("property", 2000)
                 models.property.tab = .recharges
                 if let (statement, tenancy) = context.latestPaidStatement() {
                     models.property.selectedTenancyId = tenancy
@@ -63,7 +63,7 @@ enum SnapshotCatalog {
                 }
             },
             screen("documents", "panel_wide", "Documents: the detail dragged wide", .documents) { models, context in
-                width("documents", 560)
+                width("documents", 2000)
                 models.documents.selectedId = (try? context.demoCustomKinds())?.documentId
             },
             screen("salary", "bonus_percent", "UK Salary Calculator: a 10% bonus on the new salary, the split moved left", .salary) { models, _ in
