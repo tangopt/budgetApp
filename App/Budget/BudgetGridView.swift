@@ -242,7 +242,7 @@ struct BudgetGridView: View {
             HStack(alignment: .top, spacing: 0) {
                 AccountFilterPanel(viewModel: viewModel)
                 Divider()
-                SidePanelHost(selection: cellSelection) {
+                SidePanelHost(selection: cellSelection, kind: "budgetGrid") {
                     // spacing: 0 so the frozen header sits flush on the body, with no gap for
                     // scrolled rows to show through.
                     VStack(alignment: .leading, spacing: 0) {

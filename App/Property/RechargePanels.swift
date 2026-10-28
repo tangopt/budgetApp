@@ -179,7 +179,8 @@ struct RechargeChargeRow: View {
         let invoice = charge.detail.invoice
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text(title).lineLimit(1).help(title)
+                // Wraps to two lines (a rounding line is a sentence); what still can't fit is cut in the middle, whole on hover.
+                Text(title.figuresUnbroken).lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true).help(title)
                 Spacer(minLength: 8)
                 MoneyText(minorUnits: charge.amountMinorUnits, currency: currency, role: .neutral).fixedSize()
             }

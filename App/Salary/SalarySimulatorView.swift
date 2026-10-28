@@ -1,6 +1,5 @@
 // App/Salary/SalarySimulatorView.swift
 import SwiftUI
-import Charts
 import BudgetCore
 
 /// The salary simulator: two salaries (what you have, an offer) and what each leaves you,
@@ -22,29 +21,20 @@ struct SalarySimulatorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-            if let edit = model.offerEdit { editingBanner(edit) }
-            strip
-            ScrollView {
-                VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-                    HStack(alignment: .top, spacing: ScreenMetrics.spacing) {
-                        SalaryColumnView(title: "Current", inputs: $model.current,
-                                         result: model.comparison.current, ready: model.ready.current,
-                                         usePrefill: model.canUsePrefill ? { model.usePrefill() } : nil)
-                        VStack(alignment: .leading, spacing: 8) {
-                            SalaryColumnView(title: "New", inputs: $model.offer,
-                                             result: model.comparison.offer, ready: model.ready.offer)
-                            tryInForecast
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    chart
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            if let edit = model.offerEdit {
+                editingBanner(edit).padding([.horizontal, .top], ScreenMetrics.padding)
             }
-            Text("An estimate from published UK rates, not tax advice.")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            // The forms on the left, every result on the right; the divider between is dragged
+            // and its place remembered on this Mac.
+            ResizableSplit(kind: "salary", defaultFraction: 0.5, leadingMinimum: 430, trailingMinimum: 430) {
+                SalaryFormView(model: model, forecastTitle: forecastTitle, forecastDisabled: offerReason != nil,
+                               forecastMessage: offerReason ?? sheetError, forecastMessageIsError: offerReason == nil && sheetError != nil,
+                               tryInForecast: openSheet)
+            } trailing: {
+                SalaryResultsView(model: model)
+            }
         }
-        .padding(ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await model.refreshPrefill() }
         .sheet(item: $sheet) { host in
@@ -85,18 +75,6 @@ struct SalarySimulatorView: View {
         })
     }
 
-    private var tryInForecast: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(forecastTitle) { openSheet() }
-                .disabled(offerReason != nil)
-            if let reason = offerReason ?? sheetError {
-                Text(reason).font(.caption).foregroundStyle(offerReason == nil ? .red : .secondary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, ScreenMetrics.padding)
-    }
-
     private func openSheet() {
         guard let forecast else { return }
         do {
@@ -111,59 +89,5 @@ struct SalarySimulatorView: View {
     private func saved() {
         model.endOfferEdit(saved: true)
         openForecast()
-    }
-
-    // MARK: Comparison strip
-
-    private var strip: some View {
-        Panel("New against current", accessory: {
-            Button(model.resetTitle) { model.reset() }.buttonStyle(.link).font(.caption)
-        }, content: {
-            FigureStrip([
-                FigureTile(title: "Take-home a month", value: .money(model.comparison.monthlyDifference, .gbp, .signed)),
-                FigureTile(title: "Take-home a year", value: .money(model.comparison.annualDifference, .gbp, .signed)),
-                FigureTile(title: "Of each extra £1 gross you keep",
-                           value: .text(Self.pence(model.comparison.keepPerExtraPound)))
-            ])
-        })
-    }
-
-    private static func pence(_ basisPoints: Int) -> String {
-        String(format: "%.0fp", Double(basisPoints) / 100)
-    }
-
-    // MARK: Chart
-
-    private struct Bar: Identifiable {
-        let side: String, part: String, pounds: Double
-        var id: String { side + part }
-    }
-
-    private var bars: [Bar] {
-        [("Current", model.comparison.current), ("New", model.comparison.offer)].flatMap { side, result in
-            SalaryBarSegments.segments(result).filter { $0.pence > 0 }.map { Bar(side: side, part: $0.label, pounds: Double($0.pence) / 100) }
-        }
-    }
-
-    private var chart: some View {
-        let parts = ["Take-home", "Income tax", "National Insurance", "Loans", "Pension"]
-        let colors = theme.chartSeries
-        return Panel("Where the money goes", subtitle: "A year of gross pay, split by what it goes to") {
-            Chart(bars) { bar in
-                BarMark(x: .value("Pounds", bar.pounds), y: .value("Salary", bar.side))
-                    .foregroundStyle(by: .value("Part", bar.part))
-            }
-            .chartForegroundStyleScale(domain: parts, range: parts.indices.map { colors.isEmpty ? Color.accentColor : colors[$0 % colors.count] })
-            .chartXAxis {
-                AxisMarks { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let pounds = value.as(Double.self) { Text("£\(Int(pounds / 1000))k").monospacedDigit() }
-                    }
-                }
-            }
-            .chartLegend(position: .bottom)
-            .frame(height: 130)
-        }
     }
 }

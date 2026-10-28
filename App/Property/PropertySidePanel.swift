@@ -5,26 +5,24 @@ import struct BudgetCore.Transaction
 import GRDB
 
 /// A page with its side panel docked at the trailing edge (like the Budget grid's cell
-/// panel): 320 pt behind a divider, the page narrowing to make room — its `DataTable`s hide or
-/// narrow low-priority columns — so the panel never covers the page. Closing it gives the
-/// page its full width back. The page narrows at once (animating its width would lay out its
-/// tables again on every frame); only the panel fades in and out.
+/// panel): behind a divider the user drags to resize (`ResizableDock`, the width remembered per
+/// `kind`), the page narrowing to make room — its `DataTable`s hide or narrow low-priority
+/// columns — so the panel never covers the page. Closing it gives the page its full width back.
+/// The page narrows at once (animating its width would lay out its tables again on every
+/// frame); only the panel fades in and out.
 struct PropertyPanelDock<Page: View, SidePanel: View>: View {
-    static var panelWidth: CGFloat { 320 }
-
+    var kind = "property"
+    /// The narrowest the page can be (its cards and tables), so the panel stops growing there.
+    var pageMinimum: CGFloat = 600
     let isOpen: Bool
     @ViewBuilder let page: Page
     @ViewBuilder let panel: SidePanel
 
     var body: some View {
-        HStack(spacing: 0) {
-            page.frame(maxWidth: .infinity, alignment: .leading)
-            if isOpen {
-                Divider()
-                panel
-                    .frame(width: Self.panelWidth)
-                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
-            }
+        ResizableDock(kind: kind, isOpen: isOpen, defaultWidth: 320, minimumWidth: 280, maximumWidth: 4000, pageMinimum: pageMinimum) {
+            page
+        } panel: {
+            panel
         }
     }
 }
@@ -133,11 +131,12 @@ struct PropertyPanelTransactionRow: View {
             // icons on the right at their own size, so nothing ever covers a figure.
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(transaction.rawDescription).lineLimit(1).truncationMode(.tail).help(transaction.rawDescription)
+                    Text(transaction.rawDescription.figuresUnbroken).lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true)
+                        .help(transaction.rawDescription)
                     HStack(spacing: 4) {
                         DateText(date: transaction.date, font: .caption).foregroundStyle(.secondary).fixedSize()
                         if let detail {
-                            Text("· " + detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(detail)
+                            Text("· " + detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true).help(detail)
                         }
                         if transaction.isManual { ManualTag() }
                     }

@@ -24,17 +24,14 @@ struct DocumentsView: View {
     @State private var editingKinds = false
 
     var body: some View {
-        // An HStack, not an HSplitView: the split view asked the window for 1209 pt (its panes'
+        // A dock, not an HSplitView: the split view asked the window for 1209 pt (its panes'
         // minimums plus 145 pt of its own), more than a 1100-wide window has. The list takes the
-        // width; the column beside keeps one width whether or not a document is selected, so
-        // the list's columns don't jump.
-        HStack(spacing: 0) {
+        // width; the column beside keeps one width whether or not a document is selected (so the
+        // list's columns don't jump) and can be dragged wider or narrower.
+        ResizableDock(kind: "documents", defaultWidth: 420, minimumWidth: 320, maximumWidth: 4000, pageMinimum: 560) {
             libraryList
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
-            Divider()
+        } panel: {
             detail
-                .frame(minWidth: 400, idealWidth: 420, maxWidth: 460, maxHeight: .infinity)
         }
         .checkingFiledYears(viewModel.isCheckingFiledYears)
         .onAppear { viewModel.load() }
