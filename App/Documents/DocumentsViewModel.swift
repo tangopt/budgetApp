@@ -285,9 +285,9 @@ final class DocumentsViewModel: ObservableObject {
 
     /// Takes an automatic link back (the guarded unlink, remembered so it is not made again).
     func undoAutoLink(_ pair: WaitingDocuments.Pair) {
-        let dbQueue = dbQueue
+        let dbQueue = dbQueue, now = AppClock.now
         Task {
-            guard let result = await guarded({ try dbQueue.write(.documents, origin: .documentLink) { db in try WaitingDocuments.undo(db: db, pair, now: Date()) } }) else { return }
+            guard let result = await guarded({ try dbQueue.write(.documents, origin: .documentLink) { db in try WaitingDocuments.undo(db: db, pair, now: now) } }) else { return }
             errorMessage = result.failure?.localizedDescription
             loadAutoLinked()
             reloadIndex(select: selectedId)

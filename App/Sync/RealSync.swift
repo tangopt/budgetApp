@@ -94,8 +94,6 @@ final class RealSync: ObservableObject {
     private var refreshingProgress = false
     private var accountWatch: NSObjectProtocol?
 
-    /// One per database in this process: windows on the same database share it (`AppEnvironment.load`), so one engine
-    /// syncs it.
     /// After each pull (step 9, documents first): the waiting documents the pulled transactions paid are linked here
     /// (`WaitingDocuments.runAfterPull`: only to the rows the pull added; nothing runs when it added none; the links
     /// are kept for Documents' "Linked automatically"), as the default writer, and the scheduler's push sends them as
@@ -117,6 +115,8 @@ final class RealSync: ObservableObject {
         }
     }
 
+    /// One per database in this process: windows on the same database share it (`AppEnvironment.load`), so one engine
+    /// syncs it.
     init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, session: SessionModel) {
         self.dbQueue = dbQueue
         self.databasePath = databasePath

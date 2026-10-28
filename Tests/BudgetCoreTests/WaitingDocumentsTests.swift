@@ -112,6 +112,25 @@ final class WaitingDocumentsTests: XCTestCase {
         XCTAssertEqual(try db.read { db in try WaitingDocuments.states(db: db, now: now) }, [waiting: .waiting, onCategory: .waiting])
     }
 
+    /// An HMRC payment proof linked to its payment record is paid, even when downloaded long after the payment
+    /// (the real library's proofs carry the download date); unlinked, it still waits for its debit.
+    func testHMRCProofLinkedToItsPaymentDoesNotWait() throws {
+        let now = Self.day(2026, 2, 1)
+        let proof = try document(.hmrcPaymentProof, date: Self.day(2026, 1, 20), amount: 50_000)
+        let unlinkedProof = try document(.hmrcPaymentProof, date: Self.day(2026, 1, 20), amount: 60_000)
+        try db.write { db in
+            var person = Person(name: "Person A")
+            try person.insert(db)
+            var payment = HMRCPayment(personId: person.id!, startYear: 2022, date: Self.day(2024, 1, 9), amountMinorUnits: 50_000,
+                                      kind: .balancingPayment)
+            try payment.insert(db)
+            try EvidenceLinks.link(db: db, documentId: proof, to: EvidenceEntity(type: .hmrcPayment, id: payment.id!))
+        }
+        XCTAssertEqual(try state(proof, now), .notApplicable)
+        XCTAssertEqual(try state(unlinkedProof, now), .waiting)
+        XCTAssertEqual(try db.read { db in try WaitingDocuments.states(db: db, now: now) }, [unlinkedProof: .waiting])
+    }
+
     func testLapsesAfterNinetyDays() throws {
         let start = Self.day(2026, 1, 10)
         let id = try document(date: start, amount: 6_000)

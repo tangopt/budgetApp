@@ -63,16 +63,21 @@ public enum WaitingDocuments {
         EvidenceMatcher.isPaidByDebits(document.kindRef) && document.kindRef != .builtIn(.bankDebitAdvice)
     }
 
-    /// Documents with an amount and no transaction link, nor a utility invoice the bills tracker has
+    /// The links that settle a document: its debit, or the HMRC payment record it proves (a proof downloaded long
+    /// after the payment would otherwise wait for a debit already recorded there).
+    static let paymentEntityTypes: [EvidenceEntityType] = [.transaction, .hmrcPayment]
+
+    /// Documents with an amount and no transaction link, nor a link to a record that is itself the payment
+    /// (`paymentEntityTypes`: an HMRC payment's proof is paid), nor a utility invoice the bills tracker has
     /// paid, of a kind that waits; by id.
     static func unpaid(db: Database, documentId: Int64? = nil) throws -> [EvidenceDocument] {
         var sql = """
             SELECT d.* FROM document d
             WHERE d.amountMinorUnits IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM documentLink l WHERE l.documentId = d.id AND l.entityType = ?)
+              AND NOT EXISTS (SELECT 1 FROM documentLink l WHERE l.documentId = d.id AND l.entityType IN (?, ?))
               AND NOT EXISTS (SELECT 1 FROM utilityInvoice u WHERE u.documentId = d.id AND u.transactionId IS NOT NULL)
             """
-        var arguments: StatementArguments = [EvidenceEntityType.transaction.rawValue]
+        var arguments = StatementArguments(paymentEntityTypes.map(\.rawValue))
         if let documentId {
             sql += " AND d.id = ?"
             arguments += [documentId]
@@ -186,7 +191,8 @@ public enum WaitingDocuments {
 
         guard !newTransactions.isEmpty else { return outcome }
         // A utility bill the bills tracker has paid with a new debit (its invoice's): the document gains
-        // that link, the invoice keeps its debit and stage.
+        // that link, the invoice keeps its debit and stage. The tracker's own pairing is authoritative, so the
+        // matcher's checks (contested, taken, the property's account) don't apply here; the filed-year guard does.
         let trackerPairs = try Row.fetchAll(db, sql: """
             SELECT d.id, u.transactionId FROM document d JOIN utilityInvoice u ON u.documentId = d.id
             WHERE u.transactionId IS NOT NULL
