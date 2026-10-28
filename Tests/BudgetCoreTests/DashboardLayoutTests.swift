@@ -6,153 +6,194 @@ final class DashboardLayoutTests: XCTestCase {
     private let money = [DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
                          DashboardTile.topCategories, DashboardTile.upcomingBills, DashboardTile.accounts]
 
-    func testDefaultIsEmptyAndStoresNothing() {
+    func testDefaultRowsAreEvenAndStoreNothing() {
         let layout = L()
         XCTAssertTrue(layout.isDefault)
         XCTAssertEqual(layout.storedString, "")
         XCTAssertEqual(L(storedString: ""), layout)
-        XCTAssertEqual(layout.order(.money, natural: money), money)
-        XCTAssertEqual(layout.span(DashboardTile.netWorth, in: .money), L.Span(columns: 2, rows: 1))
-        XCTAssertEqual(layout.span(DashboardTile.accounts, in: .money), L.Span(columns: 1, rows: 1))
+        let rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows.map(\.tiles), [[DashboardTile.netWorth, DashboardTile.currentMonth], [DashboardTile.year, DashboardTile.yearChange],
+                                           [DashboardTile.topCategories, DashboardTile.upcomingBills, DashboardTile.accounts]])
+        XCTAssertEqual(rows[0].fractions[0], 2.0 / 3, accuracy: 1e-9)
+        XCTAssertEqual(rows[2].fractions[1], 1.0 / 3, accuracy: 1e-9)
+        XCTAssertEqual(rows.map(\.height), [184, 184, 164])
+        // Four equal tiles are 2 + 2, five are 3 + 2, one is alone.
+        XCTAssertEqual(L.defaultRows(["a", "b", "c", "d"]).map(\.count), [2, 2])
+        XCTAssertEqual(L.defaultRows(["a", "b", "c", "d", "e"]).map(\.count), [3, 2])
+        XCTAssertEqual(L.defaultRows(["a"]).map(\.count), [1])
+        XCTAssertEqual(L.defaultRows([]), [])
     }
 
-    func testPersistenceRoundTrip() {
+    func testDividerDragIsContinuousAndClamped() {
+        let start = [0.5, 0.5]
+        // 800 wide, 12 spacing: 788 usable. +100 points moves the boundary exactly 100 points.
+        let moved = L.draggedFractions(start, divider: 0, delta: 100, width: 800)
+        XCTAssertEqual(moved[0] * 788, 394 + 100, accuracy: 1e-6)
+        XCTAssertEqual(moved.reduce(0, +), 1, accuracy: 1e-9)
+        // Any amount works, not whole columns.
+        XCTAssertNotEqual(L.draggedFractions(start, divider: 0, delta: 7.3, width: 800)[0], 0.5)
+        // Far drags stop at the minimum width of the neighbour.
+        let far = L.draggedFractions(start, divider: 0, delta: 5_000, width: 800)
+        XCTAssertEqual(far[1] * 788, L.minimumTileWidth, accuracy: 1e-6)
+        let farLeft = L.draggedFractions(start, divider: 0, delta: -5_000, width: 800)
+        XCTAssertEqual(farLeft[0] * 788, L.minimumTileWidth, accuracy: 1e-6)
+        // Only the dragged pair changes.
+        let three = L.draggedFractions([0.2, 0.3, 0.5], divider: 1, delta: 40, width: 800)
+        XCTAssertEqual(three[0], 0.2)
+        XCTAssertEqual(three[1] + three[2], 0.8, accuracy: 1e-9)
+        // A row too narrow for two minimum tiles splits evenly instead of inverting.
+        XCTAssertEqual(L.draggedFractions([0.5, 0.5], divider: 0, delta: 30, width: 200), [0.5, 0.5])
+        XCTAssertEqual(L.draggedFractions([1], divider: 0, delta: 30, width: 200), [1])
+    }
+
+    func testRowHeightDragClamps() {
+        XCTAssertEqual(L.draggedHeight(184, delta: 50), 234)
+        XCTAssertEqual(L.draggedHeight(184, delta: -500), L.minimumTileHeight)
+        XCTAssertEqual(L.draggedHeight(184, delta: 5_000), L.maximumRowHeight)
+    }
+
+    func testFramesFollowFractionsAndScaleWithWidth() {
         var layout = L()
-        layout.setSpan(DashboardTile.netWorth, in: .money, to: .init(columns: 3, rows: 2))
-        layout.setColumns(4, in: .property)
-        layout.setRowHeight(.tall, in: .money)
-        layout.move(DashboardTile.accounts, onto: DashboardTile.netWorth, in: .money, natural: money)
+        layout.setFractions([0.7, 0.3], row: 0, in: .money, natural: money)
+        layout.setHeight(300, row: 0, in: .money, natural: money)
+        let rows = layout.rows(.money, natural: money)
+        let narrow = L.frames(rows, width: 800), wide = L.frames(rows, width: 1600)
+        XCTAssertEqual(narrow[0].width / (800 - 12), 0.7, accuracy: 1e-3)
+        XCTAssertEqual(wide[0].width / (1600 - 12), 0.7, accuracy: 1e-3)
+        XCTAssertEqual(narrow[0].height, 300)
+        XCTAssertEqual(narrow[1].x, narrow[0].width + 12, accuracy: 1e-9)
+        XCTAssertEqual(narrow[1].x + narrow[1].width, 800, accuracy: 1e-6)
+        XCTAssertEqual(narrow.first { $0.row == 1 }?.y, 312)
+        XCTAssertEqual(L.totalHeight(rows), 300 + 184 + 164 + 24)
+    }
+
+    func testPersistenceRoundTripKeepsOtherRowsAsTheyWere() {
+        var layout = L()
+        layout.setFractions([0.7, 0.3], row: 0, in: .money, natural: money)
+        layout.setHeight(260, row: 2, in: .money, natural: money)
         let restored = L(storedString: layout.storedString)
         XCTAssertEqual(restored, layout)
-        XCTAssertEqual(restored.span(DashboardTile.netWorth, in: .money), .init(columns: 3, rows: 2))
-        XCTAssertEqual(restored.layout(.property).columns, 4)
-        XCTAssertEqual(restored.layout(.money).rowHeight, .tall)
-        XCTAssertEqual(restored.order(.money, natural: money).first, DashboardTile.accounts)
+        let rows = restored.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].fractions[0], 0.7, accuracy: 1e-9)
+        XCTAssertEqual(rows[1].fractions[0], 2.0 / 3, accuracy: 1e-3)
+        XCTAssertEqual(rows.map(\.height), [184, 184, 260])
+        XCTAssertTrue(restored.layout(.property).isEmpty)
     }
 
-    func testGarbageAndOutOfRangeValuesAreSafe() {
+    func testGarbageIsSafe() {
         XCTAssertTrue(L(storedString: "not json").isDefault)
-        let json = #"{"sections":{"money":{"columns":9,"rowHeight":"huge","spans":{"a":{"columns":7,"rows":0}}},"bogus":{}}}"#
-        let layout = L(storedString: json)
-        XCTAssertNil(layout.layout(.money).columns)
-        XCTAssertEqual(layout.layout(.money).rowHeight, .compact)
-        XCTAssertEqual(layout.layout(.money).spans["a"], .init(columns: 3, rows: 1))
+        let json = #"{"v":2,"sections":{"money":{"rows":[["netWorth","netWorth","ghost"],[]],"fractions":{"netWorth":-3},"heights":[1e9]},"bogus":{}}}"#
+        let rows = L(storedString: json).rows(.money, natural: [DashboardTile.netWorth, DashboardTile.accounts])
+        XCTAssertEqual(rows.map(\.tiles), [[DashboardTile.netWorth], [DashboardTile.accounts]])
+        XCTAssertEqual(rows[0].fractions, [1])
+        XCTAssertEqual(rows[0].height, L.maximumRowHeight)
     }
 
-    func testResetAndDefaultSpanNotStored() {
+    func testHiddenAndNewTilesKeepTheRestInPlace() {
         var layout = L()
-        layout.setSpan(DashboardTile.accounts, in: .money, to: .init(columns: 2, rows: 1))
+        layout.setFractions([0.6, 0.4], row: 1, in: .money, natural: money)
+        // Year hidden: its row keeps the other tile, which takes the whole row.
+        let fewer = money.filter { $0 != DashboardTile.year }
+        let rows = layout.rows(.money, natural: fewer)
+        XCTAssertEqual(rows[1].tiles, [DashboardTile.yearChange])
+        XCTAssertEqual(rows[1].fractions, [1])
+        // A tile the saved layout doesn't know lands in a row of its own after the known ones.
+        let more = money + [DashboardTile.propertyMonth]
+        XCTAssertEqual(layout.rows(.money, natural: more).last?.tiles, [DashboardTile.propertyMonth])
+        // A whole row hidden closes up with its height.
+        var tall = L()
+        tall.setHeight(300, row: 1, in: .money, natural: money)
+        let rest = money.filter { $0 != DashboardTile.year && $0 != DashboardTile.yearChange }
+        XCTAssertEqual(tall.rows(.money, natural: rest).map(\.height), [184, 164])
+    }
+
+    func testMovingTiles() {
+        var layout = L()
+        layout.setFractions([0.7, 0.3], row: 0, in: .money, natural: money)
+        XCTAssertFalse(layout.canMove(DashboardTile.netWorth, .left, in: .money, natural: money))
+        XCTAssertFalse(layout.canMove(DashboardTile.netWorth, .up, in: .money, natural: money) == false)
+        layout.move(DashboardTile.netWorth, .right, in: .money, natural: money)
+        var rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles, [DashboardTile.currentMonth, DashboardTile.netWorth])
+        XCTAssertEqual(rows[0].fractions[0], 0.7, accuracy: 1e-9) // the place keeps its width
+        // Down: current month joins the next row at an equal share; others make room.
+        layout.move(DashboardTile.currentMonth, .down, in: .money, natural: money)
+        rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles, [DashboardTile.netWorth])
+        XCTAssertEqual(rows[0].fractions, [1])
+        XCTAssertEqual(rows[1].tiles.count, 3)
+        XCTAssertEqual(rows[1].fractions.reduce(0, +), 1, accuracy: 1e-9)
+        XCTAssertEqual(rows[1].fractions[0], 1.0 / 3, accuracy: 1e-3)
+        // Up from the first row of a shared row starts a row of its own; a lone first tile can't go up.
+        layout.move(DashboardTile.currentMonth, .up, in: .money, natural: money)
+        XCTAssertEqual(layout.rows(.money, natural: money)[0].tiles, [DashboardTile.currentMonth, DashboardTile.netWorth])
+        XCTAssertFalse(L().canMove(DashboardTile.accounts, .down, in: .money, natural: [DashboardTile.accounts]))
+        var single = L()
+        single.move(DashboardTile.accounts, .down, in: .money, natural: [DashboardTile.accounts])
+        XCTAssertTrue(single.isDefault)
+        var split = L()
+        split.move(DashboardTile.currentMonth, .up, in: .money, natural: money)
+        XCTAssertEqual(split.rows(.money, natural: money)[0].tiles, [DashboardTile.currentMonth])
+        XCTAssertEqual(split.rows(.money, natural: money)[1].tiles, [DashboardTile.netWorth])
+    }
+
+    func testResetRestoresDefault() {
+        var layout = L()
+        layout.setHeight(300, row: 0, in: .money, natural: money)
+        layout.setHeight(300, row: 0, in: .tax, natural: [DashboardTile.taxYear])
+        layout.reset(.money)
         XCTAssertFalse(layout.isDefault)
-        layout.setSpan(DashboardTile.accounts, in: .money, to: .init(columns: 1, rows: 1))
-        XCTAssertTrue(layout.isDefault)
-        layout.setColumns(3, in: .tax)
         layout.reset()
         XCTAssertEqual(layout, L())
+        XCTAssertEqual(layout.storedString, "")
     }
 
-    func testOrderingKeepsUnknownNewAndHiddenTiles() {
-        var layout = L()
-        layout.move(DashboardTile.accounts, onto: DashboardTile.currentMonth, in: .money, natural: money)
-        XCTAssertEqual(layout.order(.money, natural: money),
-                       [DashboardTile.netWorth, DashboardTile.accounts, DashboardTile.currentMonth, DashboardTile.year,
-                        DashboardTile.yearChange, DashboardTile.topCategories, DashboardTile.upcomingBills])
-        // A hidden tile drops out; a tile new to the saved order lands at its natural place after the known ones.
-        let fewer = money.filter { $0 != DashboardTile.year }
-        XCTAssertFalse(layout.order(.money, natural: fewer).contains(DashboardTile.year))
-        XCTAssertEqual(layout.order(.money, natural: money + ["extra"]).last, "extra")
-        // Moving while a tile is hidden keeps the hidden tile's saved position.
-        layout.move(DashboardTile.upcomingBills, onto: DashboardTile.netWorth, in: .money, natural: fewer)
-        XCTAssertEqual(layout.order(.money, natural: fewer).first, DashboardTile.upcomingBills)
-        XCTAssertTrue(layout.layout(.money).order.contains(DashboardTile.year) || layout.order(.money, natural: money).contains(DashboardTile.year))
+    func testLegacyLayoutMigrates() {
+        let json = #"{"sections":{"money":{"order":["accounts","netWorth"],"spans":{"netWorth":{"columns":3,"rows":1},"accounts":{"columns":1,"rows":2}},"columns":2,"rowHeight":"tall"},"tax":{"order":[],"spans":{},"rowHeight":"compact"}}}"#
+        let layout = L(storedString: json)
+        XCTAssertFalse(layout.isDefault)
+        XCTAssertTrue(layout.layout(.tax).isEmpty)
+        let rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles.first, DashboardTile.accounts)       // saved order first
+        XCTAssertTrue(rows.allSatisfy { $0.height >= 230 })               // Tall rows
+        let netWorthRow = rows.first { $0.tiles.contains(DashboardTile.netWorth) }!
+        let share = netWorthRow.fractions[netWorthRow.tiles.firstIndex(of: DashboardTile.netWorth)!]
+        XCTAssertGreaterThan(share, 0.5)                                   // its 3-column span is the widest
+        // Saving after a change writes the fluid format, which reads back the same.
+        var changed = layout
+        changed.setHeight(200, row: 0, in: .money, natural: money)
+        XCTAssertTrue(changed.storedString.contains("\"v\":2"))
+        XCTAssertNil(changed.layout(.money).legacy)
+        XCTAssertEqual(L(storedString: changed.storedString), changed)
+        // An untouched legacy layout round-trips too.
+        XCTAssertEqual(L(storedString: layout.storedString), layout)
     }
 
-    func testMoveOntoSelfOrUnknownDoesNothing() {
-        var layout = L()
-        layout.move(DashboardTile.accounts, onto: DashboardTile.accounts, in: .money, natural: money)
-        layout.move("nope", onto: DashboardTile.accounts, in: .money, natural: money)
-        XCTAssertTrue(layout.isDefault)
-    }
-
-    func testColumnCount() {
-        var layout = L()
-        XCTAssertEqual(layout.columnCount(.money, width: 300), 1)
-        XCTAssertEqual(layout.columnCount(.money, width: 520), 2)
-        XCTAssertEqual(layout.columnCount(.money, width: 1400), 3)
-        layout.setColumns(4, in: .money)
-        XCTAssertEqual(layout.columnCount(.money, width: 1400), 4)
-        XCTAssertEqual(layout.columnCount(.money, width: 500), 3)
-        XCTAssertEqual(layout.columnCount(.money, width: 200), 1)
-        layout.setColumns(2, in: .money)
-        XCTAssertEqual(layout.columnCount(.money, width: 1400), 2)
-        layout.setColumns(7, in: .money)
-        XCTAssertNil(layout.layout(.money).columns)
-    }
-
-    func testPackDefaultMoneyAtThreeColumns() {
-        let tiles = money.map { ($0, L().span($0, in: .money)) }
-        let placed = L.pack(tiles, columns: 3)
-        func at(_ id: String) -> L.Placement { placed.first { $0.tile == id }! }
-        XCTAssertEqual(at(DashboardTile.netWorth), .init(tile: DashboardTile.netWorth, column: 0, row: 0, columns: 2, rows: 1))
-        XCTAssertEqual(at(DashboardTile.currentMonth).column, 2)
-        XCTAssertEqual(at(DashboardTile.year).row, 1)
-        XCTAssertEqual(at(DashboardTile.yearChange).row, 1)
-        XCTAssertEqual(at(DashboardTile.yearChange).column, 2)
-        // Last row: accounts alone grows to fill.
-        let last = at(DashboardTile.accounts)
-        XCTAssertEqual(last.columns + last.column, 3)
-    }
-
-    func testPackNoOverlapAndInBounds() {
-        let spans: [L.Span] = [.init(columns: 3, rows: 2), .init(columns: 1, rows: 2), .init(columns: 2, rows: 1), .init(columns: 1, rows: 1),
-                               .init(columns: 2, rows: 2), .init(columns: 1, rows: 1), .init(columns: 3, rows: 1)]
-        for columns in 1...4 {
-            let placed = L.pack(spans.enumerated().map { ("t\($0.offset)", $0.element) }, columns: columns)
-            XCTAssertEqual(placed.count, spans.count)
-            var seen = Set<String>()
-            for p in placed {
-                XCTAssertGreaterThanOrEqual(p.column, 0)
-                XCTAssertLessThanOrEqual(p.column + p.columns, columns)
-                for r in p.row..<(p.row + p.rows) { for c in p.column..<(p.column + p.columns) {
-                    XCTAssertTrue(seen.insert("\(r),\(c)").inserted, "overlap at \(r),\(c) with \(columns) columns")
-                } }
-            }
-        }
-    }
-
-    func testTallTileLetsNextTilesFillBesideIt() {
-        let placed = L.pack([("a", .init(columns: 1, rows: 2)), ("b", .init(columns: 1, rows: 1)), ("c", .init(columns: 1, rows: 1)),
-                             ("d", .init(columns: 1, rows: 1))], columns: 2)
-        XCTAssertEqual(placed.map(\.row), [0, 0, 1, 2])
-        XCTAssertEqual(placed.map(\.column), [0, 1, 1, 0])
-        // d is alone on its row: it takes both columns.
-        XCTAssertEqual(placed[3].columns, 2)
-    }
-
-    func testWideTileCutToGridAndSingleColumn() {
-        let placed = L.pack([("a", .init(columns: 3, rows: 1)), ("b", .init(columns: 2, rows: 1))], columns: 1)
-        XCTAssertEqual(placed.map(\.row), [0, 1])
-        XCTAssertEqual(placed.map(\.columns), [1, 1])
-        XCTAssertTrue(L.pack([], columns: 3).isEmpty)
-    }
-
-    func testHiddenTileClosesUp() {
-        let layout = L()
-        let all = layout.placements(.money, natural: money, width: 900)
-        let without = layout.placements(.money, natural: money.filter { $0 != DashboardTile.currentMonth }, width: 900)
-        XCTAssertEqual(all.first { $0.tile == DashboardTile.year }?.row, 1)
-        // Without the month tile, net worth grows into its place and year change still sits beside the year.
-        XCTAssertEqual(without.first { $0.tile == DashboardTile.netWorth }?.columns, 3)
-        XCTAssertEqual(without.first { $0.tile == DashboardTile.year }?.row, 1)
-        XCTAssertEqual(without.first { $0.tile == DashboardTile.yearChange }?.row, 1)
-        XCTAssertEqual(without.first { $0.tile == DashboardTile.topCategories }?.row, 2)
-        XCTAssertEqual(without.count, all.count - 1)
-    }
-
-    func testDraggedSpanSnapsAndClamps() {
-        let start = L.Span(columns: 1, rows: 1)
-        XCTAssertEqual(L.draggedSpan(from: start, dx: 130, dy: 10, cellWidth: 250, cellHeight: 150, maximumColumns: 3), .init(columns: 2, rows: 1))
-        XCTAssertEqual(L.draggedSpan(from: start, dx: 900, dy: 400, cellWidth: 250, cellHeight: 150, maximumColumns: 3), .init(columns: 3, rows: 2))
-        XCTAssertEqual(L.draggedSpan(from: start, dx: 900, dy: 0, cellWidth: 250, cellHeight: 150, maximumColumns: 2).columns, 2)
-        XCTAssertEqual(L.draggedSpan(from: .init(columns: 2, rows: 2), dx: -900, dy: -900, cellWidth: 250, cellHeight: 150, maximumColumns: 3), .init(columns: 1, rows: 1))
+    func testChartDropsBeforeTheFigureAndListsGrowWithHeight() {
+        typealias B = TileBudget
+        // Wide and tall enough: beside; narrow but tall: below; small: hidden.
+        XCTAssertEqual(B.chartPlan(width: 420, height: 184, maximumLines: 3).placement, .beside)
+        XCTAssertEqual(B.chartPlan(width: 260, height: 260, maximumLines: 3).placement, .below)
+        XCTAssertEqual(B.chartPlan(width: 260, height: 184, maximumLines: 3).placement, .below)
+        XCTAssertEqual(B.chartPlan(width: 260, height: 150, maximumLines: 3).placement, .hidden)
+        XCTAssertEqual(B.chartPlan(width: 420, height: 110, maximumLines: 3).placement, .hidden)
+        XCTAssertEqual(B.chartPlan(width: 170, height: 100, maximumLines: 3), .init(placement: .hidden, chartHeight: 0, lines: 0))
+        XCTAssertEqual(B.chartPlan(width: 420, height: 184, maximumLines: 3).lines, 3)
+        XCTAssertEqual(B.chartPlan(width: 420, height: 184, maximumLines: 3).chartHeight, 184 - B.chrome)
+        // The chart gets the room beside; below it, what the figure leaves.
+        XCTAssertEqual(B.chartPlan(width: 260, height: 260, maximumLines: 0).chartHeight, 260 - B.chrome - B.figure - 6)
+        // Lists: 2 rows at the default height, 3 taller, 5 taller still, none at the minimum.
+        func rows(_ height: Double) -> Int { var b = B(height: height, reserved: B.figure); return b.count(upTo: 8, cost: B.meterLine) }
+        XCTAssertEqual(rows(L.minimumTileHeight), 0)
+        XCTAssertEqual(rows(164), 2)
+        XCTAssertEqual(rows(190), 3)
+        XCTAssertEqual(rows(250), 5)
+        XCTAssertEqual(rows(1000), 8)
+        // With a "+ n more" line to keep room for: all fit -> all; otherwise one fewer than would fit.
+        var all = B(height: 56 + 3 * 20); XCTAssertEqual(all.count(upTo: 3, cost: 20, trailer: 20), 3)
+        var some = B(height: 56 + 3 * 20); XCTAssertEqual(some.count(upTo: 5, cost: 20, trailer: 20), 2)
+        var b = B(height: 120)
+        XCTAssertTrue(b.take(B.figure))
+        XCTAssertFalse(b.take(B.meterLine * 3))
     }
 }
