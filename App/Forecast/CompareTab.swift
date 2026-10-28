@@ -17,8 +17,7 @@ struct CompareTab: View {
         }
     }
 
-    /// The Combined toggle, the note when a fifth tick was refused, and what two ticked scenarios
-    /// both change (while Combined is on).
+    /// The Combined toggle, the save button and the note when a fifth tick was refused.
     private var combinedControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -34,20 +33,30 @@ struct CompareTab: View {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if viewModel.showCombined {
-                ForEach(viewModel.overlapNotices, id: \.self) { notice in
+        }
+        .padding(.bottom, 12)
+    }
+
+    /// What two ticked scenarios both change (while Combined is on). Inside the scroll view: a
+    /// notice wraps to its full height, which outside it would count towards the window's minimum
+    /// height (measured at the narrowest width, a few words a line) and push the page off screen.
+    @ViewBuilder
+    private var overlapNotices: some View {
+        if viewModel.showCombined && !viewModel.overlapNotices.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(viewModel.overlapNotices.enumerated()), id: \.offset) { _, notice in
                     Label(notice, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .padding(.bottom, 12)
     }
 
     private var content: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
+                overlapNotices
                 HStack(spacing: 8) {
                     Text("Net worth").font(.headline)
                     if viewModel.isComputingComparison {
@@ -69,7 +78,7 @@ struct CompareTab: View {
                 ScrollView(.horizontal) {
                     SummaryTable(rows: viewModel.summaries, horizon: viewModel.horizon.endMonth(today: viewModel.today))
                         .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
-                            max(length, SummaryTable.minimumWidth)
+                            max(length, SummaryTable.minimumWidth(rows: viewModel.summaries))
                         }
                         .wrapProbeScrollsHorizontally()
                 }
@@ -241,9 +250,14 @@ struct SummaryTable: View {
     private static let columnSpacing: CGFloat = 12
     private static let horizontalPadding: CGFloat = 8
 
+    /// The Δ column's minimum when the Combined row lists each scenario's own difference
+    /// under "Together" (a name beside each figure).
+    private static let contributionsWidth: CGFloat = 200
+
     /// The narrowest the table lays out at (every column at its minimum).
-    static var minimumWidth: CGFloat {
-        planWidth + CGFloat(columns.count) * (columnWidth + columnSpacing) + 2 * horizontalPadding
+    static func minimumWidth(rows: [ScenarioLabViewModel.SummaryRow]) -> CGFloat {
+        let extra = rows.contains { !$0.contributions.isEmpty } ? contributionsWidth - columnWidth : 0
+        return planWidth + CGFloat(columns.count) * (columnWidth + columnSpacing) + 2 * horizontalPadding + extra
     }
 
     private var years: [Int] { rows.first?.years.map(\.year) ?? [] }
@@ -285,7 +299,7 @@ struct SummaryTable: View {
                             .lineLimit(1).truncationMode(.middle)
                             .frame(minWidth: Self.planWidth, maxWidth: .infinity, alignment: .leading)
                         if let summary = row.years.first(where: { $0.year == year }) {
-                            amount(row.averageMonthlySurplus)
+                            amount(row.averageMonthlySurplus[year])
                             amount(summary.yearEndNetWorth)
                             if row.isBudget {
                                 amount(nil)
@@ -315,7 +329,7 @@ struct SummaryTable: View {
         } else {
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text("Together").font(.caption).foregroundStyle(.secondary)
+                    Text("Together").font(.caption).foregroundStyle(.secondary).fixedSize()
                     amountContent(difference, signed: true)
                 }
                 ForEach(Array(contributions.enumerated()), id: \.offset) { _, contribution in
@@ -326,7 +340,7 @@ struct SummaryTable: View {
                     }
                 }
             }
-            .frame(minWidth: Self.columnWidth, maxWidth: .infinity, alignment: .trailing)
+            .frame(minWidth: Self.contributionsWidth, maxWidth: .infinity, alignment: .trailing)
         }
     }
 

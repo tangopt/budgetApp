@@ -1,16 +1,18 @@
 import Foundation
 
-/// One line of the Compare tab: a plan's net worth forecast, its yearly summary and its
-/// average monthly surplus.
+/// One line of the Compare tab: a plan's net worth forecast, its yearly summary and each
+/// year's average monthly surplus.
 public struct ComparisonLine: Equatable, Sendable {
     /// "budget", "scenario-<id>" or "combined".
     public let id: String
     public let name: String
     public let forecast: [NetWorthPoint]
     public let years: [PlanYearSummary]
-    public let averageMonthlySurplus: Int
+    /// Each year's (income − expenses) per month over its months shown, by year
+    /// (`ScenarioImpact.averageMonthlySurplus` of that year alone).
+    public let averageMonthlySurplus: [Int: Int]
 
-    public init(id: String, name: String, forecast: [NetWorthPoint], years: [PlanYearSummary], averageMonthlySurplus: Int) {
+    public init(id: String, name: String, forecast: [NetWorthPoint], years: [PlanYearSummary], averageMonthlySurplus: [Int: Int]) {
         self.id = id
         self.name = name
         self.forecast = forecast
@@ -35,8 +37,8 @@ public enum CombinedComparison {
 
         func line(_ id: String, _ name: String, _ plan: PlanInput, _ series: PlanNetWorthSeries) -> ComparisonLine {
             let years = ScenarioComparison.yearSummaries(data, plan: plan, series: series, budgetSeries: budgetSeries)
-            return ComparisonLine(id: id, name: name, forecast: series.forecast, years: years,
-                                  averageMonthlySurplus: ScenarioImpact.averageMonthlySurplus(years, horizon: horizon))
+            let surplus = Dictionary(years.map { ($0.year, ScenarioImpact.averageMonthlySurplus([$0], horizon: horizon)) }, uniquingKeysWith: { a, _ in a })
+            return ComparisonLine(id: id, name: name, forecast: series.forecast, years: years, averageMonthlySurplus: surplus)
         }
 
         var lines = [line("budget", "Budget", budget, budgetSeries)]

@@ -76,10 +76,20 @@ final class ScenarioCombinedComparisonTests: XCTestCase {
         XCTAssertEqual(result.overlaps.count, 1)
     }
 
-    func testAverageMonthlySurplusMatchesImpact() {
+    /// Each year's own average (not one figure over the whole horizon), hand-computed: the budget
+    /// keeps 2,000 a month; the gym (-100 from April 2026) and food (-200 from May 2026) take theirs
+    /// from their months; 2027 runs to June.
+    func testAverageMonthlySurplusIsEachYearsOwn() {
         let result = CombinedComparison.lines(data, budget: budget, scenarios: disjoint, includeCombined: true)
+        let byId = Dictionary(uniqueKeysWithValues: result.lines.map { ($0.id, $0.averageMonthlySurplus) })
+        XCTAssertEqual(byId["budget"], [2026: 200_000, 2027: 200_000])
+        XCTAssertEqual(byId["scenario-7"], [2026: (2_400_000 - 9 * 10_000) / 12, 2027: 190_000])
+        XCTAssertEqual(byId["scenario-8"], [2026: 186_667, 2027: 180_000])
+        XCTAssertEqual(byId["combined"], [2026: 179_167, 2027: 170_000])
         for line in result.lines {
-            XCTAssertEqual(line.averageMonthlySurplus, ScenarioImpact.averageMonthlySurplus(line.years, horizon: (2027, 6)))
+            for year in line.years {
+                XCTAssertEqual(line.averageMonthlySurplus[year.year], ScenarioImpact.averageMonthlySurplus([year], horizon: (2027, 6)))
+            }
         }
     }
 

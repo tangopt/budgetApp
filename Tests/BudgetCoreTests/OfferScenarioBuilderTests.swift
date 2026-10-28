@@ -401,4 +401,36 @@ final class OfferScenarioBuilderTests: XCTestCase {
             XCTAssertNil(old.offerInputs)
         }
     }
+
+    // MARK: - Combined (step 17)
+
+    /// Two offers both change the salary and the pension: combined, the later offer's whole
+    /// package is used (never both salaries), with a notice for each item.
+    func testTwoOffersCombinedUseTheLaterOfferOnly() throws {
+        let f = try fixture()
+        let other = SalaryInputs(grossAnnual: 4_600_000, taxYearStart: 2026, pension: .percentOfGross(basisPoints: 500),
+                                 employerPension: .percentOfGross(basisPoints: 400))
+        let first = try create(f, spec(f), name: "200")
+        let second = try create(f, spec(f, gap: 1, offer: other), name: "220")
+        let (combined, plans) = try f.manager.dbQueue.read { db -> (CombinedPlan, [ScenarioPlan]) in
+            let groups = try ForecastGroup.fetchAll(db)
+            func plan(_ entries: [ForecastEntry]) -> PlanInput { PlanInput(entries: entries, exceptions: [], groups: groups) }
+            let plans = [ScenarioPlan(id: first.id!, name: "200", plan: plan(try ForecastEntry.inScenario(db, id: first.id!))),
+                         ScenarioPlan(id: second.id!, name: "220", plan: plan(try ForecastEntry.inScenario(db, id: second.id!)))]
+            return (ScenarioCombinator.combine(budget: plan(try ForecastEntry.budget(db)), scenarios: plans), plans)
+        }
+        let secondEntries = Set(plans[1].plan.entries.filter { $0.scenarioChange != nil }.compactMap(\.id))
+        XCTAssertEqual(Set(combined.contributions.keys), secondEntries)
+        let salaries = combined.plan.entries.filter { $0.categoryId == f.salaryCategoryId }
+        XCTAssertEqual(salaries.count, 2) // the budget salary's copy, ended, and 220's take-home after it
+        XCTAssertEqual(salaries.last?.amountMinorUnits, SalaryCalculator.calculate(other).takeHomeMonthly)
+        XCTAssertEqual(salaries.last?.startDate, utc(2026, 5, 1))
+        XCTAssertEqual(combined.overlaps.map(\.sourceEntryId).sorted(), [f.salaryEntryId, f.pensionEntryId].sorted())
+        XCTAssertTrue(combined.overlaps.allSatisfy { $0.earlierScenarioId == first.id && $0.laterScenarioId == second.id })
+
+        // Saved as a scenario, it holds the same: one offer salary.
+        let saved = try f.manager.dbQueue.write { db in try Scenarios.createCombined(db: db, name: "Both", from: [first.id!, second.id!]) }
+        let savedSalaries = try entries(f, saved).filter { $0.categoryId == f.salaryCategoryId && $0.scenarioChange == .added }
+        XCTAssertEqual(savedSalaries.map(\.amountMinorUnits), [SalaryCalculator.calculate(other).takeHomeMonthly])
+    }
 }
