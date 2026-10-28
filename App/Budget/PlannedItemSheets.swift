@@ -76,6 +76,7 @@ enum PlanFormat {
         case PlannedItemsError.emptyCategoryName, ReservedCategoryError.emptyName, ScenarioError.emptyName: return "Enter a name."
         case PlannedItemsError.duplicateCategoryName, ReservedCategoryError.duplicateName: return "A category with that name already exists."
         case ScenarioError.duplicateName: return "A scenario with that name already exists."
+        case let error as OfferScenarioError: return error.errorDescription ?? "Couldn't save the offer."
         case ScenarioError.notFound: return "This scenario no longer exists."
         case ScenarioApplyError.nothingToUndo: return "There's no apply to undo."
         case ScenarioApplyError.notADifference: return "One of the ticked items is no longer a difference. Refresh the list and try again."

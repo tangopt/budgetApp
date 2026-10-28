@@ -21,7 +21,7 @@ final class ScenarioModelTests: XCTestCase {
             let columns = Set(try db.columns(in: "forecastEntry").map(\.name))
             XCTAssertTrue(columns.isSuperset(of: ["scenarioId", "sourceEntryId", "scenarioChange"]))
             let scenarioColumns = Set(try db.columns(in: "scenario").map(\.name))
-            XCTAssertEqual(scenarioColumns, ["id", "name", "createdAt", "refreshedAt"])
+            XCTAssertEqual(scenarioColumns, ["id", "name", "createdAt", "refreshedAt", "offerInputs"])
             let applicationColumns = Set(try db.columns(in: "scenarioApplication").map(\.name))
             XCTAssertEqual(applicationColumns, ["id", "scenarioId", "appliedAt", "undoneAt", "journal"])
         }

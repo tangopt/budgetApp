@@ -270,7 +270,8 @@ struct ContentView: View {
                     ScenarioLabView(viewModel: scenarioLabViewModel)
                         .onAppear { scenarioLabViewModel.load() }
                 case .salary:
-                    SalarySimulatorView(model: salaryViewModel)
+                    SalarySimulatorView(model: salaryViewModel, forecast: scenarioLabViewModel,
+                                        openForecast: { selection = .forecast })
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }
@@ -375,6 +376,12 @@ struct ContentView: View {
             refreshUncategorizedCount()
         }
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
+        .onChange(of: scenarioLabViewModel.offerToEdit) { _, request in
+            guard let request else { return }
+            scenarioLabViewModel.offerToEdit = nil
+            salaryViewModel.beginOfferEdit(request)
+            selection = .salary
+        }
         // Someone else signed in: the screens show what they can see (`SharedActualsSource`), so the one on show
         // reads again; the others read on appearing.
         .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in

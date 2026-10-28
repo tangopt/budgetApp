@@ -156,5 +156,6 @@ public final class DatabaseManager {
         registerSavedSiteMigration(&migrator)
         registerAutoLinkDeclinedMigration(&migrator)
         registerAutoLinkRecentMigration(&migrator)
+        registerScenarioOfferInputsMigration(&migrator)
     }
 }

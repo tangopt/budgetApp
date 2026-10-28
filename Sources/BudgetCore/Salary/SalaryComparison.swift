@@ -49,12 +49,28 @@ extension SalaryInputs {
     }
 }
 
+/// "Edit offer…" on a job-offer scenario: the scenario and the spec whose salaries the simulator shows.
+public struct SalaryOfferEdit: Equatable, Sendable {
+    public let scenarioId: Int64
+    public let scenarioName: String
+    public let spec: OfferScenarioSpec
+
+    public init(scenarioId: Int64, scenarioName: String, spec: OfferScenarioSpec) {
+        self.scenarioId = scenarioId
+        self.scenarioName = scenarioName
+        self.spec = spec
+    }
+}
+
 /// The salary simulator's two columns. The offer starts as a copy of the current salary; the
 /// comparison is recomputed whenever either side changes.
 ///
 /// With a `SalaryDraftStore` the two salaries are kept on this device as they change (after `saveDelay`) and come
 /// back next time; the draft wins over the prefill until "Reset". The prefill is the signed-in person's own latest
 /// P60 or payslip (`SalaryPrefill`), offered by the host through `loadPrefill`; nothing is written back to the database.
+///
+/// "Edit offer…" (`beginOfferEdit`) shows a scenario's stored salaries without touching the draft: what was on show
+/// is kept aside and comes back when editing stops without saving (`endOfferEdit(saved: false)`).
 @MainActor @Observable
 public final class SalaryComparisonViewModel {
     public var current: SalaryInputs { didSet { changed() } }
@@ -75,6 +91,10 @@ public final class SalaryComparisonViewModel {
     /// Edited or restored from a draft: the prefill no longer replaces the columns by itself.
     @ObservationIgnored private var touched = false
     @ObservationIgnored private var owner: Int64?
+    /// The job-offer scenario being edited; nil when the simulator shows the person's own draft.
+    public private(set) var offerEdit: SalaryOfferEdit?
+    /// What was on show before `beginOfferEdit`, and whether it had been edited.
+    @ObservationIgnored private var stashed: (current: SalaryInputs, offer: SalaryInputs, touched: Bool)?
 
     public init(current: SalaryInputs = .typicalCurrent(), offer: SalaryInputs? = nil,
                 store: SalaryDraftStore? = nil, saveDelay: Duration = .milliseconds(500)) {
@@ -111,8 +131,45 @@ public final class SalaryComparisonViewModel {
         if followed { offer = prefill }
     }
 
+    /// Shows `edit`'s stored salaries to edit for its scenario. The draft (and what was on show) is kept aside, a
+    /// pending draft write done first; edits made meanwhile are not saved as the draft.
+    public func beginOfferEdit(_ edit: SalaryOfferEdit) {
+        if offerEdit == nil {
+            if touched { flushDraft() }
+            stashed = (current, offer, touched)
+        }
+        offerEdit = edit
+        touched = true   // the prefill doesn't replace what is being edited
+        applying = true
+        current = edit.spec.current
+        offer = edit.spec.offer
+        applying = false
+        recompute()
+    }
+
+    /// Stops editing the scenario. Saved: the salaries on show stay and become the draft. Not saved: what was on
+    /// show before comes back, and the draft is as it was.
+    public func endOfferEdit(saved: Bool) {
+        guard offerEdit != nil else { return }
+        offerEdit = nil
+        let before = stashed
+        stashed = nil
+        if saved {
+            flushDraft()
+        } else if let before {
+            applying = true
+            current = before.current
+            offer = before.offer
+            applying = false
+            touched = before.touched
+            recompute()
+        }
+    }
+
     /// Back to the starting point: the person's latest pay (else the typical salary) on both sides; the draft goes.
     public func reset() {
+        offerEdit = nil
+        stashed = nil
         saveTask?.cancel()
         store?.clear()
         touched = false
@@ -140,6 +197,8 @@ public final class SalaryComparisonViewModel {
 
     /// Sign-out, leaving the household, demo data: the draft, the prefill and what is on show all go.
     public func forget() {
+        offerEdit = nil
+        stashed = nil
         discard()
         prefill = nil
         owner = nil
@@ -149,8 +208,9 @@ public final class SalaryComparisonViewModel {
     /// Writes the draft now (what the delay would do).
     public func flushDraft() {
         saveTask?.cancel()
-        // No owner, no draft: what an unknown viewer types isn't kept for whoever comes next.
-        guard savesDrafts, let store, owner != nil else { return }
+        // No owner, no draft: what an unknown viewer types isn't kept for whoever comes next. A scenario's
+        // salaries being edited aren't the draft.
+        guard savesDrafts, let store, owner != nil, offerEdit == nil else { return }
         store.save(SalaryDraft(current: current, offer: offer, personId: owner))
     }
 
@@ -172,7 +232,7 @@ public final class SalaryComparisonViewModel {
         recompute()
         guard !applying else { return }
         touched = true
-        guard store != nil, savesDrafts else { return }
+        guard store != nil, savesDrafts, offerEdit == nil else { return }
         saveTask?.cancel()
         let delay = saveDelay
         saveTask = Task { [weak self] in

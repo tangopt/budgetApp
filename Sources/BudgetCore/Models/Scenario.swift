@@ -10,12 +10,15 @@ public struct Scenario: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     public var createdAt: Date
     /// When "Refresh from budget" last re-copied the budget; nil = never refreshed.
     public var refreshedAt: Date?
+    /// A job-offer scenario's `OfferScenarioSpec` as JSON (`OfferScenarioBuilder`); nil for any other scenario.
+    public var offerInputs: String?
 
-    public init(id: Int64? = nil, name: String, createdAt: Date, refreshedAt: Date? = nil) {
+    public init(id: Int64? = nil, name: String, createdAt: Date, refreshedAt: Date? = nil, offerInputs: String? = nil) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
         self.refreshedAt = refreshedAt
+        self.offerInputs = offerInputs
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -96,6 +99,16 @@ func registerScenarioMigration(_ migrator: inout DatabaseMigrator) {
                 UPDATE forecastEntry SET scenarioId = ?, scenarioChange = 'added', status = 'manual'
                 WHERE groupId = ? AND status = 'hypothetical'
                 """, arguments: [db.lastInsertedRowID, groupId])
+        }
+    }
+}
+
+/// Job-offer scenarios (step 14): the simulator inputs stored with the scenario. Only adds a nullable
+/// column: existing scenarios have none.
+func registerScenarioOfferInputsMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addScenarioOfferInputs") { db in
+        try db.alter(table: "scenario") { t in
+            t.add(column: "offerInputs", .text)
         }
     }
 }

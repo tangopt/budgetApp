@@ -217,7 +217,7 @@ final class SavedSiteSyncTests: XCTestCase {
     }
 
     func testSchemaVersionIs9AndEveryColumnClassified() throws {
-        XCTAssertEqual(SyncSchema.version, 9)
+        XCTAssertGreaterThanOrEqual(SyncSchema.version, 9)  // saved sites came in version 9
         let schema = try XCTUnwrap(SyncSchema.table("savedSite"))
         XCTAssertEqual(schema.syncedColumns, ["name", "url", "kind", "sortOrder"])
         XCTAssertEqual(schema.localOnlyColumns, [])
@@ -231,7 +231,7 @@ final class SavedSiteSyncTests: XCTestCase {
         try manager.migrate(upTo: SharingMigration.summaryDirtyIdentifier)
         try manager.dbQueue.read { db in
             XCTAssertFalse(try db.tableExists("savedSite"))
-            XCTAssertEqual(try SyncChangeTracker.installedSchema(db: db)?.version, 9, "this build stamps its version")
+            XCTAssertEqual(try SyncChangeTracker.installedSchema(db: db)?.version, SyncSchema.version, "this build stamps its version")
         }
         try manager.dbQueue.write { db in try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic person')") }
         try manager.migrate()

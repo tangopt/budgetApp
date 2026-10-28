@@ -139,6 +139,19 @@ final class SyncReferenceClassificationTests: XCTestCase {
             enabledGroupIds: [35], createdGroupIds: [36], skipped: ["s"], boundary: Date(timeIntervalSince1970: 1_700_000_000), lastEntryId: 37))
     }
 
+    /// A job offer's inputs with every optional filled (both pension kinds, a one-off).
+    private static func offerInputs() throws -> String {
+        let current = SalaryInputs(grossAnnual: 1, bonusAnnual: 2, taxYearStart: 2026, pension: .fixedAnnual(pence: 3),
+                                   employerPension: .percentOfGross(basisPoints: 4), studentLoan: .plan2, postgraduateLoan: true,
+                                   benefitsInKindAnnual: 5)
+        let offer = SalaryInputs(grossAnnual: 6, taxYearStart: 2026, pension: .percentOfGross(basisPoints: 7),
+                                 employerPension: .fixedAnnual(pence: 8))
+        return try OfferScenarioSpec(current: current, offer: offer, salaryEntryId: 51, pensionEntryId: 52,
+                                     startMonth: Date(timeIntervalSince1970: 1_700_000_000), noticeGapMonths: 1,
+                                     oneOffs: [OfferOneOff(label: "Bonus", amountMinorUnits: 9, month: Date(timeIntervalSince1970: 1_700_000_000))],
+                                     newIncomeCategoryId: 53, addedEntryIds: [54, 55]).json()
+    }
+
     /// The known shapes of each JSON column, made by the code that writes them.
     private static func samples() throws -> [String: [String]] {
         [
@@ -147,6 +160,7 @@ final class SyncReferenceClassificationTests: XCTestCase {
             "evidenceRequirement.customKindIds": [json([43, 44] as [Int64])],
             "importRule.actionJSON": actions(),
             "scenarioApplication.journal": [journal()],
+            "scenario.offerInputs": [try offerInputs()],
             "document.persons": [json(["Person A"])],
             "evidenceRequirement.kinds": [json(DocumentKind.allCases)],
             "utilityProvider.invoiceRules": [json(UtilityInvoiceRules(textMarkers: ["a"], fileNameMarkers: ["b"], invoiceNumberPatterns: ["c"],

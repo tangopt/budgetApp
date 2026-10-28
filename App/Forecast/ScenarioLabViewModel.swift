@@ -93,6 +93,9 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     @Published var tickedDifferenceIds: Set<Int64> = []
     @Published var errorMessage: String?
     @Published var notice: Notice?
+    /// "Edit offer…" on a job-offer scenario: the shell takes it, shows its salaries in the Salary screen to
+    /// edit, and clears it.
+    @Published var offerToEdit: SalaryOfferEdit?
 
     // MARK: Loaded data
 
@@ -528,6 +531,40 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let outcome = perform { db in created = try Scenarios.duplicate(db: db, scenarioId: id, name: name) }
         if outcome == .saved, let newId = created?.id { show(newId) }
         return outcome
+    }
+
+    /// "Try in Forecast…" saved: the offer as a new scenario, shown ticked on the Compare tab.
+    func createOffer(name: String, spec: OfferScenarioSpec) -> SaveOutcome {
+        var created: Scenario?
+        let outcome = perform { db in created = try OfferScenarioBuilder.create(db: db, name: name, spec: spec) }
+        if case .failed = outcome { return outcome }
+        if let id = created?.id { showInCompare(id) }
+        return outcome
+    }
+
+    /// "Edit offer…" saved: the scenario rebuilt from the new spec (its name is kept), shown on Compare.
+    func rebuildOffer(scenarioId: Int64, spec: OfferScenarioSpec) -> SaveOutcome {
+        let outcome = perform { db in try OfferScenarioBuilder.rebuild(db: db, scenarioId: scenarioId, spec: spec) }
+        if case .failed = outcome { return outcome }
+        showInCompare(scenarioId)
+        return outcome
+    }
+
+    /// What the offer sheet can choose from, read from the budget.
+    func offerChoices() throws -> OfferChoices {
+        try dbQueue.read { db in
+            let categories = try Category.fetchAll(db).filter { $0.type == .income && !$0.isReserved }
+            let names = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } })
+            return OfferChoices(salaries: try OfferScenarioBuilder.salaryCandidates(db: db),
+                                pensions: try OfferScenarioBuilder.pensionCandidates(db: db),
+                                incomeCategories: categories, categoryNames: names)
+        }
+    }
+
+    private func showInCompare(_ id: Int64) {
+        compareSelection.insert(id)
+        differencesSelection.insert(id)
+        tab = .compare
     }
 
     func rename(_ scenario: Scenario, to name: String) -> SaveOutcome {
