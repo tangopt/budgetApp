@@ -207,3 +207,177 @@ private final class RotationProgressLog: @unchecked Sendable {
     func append(_ value: SyncKeyRotation.Progress) { lock.lock(); stored.append(value); lock.unlock() }
     var values: [SyncKeyRotation.Progress] { lock.lock(); defer { lock.unlock() }; return stored }
 }
+
+/// A share transport that can't reach iCloud.
+private struct OfflineShareTransport: SyncShareTransport {
+    func currentUserRecordName() async throws -> String { throw SyncTransportError.networkUnavailable }
+    func zoneShare(_ zone: String) async throws -> SyncZoneShare? { throw SyncTransportError.networkUnavailable }
+    func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare { throw SyncTransportError.networkUnavailable }
+    func removeParticipant(userRecordName: String, zone: String) async throws { throw SyncTransportError.networkUnavailable }
+    func removeAllParticipants(zone: String) async throws -> [String] { throw SyncTransportError.networkUnavailable }
+}
+
+/// Step 15 through the household: the admin removes the member (Settings ▸ Household ▸ Remove), the household gets a
+/// new key, every record is sealed again, and a re-invited member receives the new key only. `TwoPersonHousehold`
+/// over the CloudKit fake; synthetic data only.
+final class HouseholdRemovalTests: XCTestCase {
+    private let household = SyncZones.household
+    private let member = TwoPersonHousehold.memberICloudUser
+    private let owner = TwoPersonHousehold.adminICloudUser
+
+    private func memberUser(_ h: TwoPersonHousehold) throws -> AppUser {
+        try XCTUnwrap(try h.adminMac.db.read { db in try HouseholdInvite.member(db: db) })
+    }
+
+    private func markerKeyId(_ h: TwoPersonHousehold) async throws -> String {
+        let wire = await h.cloud.storedRecords().first { $0.recordType == SyncZoneKeys.recordType && $0.zone == household }
+        return try SyncZoneKeys.marker(from: try XCTUnwrap(wire)).keyId
+    }
+
+    private func householdSealed(_ h: TwoPersonHousehold) async -> [SyncWireRecord] {
+        let leftAlone = Set([SyncZoneKeys.recordType, SyncDocumentFile.recordType]).union(SyncKeyExchange.recordTypes)
+        return await h.cloud.storedRecords().filter { $0.zone == household && !leftAlone.contains($0.recordType) }
+    }
+
+    private func participants(_ h: TwoPersonHousehold) async throws -> [String] {
+        try await h.cloud.zoneShare(household)?.participants.map(\.userRecordName) ?? []
+    }
+
+    func testRemovalRevokesTheShareThenRotatesAndResealsEverything() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await h.syncAll()
+        let oldId = try await markerKeyId(h)
+        let old = try XCTUnwrap(try h.memberKeys.allKeys(zone: household)[oldId], "her device holds the household key")
+        let seen = RotationProgressLog()
+
+        let outcome = try await HouseholdRemoval.remove(transport: h.cloud, engine: h.adminMac.engine, member: try memberUser(h),
+                                                        db: h.adminMac.db) { seen.append($0) }
+        guard case .removed(let report) = outcome else { return XCTFail("not secured: \(outcome)") }
+        XCTAssertEqual(report.remaining, 0)
+        XCTAssertGreaterThan(report.resealed, 0)
+        XCTAssertEqual(seen.values.last, report.progress)
+
+        let participants = try await participants(h)
+        XCTAssertFalse(participants.contains(member), "she is off the share")
+        let newId = try await markerKeyId(h)
+        XCTAssertNotEqual(newId, oldId)
+        let pending = try await h.adminMac.db.read { db in try SyncKeyRotation.isPending(db: db) }
+        XCTAssertFalse(pending)
+        let revoked = try await h.adminMac.db.read { db in try SyncKeyRotation.revokedKeyIds(db: db) }
+        XCTAssertEqual(revoked, [oldId])
+        for record in await householdSealed(h) {
+            XCTAssertEqual(FieldSealing.keyId(of: record), newId, "\(record.recordType) still under her key")
+            XCTAssertThrowsError(try FieldSealing.open(record, keys: [oldId: old]), "her key opens \(record.recordType)")
+        }
+        // The household is gone from her databases; the admin's other devices read on with the new key.
+        do {
+            _ = try await h.cloud.session(as: member).changes(since: nil, zone: household)
+            XCTFail("she still reaches the household")
+        } catch SyncTransportError.zoneNotFound {}
+        let phone = try await h.adminPhone.engine.pull()
+        XCTAssertEqual(phone.unreadable, 0)
+        XCTAssertEqual(phone.waitingForKey, 0)
+    }
+
+    func testRemovalIsRefusedOfflineAndChangesNothing() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await h.syncAll()
+        let oldId = try await markerKeyId(h)
+        let outcome = try await HouseholdRemoval.remove(transport: OfflineShareTransport(), engine: h.adminMac.engine,
+                                                        member: try memberUser(h), db: h.adminMac.db)
+        XCTAssertEqual(outcome, .offline)
+        XCTAssertEqual(HouseholdCopy.removeOffline, "Connect to the internet to remove someone")
+        let participants = try await participants(h)
+        XCTAssertTrue(participants.contains(member), "still on the share")
+        let newId = try await markerKeyId(h)
+        XCTAssertEqual(newId, oldId, "no new key")
+        let state = try await h.adminMac.db.read { db in (try SyncKeyRotation.isPending(db: db), try SyncKeyRotation.revokedKeyIds(db: db)) }
+        XCTAssertFalse(state.0)
+        XCTAssertEqual(state.1, [])
+        let removed = try await h.adminMac.db.read { db in try HouseholdInvite.wasRemoved(db: db) }
+        XCTAssertFalse(removed)
+    }
+
+    func testAnInterruptedRemovalIsFinishedAfterALaterSync() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await h.syncAll()
+        let oldId = try await markerKeyId(h)
+        // The new marker goes; the connection drops before the sweep's first save.
+        await h.cloud.failSaveOperations(after: 1)
+        let outcome = try await HouseholdRemoval.remove(transport: h.cloud, engine: h.adminMac.engine, member: try memberUser(h),
+                                                        db: h.adminMac.db)
+        XCTAssertEqual(outcome, .securingLater)
+        let participants = try await participants(h)
+        XCTAssertFalse(participants.contains(member), "she is off the share already")
+        let pending = try await h.adminMac.db.read { db in try SyncKeyRotation.isPending(db: db) }
+        XCTAssertTrue(pending)
+        let rotatedId = try await markerKeyId(h)
+        XCTAssertNotEqual(rotatedId, oldId)
+
+        // Back online (after a quit: nothing in memory carries over): the Mac finishes without making another key.
+        await h.cloud.restoreConnection()
+        let resumed = try await HouseholdRemoval.resumeIfPending(engine: h.adminMac.engine, db: h.adminMac.db)
+        guard case .removed(let report)? = resumed else { return XCTFail("not finished: \(String(describing: resumed))") }
+        XCTAssertEqual(report.remaining, 0)
+        let finalId = try await markerKeyId(h)
+        XCTAssertEqual(finalId, rotatedId, "the resume keeps the key the removal made")
+        for record in await householdSealed(h) { XCTAssertEqual(FieldSealing.keyId(of: record), rotatedId) }
+        let again = try await HouseholdRemoval.resumeIfPending(engine: h.adminMac.engine, db: h.adminMac.db)
+        XCTAssertNil(again, "nothing left pending")
+    }
+
+    func testAReinvitedMemberIsGrantedTheNewKeyOnly() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await h.syncAll()
+        let oldId = try await markerKeyId(h)
+        _ = try await HouseholdRemoval.remove(transport: h.cloud, engine: h.adminMac.engine, member: try memberUser(h), db: h.adminMac.db)
+        let newId = try await markerKeyId(h)
+
+        // Invited again, she accepts on a device that holds no household key yet.
+        h.cloud.invite(member, zone: household)
+        h.cloud.accept(zone: household, as: member)
+        let fresh = InMemorySyncKeyStore()
+        let session = h.cloud.session(as: member)
+        let requester = SyncKeyExchange.Requester(board: session, transport: session, keys: fresh, member: member, householdOwner: owner)
+        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.cloud, member: member, db: h.adminMac.db)
+        try await requester.start(now: Date())
+        _ = try await granter.poll(now: Date())
+        guard case .showCode = try await requester.poll(now: Date()) else { return XCTFail("no code on her device") }
+        let polled = try await granter.poll(now: Date())
+        try await granter.grant(try XCTUnwrap(polled), keys: h.adminKeys, now: Date())
+        let received = try await requester.poll(now: Date())
+        XCTAssertEqual(received, .received)
+
+        XCTAssertEqual(Set(try h.adminKeys.allKeys(zone: household).keys), [oldId, newId], "the Mac keeps the retired key")
+        XCTAssertEqual(Set(try fresh.allKeys(zone: household).keys), [newId], "she receives the new key only")
+    }
+
+    func testNoKeyIsGrantedWhileTheNewKeyIsStillOwed() async throws {
+        let h = try TwoPersonHousehold.make()
+        try await h.syncAll()
+        try await h.adminMac.engine.beginKeyRevocation()
+        let granter = SyncKeyExchange.Granter(board: h.cloud, transport: h.cloud, member: member, db: h.adminMac.db)
+        let session = h.cloud.session(as: member)
+        let requester = SyncKeyExchange.Requester(board: session, transport: session, keys: InMemorySyncKeyStore(), member: member,
+                                                  householdOwner: owner)
+        try await requester.start(now: Date())
+        _ = try await granter.poll(now: Date())
+        _ = try await requester.poll(now: Date())
+        let polled = try await granter.poll(now: Date())
+        do {
+            try await granter.grant(try XCTUnwrap(polled), keys: h.adminKeys, now: Date())
+            XCTFail("a revoked key was granted")
+        } catch let error as SyncKeyExchange.ExchangeError {
+            XCTAssertEqual(error, .noKeys)
+        }
+    }
+}
+
+final class KeyRotationCopyTests: XCTestCase {
+    func testCopy() {
+        XCTAssertEqual(HouseholdCopy.securing(SyncKeyRotation.Progress(done: 12, total: 340)), "Securing the household… 12 of 340")
+        XCTAssertEqual(HouseholdCopy.securing(SyncKeyRotation.Progress(done: 0, total: 0)), "Securing the household…")
+        XCTAssertEqual(HouseholdCopy.removeRecall("Sam"), "Copies Sam already downloaded can't be recalled.")
+        XCTAssertEqual(HouseholdCopy.removeOffline, "Connect to the internet to remove someone")
+    }
+}

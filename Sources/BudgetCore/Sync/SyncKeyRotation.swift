@@ -150,6 +150,60 @@ extension SyncEngineCore {
         return report
     }
 
+    // MARK: A removal's revocation (step 15)
+
+    /// Before a member is taken off the household's share (Mac only): every household key held now is one she may hold,
+    /// so each is revoked (never granted again) and a rotation is pending until `finishKeyRevocation` completes it.
+    public func beginKeyRevocation() async throws {
+        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
+        try await serialized {
+            let held = Set(try self.keyStore.allKeys(zone: SyncZones.household).keys)
+            let now = self.clock()
+            try await self.db.write { db in
+                var state = try SyncKeyRotation.state(db: db)
+                state.revoked = Array(Set(state.revoked).union(held)).sorted()
+                if !state.pending { state.progress = SyncKeyRotation.Progress(done: 0, total: 0) }
+                state.pending = true
+                try SyncKeyRotation.store(state, db: db, now: now)
+            }
+            Self.rotationLog.notice("Key revocation begun: \(held.count, privacy: .public) key(s) revoked")
+        }
+    }
+
+    /// A pending revocation finished: a new household key unless the current one is already newer than every revoked
+    /// one (a resume after the rotation), then the re-seal sweep. The revocation stays pending until the sweep leaves
+    /// nothing to convert; a passing transport error stops it with what is done kept (`resumeIfPending` goes on later).
+    /// Nil when nothing is pending.
+    @discardableResult
+    public func finishKeyRevocation(progress: @escaping @Sendable (SyncKeyRotation.Progress) -> Void = { _ in }) async throws -> SyncResealReport? {
+        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
+        return try await serialized { () -> SyncResealReport? in
+            let zone = SyncZones.household
+            let revoked = try await self.db.read { db -> Set<String>? in
+                let state = try SyncKeyRotation.state(db: db)
+                return state.pending ? Set(state.revoked) : nil
+            }
+            guard let revoked else { return nil }
+            try await self.prepare()
+            let current = try await self.refreshHouseholdKey(zone: zone, create: false)
+            if revoked.contains(current.id) {
+                let rotation = try await self.rotateZoneKeyNow()
+                Self.rotationLog.notice("Key revocation: new household key, \(rotation.rewrapped, privacy: .public) data key(s) re-wrapped")
+            }
+            let report = try await self.resealSweepNow(progress: progress)
+            if report.remaining == 0 {
+                let now = self.clock()
+                try await self.db.write { db in
+                    var state = try SyncKeyRotation.state(db: db)
+                    state.pending = false
+                    try SyncKeyRotation.store(state, db: db, now: now)
+                }
+                Self.rotationLog.notice("Key revocation finished")
+            }
+            return report
+        }
+    }
+
     private func persist(_ state: SyncKeyRotation.State) async throws {
         let now = clock()
         try await db.write { db in try SyncKeyRotation.store(state, db: db, now: now) }

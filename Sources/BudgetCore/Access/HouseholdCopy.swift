@@ -64,6 +64,20 @@ public enum HouseholdCopy {
 
     public static let removeMessage = "Their devices stop syncing and delete the household's data. Your data stays on this Mac."
 
+    // MARK: A new household key after a removal (step 15)
+
+    /// Under the remove dialog's message: what a new key can't do.
+    public static func removeRecall(_ name: String) -> String { "Copies \(name) already downloaded can't be recalled." }
+    /// iCloud couldn't be reached: nobody was removed (`HouseholdRemoval.Outcome.offline`).
+    public static let removeOffline = "Connect to the internet to remove someone"
+    /// The re-seal sweep's progress line.
+    public static func securing(_ progress: SyncKeyRotation.Progress) -> String {
+        guard progress.total > 0 else { return "Securing the household…" }
+        return "Securing the household… \(progress.done.formatted()) of \(progress.total.formatted())"
+    }
+    /// Removed, but the new key or the sweep finishes later (`HouseholdRemoval.Outcome.securingLater`).
+    public static let securingLater = "Mango finishes securing the household the next time it syncs."
+
     // MARK: Letting her make changes (step 8)
 
     /// The share lets her write: what she changes is still limited by her Edit areas.
