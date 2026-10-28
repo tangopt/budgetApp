@@ -270,11 +270,19 @@ struct TaxMissingEvidenceTab: View {
     let page: TaxOverview.YearPage
     let openTransaction: (Transaction) -> Void
     @State private var saved: (MissingEvidenceViewModel.PeriodChoice, MissingEvidenceViewModel.PropertyFilter?)?
+    @Environment(\.openMissingDocuments) private var openMissingDocuments
 
     private var key: String { "\(page.row.year.startYear)-\(page.property?.id ?? 0)" }
 
     var body: some View {
-        MissingEvidenceView(viewModel: viewModel, openTransaction: openTransaction, embedded: true)
+        VStack(alignment: .leading, spacing: 6) {
+            Button { openMissingDocuments(page.row.year.startYear) } label: {
+                Label("Missing documents for \(page.row.year.label), with tenancy and property", systemImage: "doc.badge.ellipsis")
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .buttonStyle(.link)
+            MissingEvidenceView(viewModel: viewModel, openTransaction: openTransaction, embedded: true)
+        }
             .onAppear {
                 if saved == nil { saved = (viewModel.periodChoice, viewModel.propertyFilter) }
                 // The standalone screen's side panel doesn't follow it here (nor this one back).

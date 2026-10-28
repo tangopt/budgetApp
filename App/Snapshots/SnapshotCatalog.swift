@@ -715,6 +715,10 @@ enum SnapshotCatalog {
                 models.missingEvidence.periodChoice = .taxYear(2025)
                 models.missingEvidence.missingOnly = false
             },
+            screen("missing_documents", "main", "Missing documents", .missingDocuments, settle: 2),
+            screen("missing_documents", "tenancy", "Missing documents: Tenancy, due soon or overdue", .missingDocuments, settle: 2) { models, _ in
+                models.missingDocuments.area = .tenancy
+            },
             screen("rules", "main", "Rules", .rules),
             // The learnt import rules: a document type, a link, a statement account (demo).
             screen("rules", "import", "Rules: Import rules", .rules) { models, _ in models.rules.tab = .importRules },

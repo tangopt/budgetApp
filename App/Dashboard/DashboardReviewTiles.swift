@@ -132,7 +132,7 @@ struct EvidenceTile: View {
         let largest = Double(max(1, evidence.missingCount, evidence.waitingForPayment))
         DashTile(title: "Evidence and documents", accessory: {
             HStack(spacing: 6) {
-                iconButton("doc.badge.ellipsis", "Missing evidence") { navigate(.missingEvidence) }
+                iconButton("doc.badge.ellipsis", "Missing documents") { navigate(.missingDocuments) }
                 iconButton("doc.text", "Documents") { navigate(.documents) }
             }
         }, content: {
@@ -186,7 +186,7 @@ struct AttentionTile: View {
         switch kind {
         case .taxDeadline: return (.taxYears, "Tax years")
         case .rentLate: return (.property, "Property")
-        case .evidenceMissing: return (.missingEvidence, "Missing evidence")
+        case .evidenceMissing: return (.missingDocuments, "Missing documents")
         case .documentsWaiting: return (.documents, "Documents")
         case .importsWaiting: return (.imports, "Imports")
         case .mortgageReview: return (.property, "Property")
