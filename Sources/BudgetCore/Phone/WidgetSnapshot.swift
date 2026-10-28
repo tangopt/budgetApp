@@ -22,11 +22,16 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
     public var paydayDate: Date
     /// The figures show on the lock screen only when turned on in Settings.
     public var showFiguresOnLockScreen: Bool
+    /// Step 18: the pay month's spending against its budget (the Month spend widget); nil in a snapshot an older app wrote.
+    public var monthSpend: MonthSpendFigures?
+    /// Step 18: this month's recharge pipeline per tenancy the viewer may see (the Property month widget), by tenancy name.
+    public var propertyMonths: [RechargePipelineFigures]?
 
     public static let currentVersion = 1
 
     public init(version: Int = WidgetSnapshot.currentVersion, generatedAt: Date, netWorthMinorUnits: Int?, currencyCode: String = "GBP",
-                leftToSpendMinorUnits: Int, paydayDate: Date, showFiguresOnLockScreen: Bool) {
+                leftToSpendMinorUnits: Int, paydayDate: Date, showFiguresOnLockScreen: Bool,
+                monthSpend: MonthSpendFigures? = nil, propertyMonths: [RechargePipelineFigures]? = nil) {
         self.version = version
         self.generatedAt = generatedAt
         self.netWorthMinorUnits = netWorthMinorUnits
@@ -34,6 +39,8 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
         self.leftToSpendMinorUnits = leftToSpendMinorUnits
         self.paydayDate = paydayDate
         self.showFiguresOnLockScreen = showFiguresOnLockScreen
+        self.monthSpend = monthSpend
+        self.propertyMonths = propertyMonths
     }
 
     /// The snapshot on `today` for `viewer`: `DashboardInput.load` with the viewer's actuals, then `HomeSummary.make`,
@@ -44,7 +51,21 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
         let home = try HomeSummary.make(input, db: db)
         return WidgetSnapshot(generatedAt: today, netWorthMinorUnits: home.netWorth.currentNetWorthMinorUnits,
                               leftToSpendMinorUnits: home.leftToSpendMinorUnits, paydayDate: home.paydayDate,
-                              showFiguresOnLockScreen: settings.showFiguresOnLockScreen)
+                              showFiguresOnLockScreen: settings.showFiguresOnLockScreen,
+                              monthSpend: MonthSpendFigures.make(input, month: home.month),
+                              propertyMonths: try propertyMonths(db: db, viewer: viewer, today: today))
+    }
+
+    /// The pipelines the viewer may see: everything for demo data and tests, the bound app user's view for an iCloud
+    /// user, nothing while she isn't known (as the iPad's This month reads).
+    static func propertyMonths(db: Database, viewer: PhoneViewer, today: Date) throws -> [RechargePipelineFigures] {
+        switch viewer {
+        case .everyone, .demoAdmin:
+            return try RechargePipelineFigures.all(db: db, today: today, viewer: nil)
+        case .iCloudUser:
+            guard let actor = try DeviceWriter.actor(viewer, db: db) else { return [] }
+            return try RechargePipelineFigures.all(db: db, today: today, viewer: actor)
+        }
     }
 
     /// Days from `day` to payday (0 on and after it), so the widget counts down by itself between refreshes.

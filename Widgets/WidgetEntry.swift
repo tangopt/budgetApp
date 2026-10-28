@@ -18,7 +18,13 @@ struct SnapshotProvider: TimelineProvider {
     }
 
     private static let sample = WidgetSnapshot(generatedAt: Date(), netWorthMinorUnits: 1_234_500, leftToSpendMinorUnits: 45_600,
-                                               paydayDate: Date().addingTimeInterval(12 * 86_400), showFiguresOnLockScreen: true)
+                                               paydayDate: Date().addingTimeInterval(12 * 86_400), showFiguresOnLockScreen: true,
+                                               monthSpend: MonthSpendFigures(start: Date().addingTimeInterval(-9 * 86_400), spentMinorUnits: 91_200, budgetMinorUnits: 240_000,
+                                                                             dayOfMonth: 10, daysInMonth: 30, cumulativeSpent: [8_000, 15_000, 22_000, 31_000, 40_000, 52_000, 61_000, 72_000, 80_000, 91_200],
+                                                                             overBudget: [.init(name: "Eating out", spentMinorUnits: 21_000, budgetMinorUnits: 15_000)]),
+                                               propertyMonths: [RechargePipelineFigures(tenancyName: "Tenancy 1", month: Date(), utilities: [.init(name: "Power", kind: "electricity", isIn: true),
+                                                                                                                                              .init(name: "Water", kind: "water", isIn: false)],
+                                                                                         statementSent: false, paidByTenant: false, outstandingMinorUnits: 12_000, currencyCode: "EUR")])
 
     func placeholder(in context: Context) -> WidgetEntry {
         WidgetEntry(date: Date(), snapshot: Self.sample)
