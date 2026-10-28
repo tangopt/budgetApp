@@ -493,7 +493,7 @@ public final class PadMoneyModel: ObservableObject {
         await loadBreakdown(month.start)
     }
 
-    private func closeMonth() { expandedMonth = nil }
+    public func closeMonth() { expandedMonth = nil }
 
     private func loadBreakdown(_ start: Date) async {
         guard breakdowns[start] == nil, let propertyId = property.property?.id,

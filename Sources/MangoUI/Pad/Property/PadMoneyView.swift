@@ -14,7 +14,6 @@ struct PadMoneyView: View {
     /// Selects a library document on the Documents screen.
     let showDocument: (Int64) -> Void
     @State private var request: PadChoiceRequest?
-    @State private var showsCharts = false
     @State private var showsCustom = false
     @State private var detail: TransactionSearch.Row?
     @Environment(\.phoneTheme) private var theme
@@ -36,7 +35,9 @@ struct PadMoneyView: View {
                             tiles
                             chips
                             switch model.mode {
-                            case .months: monthList
+                            case .months:
+                                monthList
+                                PadMoneyChartsContent(model: model, onShow: { figure in Task { await model.show(figure) } })
                             case .transactions: transactionList
                             }
                         }
@@ -57,11 +58,10 @@ struct PadMoneyView: View {
             await model.reload()
         }
         .sheet(item: $request) { PadChoiceSheet(request: $0) }
-        .sheet(isPresented: $showsCharts) {
-            PadMoneyChartsSheet(model: model, onShow: { figure in
-                showsCharts = false
-                Task { await model.show(figure) }
-            })
+        .padSidePanel(isPresented: model.expandedMonth != nil && model.panel == nil, onClose: { model.closeMonth() }) {
+            if let month = model.months.first(where: { $0.start == model.expandedMonth }) {
+                PadSidePanel(title: PadMoneyModel.monthTitle(month), onClose: { model.closeMonth() }) { monthDetail(month) }
+            }
         }
         .sheet(isPresented: $showsCustom) { PadMoneyCustomRangeSheet(model: model) }
         .sheet(item: $detail) { row in
@@ -74,9 +74,9 @@ struct PadMoneyView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { periodMenu; viewPicker.frame(maxWidth: 300); Spacer(minLength: 8); togglesAndCharts }
+                HStack(spacing: 12) { periodMenu; viewPicker.frame(maxWidth: 300); Spacer(minLength: 8); if model.offersGBP { gbpToggle } }
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) { periodMenu; Spacer(minLength: 8); chartsButton }
+                    HStack(spacing: 12) { periodMenu; Spacer(minLength: 8) }
                     viewPicker
                     if model.offersGBP { gbpToggle }
                 }
@@ -130,17 +130,6 @@ struct PadMoneyView: View {
 
     private var gbpToggle: some View {
         Toggle("Show in GBP", isOn: $model.showsGBP).fixedSize().frame(minHeight: 44)
-    }
-
-    private var chartsButton: some View {
-        Button { showsCharts = true } label: { Label("Charts and figures", systemImage: "chart.bar.xaxis") }
-            .buttonStyle(.pad(.secondary))
-    }
-
-    @ViewBuilder
-    private var togglesAndCharts: some View {
-        if model.offersGBP { gbpToggle }
-        chartsButton
     }
 
     // MARK: Tiles and chips
@@ -197,36 +186,33 @@ struct PadMoneyView: View {
 
     private var monthList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Months").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
-            ForEach(model.months, id: \.start) { month in
-                monthCard(month)
+            PadSectionHeader("Months")
+            Card {
+                ForEach(Array(model.months.enumerated()), id: \.element.start) { index, month in
+                    if index > 0 { Divider() }
+                    monthRow(month)
+                }
             }
         }
     }
 
-    private func monthCard(_ month: PropertyMonthFigures) -> some View {
-        let expanded = model.expandedMonth == month.start
-        return VStack(alignment: .leading, spacing: 10) {
-            Button { Task { await model.toggle(month) } } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(PadMoneyModel.monthTitle(month).figuresUnbroken).mangoFont(.headline).lineLimit(1)
-                    Spacer(minLength: 8)
-                    MoneyText(minorUnits: model.shown(month.figures.netCashFlow), currency: model.displayCurrency, role: .income, font: .headline)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").mangoFont(.footnote).foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                }
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
+    private func monthRow(_ month: PropertyMonthFigures) -> some View {
+        let selected = model.expandedMonth == month.start
+        return Button { Task { await model.toggle(month) } } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Text(PadMoneyModel.monthTitle(month).figuresUnbroken).mangoFont(.headline).lineLimit(1)
+                Spacer(minLength: 8)
+                MoneyText(minorUnits: model.shown(month.figures.netCashFlow), currency: model.displayCurrency, role: .income, font: .headline)
+                Image(systemName: "chevron.right").mangoFont(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint(expanded ? "Hides the month's transactions" : "Shows the month's transactions")
-            if expanded {
-                monthDetail(month)
-            }
+            .frame(minHeight: 44)
+            .padding(.horizontal, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? theme.accent.opacity(0.12) : .clear))
+            .contentShape(Rectangle())
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the month's transactions")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     @ViewBuilder
