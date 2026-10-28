@@ -12,13 +12,13 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case search = "Search"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
-    case salary = "Salary"
     case accounts = "Accounts"
     /// One sidebar row per property (`ContentView.sidebarRows`); "Property" while there is none.
     case property = "Property"
     case taxYears = "Tax years"
     case documents = "Documents"
     case missingEvidence = "Missing evidence"
+    case salary = "UK Salary Calculator"
     case rules = "Rules"
     case categories = "Categories"
     case uncategorized = "Uncategorized"
@@ -54,8 +54,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .imports, .uncategorized: return "Workflow"
-        case .dashboard, .search, .budgetGrid, .forecast, .salary, .accounts, .property: return "Overview"
-        case .taxYears, .documents, .missingEvidence: return "Tax"
+        case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
+        case .taxYears, .documents, .missingEvidence, .salary: return "Tax"
         case .rules, .categories: return "Settings"
         }
     }

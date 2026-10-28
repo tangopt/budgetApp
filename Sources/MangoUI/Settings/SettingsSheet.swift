@@ -140,7 +140,7 @@ public struct SettingsSheet: View {
                             dismiss()
                             onOpenSalary()
                         } label: {
-                            Label("Salary simulator", systemImage: "sterlingsign.circle")
+                            Label("UK Salary Calculator", systemImage: "sterlingsign.circle")
                                 .frame(minHeight: 44)
                         }
                     }

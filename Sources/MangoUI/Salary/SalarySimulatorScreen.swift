@@ -66,7 +66,7 @@ public struct SalarySimulatorScreen: View {
         }
         .background(theme.background)
         .task { await viewModel.refreshPrefill() }
-        .navigationTitle("Salary simulator")
+        .navigationTitle("UK Salary Calculator")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

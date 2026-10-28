@@ -31,7 +31,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .profile: "Profile"
         case .evidence: "Evidence"
         case .documents: "Documents"
-        case .salary: "Salary simulator"
+        case .salary: "UK Salary Calculator"
         }
     }
 

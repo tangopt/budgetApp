@@ -17,7 +17,7 @@ final class PadSectionTests: XCTestCase {
     func testEvidenceSitsUnderEverythingElseNotProperty() {
         let groups = PadSection.groups(hasProperty: true)
         XCTAssertEqual(groups[2].sections, [.salary, .evidence, .documents])
-        XCTAssertEqual(groups[2].sections.map(\.title), ["Salary simulator", "Evidence", "Documents"])
+        XCTAssertEqual(groups[2].sections.map(\.title), ["UK Salary Calculator", "Evidence", "Documents"])
         XCTAssertFalse(groups[1].sections.contains(.evidence))
         XCTAssertFalse(PadSection.evidence.requiresProperty)
     }

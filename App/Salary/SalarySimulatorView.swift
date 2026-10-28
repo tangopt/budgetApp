@@ -56,7 +56,7 @@ struct SalarySimulatorView: View {
                     .help(offerReason ?? "Make a forecast scenario with this offer")
             }
         }
-        .navigationTitle("Salary simulator")
+        .navigationTitle("UK Salary Calculator")
     }
 
     // MARK: Try in Forecast

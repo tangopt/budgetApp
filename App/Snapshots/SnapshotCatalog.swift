@@ -681,7 +681,7 @@ enum SnapshotCatalog {
             screen("forecast", "compare", "Forecast: Compare", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .compare },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
             screen("forecast", "grid", "Forecast: Grid", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .grid },
-            screen("salary", "main", "Salary simulator: a £52,000 offer against £40,000", .salary) { models, _ in
+            screen("salary", "main", "UK Salary Calculator: a £52,000 offer against £40,000", .salary) { models, _ in
                 models.salary.offer.grossAnnual = 5_200_000
             },
             screen("accounts", "main", "Accounts", .accounts),
