@@ -63,7 +63,7 @@ final class DashboardViewModel: ObservableObject {
             let (loaded, partial, review) = try dbQueue.read { db in
                 let actuals = try SignedInActor.actuals(db: db, today: today)
                 return (try DashboardInput.load(db: db, today: today, actuals: actuals), actuals.viewer.seesOnlyPart(of: try Account.fetchAll(db)),
-                        try DashboardReview.load(db: db, today: today, lastVisit: lastVisit, viewer: try SignedInActor.actor(db: db)))
+                        try Self.review(db: db, today: today, lastVisit: lastVisit))
             }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
             let thisYear = MonthRange.components(of: today).year
@@ -97,6 +97,18 @@ final class DashboardViewModel: ObservableObject {
     }
 
     /// When the Dashboard was last seen on this device (`UserDefaults` `dashboardLastVisit`); nil before the first visit.
+    /// The review as the signed-in user sees it. A read, so it never asks for a write's actor: while signed out (the
+    /// lock screen covers the window) the cards stay empty instead of failing the whole Dashboard.
+    static func review(db: Database, today: Date, lastVisit: Date?) throws -> DashboardReview {
+        let viewer: AccessActor?
+        switch SignedInActor.state {
+        case .signedIn(let id): viewer = try AccessActor.load(appUserId: id, db: db)
+        case .notSetUp: viewer = nil
+        case .signedOut: return DashboardReview(tax: nil, property: nil, evidence: nil, mortgages: nil, importsWaiting: 0, attention: [])
+        }
+        return try DashboardReview.load(db: db, today: today, lastVisit: lastVisit, viewer: viewer)
+    }
+
     static let lastVisitKey = "dashboardLastVisit"
     static var lastVisit: Date? {
         let seconds = UserDefaults.standard.double(forKey: lastVisitKey)

@@ -385,7 +385,11 @@ struct ContentView: View {
         // Someone else signed in: the screens show what they can see (`SharedActualsSource`), so the one on show
         // reads again; the others read on appearing.
         .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in
-            guard id != shownForUserId else { return }
+            // Unlocked as the same person: the Dashboard read while locked (its review cards empty) reads again.
+            guard id != shownForUserId else {
+                if selection == .dashboard { dashboardViewModel.load() }
+                return
+            }
             // Someone else signed in: the salary draft and the last person's pay go.
             if shownForUserId != nil { salaryViewModel.forget() }
             Task { await salaryViewModel.refreshPrefill() }
