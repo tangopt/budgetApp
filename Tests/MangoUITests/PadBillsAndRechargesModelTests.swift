@@ -91,6 +91,7 @@ final class PadBillsAndRechargesModelTests: XCTestCase {
         let matched = await tabs.padBills.matchCredits()
         XCTAssertFalse(totalSaved)
         XCTAssertFalse(matched)
+        XCTAssertEqual(tabs.padBills.matchMessage, "This iPad can only view Property, so it cannot match payments")
         let amount = try await db.read { try UtilityInvoice.fetchOne($0, key: 54)?.amountMinorUnits }
         XCTAssertEqual(amount, bill.invoice?.amountMinorUnits)
     }
@@ -194,6 +195,16 @@ final class PadBillsAndRechargesModelTests: XCTestCase {
         XCTAssertFalse(after.row.payments.contains { $0.transactionId == payment.transactionId })
         let matched = await model.matchCredits()
         XCTAssertTrue(matched)
+        XCTAssertNotNil(model.matchMessage)
+        // Run again: nothing is left to match, and it says so.
+        _ = await model.matchCredits()
+        XCTAssertEqual(model.matchMessage, "Nothing new to match")
+    }
+
+    func testMatchMessages() {
+        XCTAssertEqual(PadBillsAndRechargesModel.matchMessage(rentLinks: 0, rechargePayments: 0), "Nothing new to match")
+        XCTAssertEqual(PadBillsAndRechargesModel.matchMessage(rentLinks: 1, rechargePayments: 0), "Matched 1 payment")
+        XCTAssertEqual(PadBillsAndRechargesModel.matchMessage(rentLinks: 1, rechargePayments: 1), "Matched 2 payments")
     }
 
     func testChargesLineKeepsTheSoFarFigureWhenStepThreeIsDone() {

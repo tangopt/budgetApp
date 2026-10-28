@@ -109,4 +109,40 @@ final class DocumentPanelModelTests: XCTestCase {
         XCTAssertEqual(DocumentPanelLayout.placement(containerWidth: 514), .overlay)
         XCTAssertEqual(DocumentPanelLayout.contentWidth(containerWidth: 874), 494)
     }
+
+    private func receiptId(_ db: DatabaseQueue) throws -> Int64 {
+        try db.write { try insert($0, name: "Receipt", kind: .other) }
+    }
+
+    func testAStalledDownloadEndsInAFailureWithRetryInsteadOfSpinningForEver() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let attempts = Counter()
+        let stall = DocumentPanelSource(dbQueue: db, open: { _ in
+            await attempts.bump()
+            try await Task.sleep(for: .seconds(3600))
+            throw PadDocumentNotOnDevice()
+        })
+        let model = DocumentPanelModel(documentId: id, source: stall, timeout: .milliseconds(150))
+        await model.load()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.timedOutCopy))
+        await model.retry()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.timedOutCopy))
+        let count = await attempts.count
+        XCTAssertEqual(count, 2, "Try again asks again")
+    }
+
+    func testADownloadThatAnswersInTimeIsReady() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let url = URL(fileURLWithPath: "/tmp/receipt.pdf")
+        let model = DocumentPanelModel(documentId: id, source: DocumentPanelSource(dbQueue: db, open: { _ in url }), timeout: .seconds(5))
+        await model.load()
+        XCTAssertEqual(model.file, .ready(url))
+    }
+}
+
+private actor Counter {
+    private(set) var count = 0
+    func bump() { count += 1 }
 }

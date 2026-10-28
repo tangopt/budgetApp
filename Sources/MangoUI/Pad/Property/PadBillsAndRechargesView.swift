@@ -100,6 +100,10 @@ struct PadBillsAndRechargesView: View {
                 }
                 .buttonStyle(.pad(.secondary))
             }
+            if let message = model.matchMessage {
+                InlineBanner(tone: .neutral, text: message)
+                    .accessibilityIdentifier("match-credits-result")
+            }
         }
     }
 

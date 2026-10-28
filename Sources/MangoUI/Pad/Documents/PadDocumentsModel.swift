@@ -40,6 +40,7 @@ public final class PadDocumentsModel: ObservableObject {
 
     public static let downloadingCopy = "Downloading…"
     public static let failureCopy = "Couldn't download this document. Try again when you're online."
+    public static let timedOutCopy = "This is taking too long. Mango may still be syncing; try again in a moment."
     public static let notOnDeviceCopy = "Not on this iPad yet"
 
     @Published public var filter: Filter = .all

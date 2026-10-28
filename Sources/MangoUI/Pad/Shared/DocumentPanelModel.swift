@@ -74,6 +74,28 @@ public struct DocumentPanelDetails: Equatable, Sendable {
     }
 }
 
+/// A download that did not answer in time.
+struct DocumentPanelTimeout: Error {}
+
+/// Resumes a continuation once, whichever of the work and the timer answers first.
+private final class DocumentPanelOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<URL, Error>?
+
+    init(_ continuation: CheckedContinuation<URL, Error>) { self.continuation = continuation }
+
+    @discardableResult
+    func finish(_ result: Result<URL, Error>) -> Bool {
+        lock.lock()
+        let taken = continuation
+        continuation = nil
+        lock.unlock()
+        guard let taken else { return false }
+        taken.resume(with: result)
+        return true
+    }
+}
+
 public enum DocumentPanelError: Error, Equatable, Sendable {
     case notFound
 }
@@ -134,10 +156,15 @@ public final class DocumentPanelModel: ObservableObject {
     @Published public private(set) var file: File = .loading
 
     private let source: DocumentPanelSource?
+    /// How long a download may take before the panel gives up and offers "Try again". The engine queues a download
+    /// behind any sync run in progress, and a stalled fetch never answers: without this the panel showed
+    /// "Downloading…" for ever.
+    private let timeout: Duration
 
-    public init(documentId: Int64, source: DocumentPanelSource?) {
+    public init(documentId: Int64, source: DocumentPanelSource?, timeout: Duration = .seconds(60)) {
         self.documentId = documentId
         self.source = source
+        self.timeout = timeout
     }
 
     /// Reads everything now when the source has its files locally (the snapshot routes' first frame); false otherwise.
@@ -184,11 +211,28 @@ public final class DocumentPanelModel: ObservableObject {
         guard let source else { return }
         file = .loading
         do {
-            file = .ready(try await source.open(path))
+            file = .ready(try await Self.open(path, from: source, timeout: timeout))
         } catch is PadDocumentNotOnDevice {
             file = .failed(PadDocumentsModel.notOnDeviceCopy)
+        } catch is DocumentPanelTimeout {
+            file = .failed(PadDocumentsModel.timedOutCopy)
         } catch {
             file = .failed(PadDocumentsModel.failureCopy)
+        }
+    }
+
+    /// `source.open(path)`, or `DocumentPanelTimeout` when it has not answered within `timeout` (the stalled work is
+    /// cancelled, not waited for).
+    nonisolated static func open(_ path: String, from source: DocumentPanelSource, timeout: Duration) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let once = DocumentPanelOnce(continuation)
+            let work = Task {
+                do { once.finish(.success(try await source.open(path))) } catch { once.finish(.failure(error)) }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                if once.finish(.failure(DocumentPanelTimeout())) { work.cancel() }
+            }
         }
     }
 }
