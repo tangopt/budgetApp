@@ -30,14 +30,14 @@ public struct EmptyState: View {
     public var body: some View {
         VStack(spacing: 8) {
             Image(systemName: symbol)
-                .font(.largeTitle)
+                .mangoFont(.largeTitle)
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.title3.weight(.semibold))
+                .mangoFont(.title3, weight: .semibold)
                 .accessibilityAddTraits(.isHeader)
             Text(message.figuresUnbroken)
-                .font(.callout)
+                .mangoFont(.callout)
                 .foregroundStyle(.secondary)
             if let action {
                 Button(action.title, action: action.perform)

@@ -27,7 +27,7 @@ public struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             if let title {
                 Text(title)
-                    .font(.headline)
+                    .mangoFont(.headline)
                     .accessibilityAddTraits(.isHeader)
             }
             content

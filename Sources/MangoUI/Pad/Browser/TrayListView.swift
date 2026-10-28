@@ -38,15 +38,15 @@ struct TrayListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(Self.title(count: items.count)).figureText()
-                .font(.headline)
+                .mangoFont(.headline)
                 .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
             if items.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: RowAction.download.systemImage).font(.title2).foregroundStyle(.secondary)
+                    Image(systemName: RowAction.download.systemImage).mangoFont(.title2).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                     Text("PDFs you download here, or share to Mango, wait here to be checked.")
-                        .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        .mangoFont(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity).padding(24)
@@ -70,7 +70,7 @@ struct TrayListView: View {
             Image(systemName: "doc.richtext").foregroundStyle(theme.accent).accessibilityHidden(true)
                 .padding(.trailing, 6)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.fileName).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                Text(item.fileName).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
                 // Where it came from and when on one line; under each other when that doesn't fit (larger text).
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 0) {
@@ -82,7 +82,7 @@ struct TrayListView: View {
                         Text(Self.figures(item, now: now)).figureText()
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                .mangoFont(.caption).foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

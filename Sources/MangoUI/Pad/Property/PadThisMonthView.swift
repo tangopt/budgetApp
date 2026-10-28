@@ -99,7 +99,7 @@ struct PadThisMonthView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(checklist.tenancyName) · \(ThisMonthCopy.month(checklist.month))")
-                    .font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    .mangoFont(.title2, weight: .semibold).accessibilityAddTraits(.isHeader)
                 if model.tenancies.count > 1 {
                     Menu {
                         ForEach(model.tenancies) { tenancy in
@@ -119,7 +119,7 @@ struct PadThisMonthView: View {
                 ProgressView(value: Double(done), total: Double(max(checklist.steps.count, 1)))
                     .tint(theme.accent)
                     .accessibilityHidden(true)
-                Text(Self.progressText(checklist)).figureText().font(.subheadline).foregroundStyle(.secondary)
+                Text(Self.progressText(checklist)).figureText().mangoFont(.subheadline).foregroundStyle(.secondary)
             }
         }
     }
@@ -148,7 +148,7 @@ struct PadThisMonthView: View {
                 marker(step.state, number: number)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(step.headline.figuresUnbroken).font(.headline).fixedSize(horizontal: false, vertical: true)
+                        Text(step.headline.figuresUnbroken).mangoFont(.headline).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 4)
                         pill(step)
                     }
@@ -170,9 +170,9 @@ struct PadThisMonthView: View {
             Circle().fill(state == .done ? theme.income : Color.clear)
             Circle().strokeBorder(state == .done ? theme.income : (state == .needsYou ? theme.accent : Color.secondary.opacity(0.5)), lineWidth: 2)
             switch state {
-            case .done: Image(systemName: "checkmark").font(.subheadline.weight(.bold)).foregroundStyle(.white)
-            case .notApplicable: Image(systemName: "minus").font(.subheadline.weight(.bold)).foregroundStyle(.secondary)
-            default: Text("\(number)").font(.subheadline.weight(.semibold)).foregroundStyle(state == .needsYou ? theme.accent : .secondary)
+            case .done: Image(systemName: "checkmark").mangoFont(.subheadline, weight: .bold).foregroundStyle(.white)
+            case .notApplicable: Image(systemName: "minus").mangoFont(.subheadline, weight: .bold).foregroundStyle(.secondary)
+            default: Text("\(number)").mangoFont(.subheadline, weight: .semibold).foregroundStyle(state == .needsYou ? theme.accent : .secondary)
             }
         }
         .frame(width: 32, height: 32)
@@ -196,7 +196,7 @@ struct PadThisMonthView: View {
         case .notApplicable: .secondary
         }
         return Text(Self.pillText(step))
-            .font(.caption.weight(.semibold)).foregroundStyle(tint)
+            .mangoFont(.caption, weight: .semibold).foregroundStyle(tint)
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(tint.opacity(0.14)))
             .fixedSize()
@@ -207,10 +207,10 @@ struct PadThisMonthView: View {
         if step.id == .chargesInGrid, step.state != .notApplicable {
             let text = PadThisMonthModel.chargesText(step, soFarMinorUnits: snapshot.rechargeSoFarMinorUnits, currency: snapshot.currency)
             Text(text.figuresUnbroken)
-                .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button("See the grid") { go(.billsAndRecharges) }.buttonStyle(.pad(.textLink, size: .small))
         } else if let text = step.detail {
-            Text(text.figuresUnbroken).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(text.figuresUnbroken).mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -222,8 +222,8 @@ struct PadThisMonthView: View {
                 Divider()
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(provider.name).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                        Text(Self.stateText(provider.state)).font(.caption).foregroundStyle(Self.stateTint(provider.state, theme))
+                        Text(provider.name).mangoFont(.subheadline, weight: .semibold).fixedSize(horizontal: false, vertical: true)
+                        Text(Self.stateText(provider.state)).mangoFont(.caption).foregroundStyle(Self.stateTint(provider.state, theme))
                     }
                     Spacer(minLength: 4)
                     if let amount = snapshot.amounts[provider.id], provider.state == .checked {
@@ -281,14 +281,14 @@ struct PadThisMonthView: View {
                 case .confirmMatch where model.offers(action):
                     HStack(spacing: 12) {
                         Button("Confirm match") { perform(action) }.buttonStyle(.pad(.primary, size: .small))
-                        Text(ThisMonthCopy.notExact).font(.caption).foregroundStyle(.secondary)
+                        Text(ThisMonthCopy.notExact).mangoFont(.caption).foregroundStyle(.secondary)
                     }
                 case .markReceived where model.offers(action):
                     Button("Mark received") { perform(action) }.buttonStyle(.pad(.secondary, size: .small))
                 case .fetchStatement(let kind) where browser != nil:
                     HStack(spacing: 4) {
                         RowIconButton(.openSite, item: kind == .bank ? "bank statement" : kind.title, size: .small) { perform(action) }
-                        Text("Open the bank's site").font(.caption).foregroundStyle(.secondary)
+                        Text("Open the bank's site").mangoFont(.caption).foregroundStyle(.secondary)
                     }
                 case .prepareEmail where model.offers(action):
                     Button("Prepare statement") { perform(action) }.buttonStyle(.pad(.secondary, size: .small))
@@ -323,7 +323,7 @@ struct PadThisMonthView: View {
             }
             sideCard("Evidence for the tax year") {
                 Text(checklist.evidenceCount == 0 ? "Nothing missing" : "\(checklist.evidenceCount) missing")
-                    .figureText().font(.subheadline)
+                    .figureText().mangoFont(.subheadline)
                 Button("Open Evidence") { go(.evidence) }.buttonStyle(.pad(.textLink, size: .small))
             }
             downloads(checklist)
@@ -333,7 +333,7 @@ struct PadThisMonthView: View {
     private func sideCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.headline)
+                Text(title).mangoFont(.headline)
                 content()
             }
             .padding(16)
@@ -346,7 +346,7 @@ struct PadThisMonthView: View {
             Image(systemName: item.state == .done ? "checkmark.circle.fill" : (item.kind == .rentReceipt ? "doc.text" : "building.2"))
                 .foregroundStyle(item.state == .done ? theme.income : theme.accent).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.headline.figuresUnbroken).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+                Text(item.headline.figuresUnbroken).mangoFont(.subheadline).fixedSize(horizontal: false, vertical: true)
                 if let amount = item.amountMinorUnits, let currency = item.currency {
                     MoneyText(minorUnits: amount, currency: currency, role: .neutral, font: .caption)
                 }
@@ -363,12 +363,12 @@ struct PadThisMonthView: View {
     private func downloads(_ checklist: ThisMonthChecklist) -> some View {
         sideCard("Downloads waiting") {
             Text(checklist.downloadsWaiting == 0 ? "Nothing waiting" : "\(checklist.downloadsWaiting) to check")
-                .figureText().font(.subheadline)
+                .figureText().mangoFont(.subheadline)
             if let browser {
                 ForEach(browser.downloadedItems) { item in
                     HStack(spacing: 4) {
                         Image(systemName: "doc.richtext").foregroundStyle(theme.accent).accessibilityHidden(true)
-                        Text(item.fileName).font(.caption).lineLimit(1).truncationMode(.middle)
+                        Text(item.fileName).mangoFont(.caption).lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if model.offers(.check(trayItemId: item.id), checkAllowed: browser.canCheck) {
                             RowIconButton(.check, item: item.fileName, size: .small) { perform(.check(trayItemId: item.id)) }

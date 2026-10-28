@@ -18,7 +18,7 @@ struct FreshnessLine: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.footnote)
+            .mangoFont(.footnote)
             .foregroundStyle(.secondary)
             .accessibilityElement(children: .combine)
         }

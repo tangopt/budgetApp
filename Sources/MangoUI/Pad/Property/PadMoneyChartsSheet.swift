@@ -19,7 +19,7 @@ struct PadMoneyChartsSheet: View {
                 VStack(alignment: .leading, spacing: 24) {
                     if let summary = model.summary {
                         if model.offersGBP { Toggle("Show in GBP", isOn: $model.showsGBP).frame(minHeight: 44) }
-                        if let note = model.rateNote { Text(note.figuresUnbroken).font(.footnote).foregroundStyle(.secondary) }
+                        if let note = model.rateNote { Text(note.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary) }
                         figures
                         cashFlow(summary)
                         mortgage(summary)
@@ -39,11 +39,11 @@ struct PadMoneyChartsSheet: View {
 
     private var figures: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Figures").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            Text("Select a figure to list its transactions").font(.footnote).foregroundStyle(.secondary)
+            Text("Figures").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
+            Text("Select a figure to list its transactions").mangoFont(.footnote).foregroundStyle(.secondary)
             ForEach(model.figureSections) { section in
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(section.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 6)
+                    Text(section.title).mangoFont(.subheadline, weight: .semibold).foregroundStyle(.secondary).padding(.bottom, 6)
                     ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, figure in
                         if index > 0 { Divider() }
                         row(figure)
@@ -88,7 +88,7 @@ struct PadMoneyChartsSheet: View {
     @ViewBuilder
     private func chevron(_ figure: PadMoneyModel.Figure) -> some View {
         if figure.drillDown != nil {
-            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.secondary).accessibilityHidden(true)
+            Image(systemName: "chevron.right").mangoFont(.footnote).foregroundStyle(.secondary).accessibilityHidden(true)
         }
     }
 
@@ -102,8 +102,8 @@ struct PadMoneyChartsSheet: View {
 
     private func cashFlow(_ summary: PropertySummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Cash flow by month").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            Text("Rent received above the line, costs below, net cash flow as the line").font(.footnote).foregroundStyle(.secondary)
+            Text("Cash flow by month").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
+            Text("Rent received above the line, costs below, net cash flow as the line").mangoFont(.footnote).foregroundStyle(.secondary)
             Chart {
                 ForEach(summary.months, id: \.start) { month in
                     BarMark(x: .value("Month", month.start, unit: .month), y: .value("Rent received", major(month.figures.rentReceived)))
@@ -142,10 +142,10 @@ struct PadMoneyChartsSheet: View {
         let t = summary.totals
         let paid = model.shown(t.mortgageInterest) + model.shown(t.mortgageCapital)
         VStack(alignment: .leading, spacing: 8) {
-            Text("Mortgage").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Text("Mortgage").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
             if paid > 0 {
                 Text("\(Money.format(paid, currency: model.displayCurrency)) paid: interest and capital by month".figuresUnbroken)
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .mangoFont(.footnote).foregroundStyle(.secondary)
                 Chart {
                     ForEach(summary.months, id: \.start) { month in
                         BarMark(x: .value("Month", month.start, unit: .month), y: .value("Interest", major(month.figures.mortgageInterest)))
@@ -178,7 +178,7 @@ struct PadMoneyChartsSheet: View {
                 }
             } else {
                 Text("No mortgage payments in this period: link the mortgage account in Profile.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
@@ -188,11 +188,11 @@ struct PadMoneyChartsSheet: View {
 
     private func part(_ title: String, _ amount: PropertyAmount, of total: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.footnote).foregroundStyle(.secondary)
+            Text(title).mangoFont(.footnote).foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 MoneyText(minorUnits: model.shown(amount), currency: model.displayCurrency, role: .neutral, font: .subheadline)
                 if total > 0 {
-                    Text("\(Int((Double(model.shown(amount)) / Double(total) * 100).rounded()))%").font(.subheadline.monospacedDigit())
+                    Text("\(Int((Double(model.shown(amount)) / Double(total) * 100).rounded()))%").mangoFont(.subheadline, figures: true)
                         .foregroundStyle(.secondary).fixedSize()
                 }
             }
@@ -204,7 +204,7 @@ struct PadMoneyChartsSheet: View {
             ForEach(items, id: \.0) { item in
                 HStack(spacing: 6) {
                     Circle().fill(item.1).frame(width: 8, height: 8).accessibilityHidden(true)
-                    Text(item.0).font(.footnote).lineLimit(1)
+                    Text(item.0).mangoFont(.footnote).lineLimit(1)
                 }
             }
         }
@@ -214,8 +214,8 @@ struct PadMoneyChartsSheet: View {
 
     private func monthly(_ summary: PropertySummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Monthly figures").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            Text("Month by month, in \(model.displayCurrency.rawValue.uppercased())").font(.footnote).foregroundStyle(.secondary)
+            Text("Monthly figures").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
+            Text("Month by month, in \(model.displayCurrency.rawValue.uppercased())").mangoFont(.footnote).foregroundStyle(.secondary)
             ForEach(model.months, id: \.start) { month in monthCard(PadMoneyModel.monthTitle(month), month.figures) }
             monthCard("Total", summary.totals)
         }
@@ -223,7 +223,7 @@ struct PadMoneyChartsSheet: View {
 
     private func monthCard(_ title: String, _ figures: PropertyFigures) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title.figuresUnbroken).font(.headline).lineLimit(1)
+            Text(title.figuresUnbroken).mangoFont(.headline).lineLimit(1)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10, alignment: .top)], alignment: .leading, spacing: 8) {
                 cell("Rent per receipts", figures.rentPerReceipts, .neutral)
                 cell("Rent received", figures.rentReceived, .income)
@@ -241,7 +241,7 @@ struct PadMoneyChartsSheet: View {
 
     private func cell(_ title: String, _ amount: PropertyAmount, _ role: MoneyRole) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
             MoneyText(minorUnits: model.shown(amount), currency: model.displayCurrency, role: role, fit: .shrink(), font: .subheadline)
         }
     }

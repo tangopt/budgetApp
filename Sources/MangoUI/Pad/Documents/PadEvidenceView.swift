@@ -48,7 +48,7 @@ struct PadEvidenceView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Whole tax year · all areas").font(.subheadline).foregroundStyle(.secondary)
+            Text("Whole tax year · all areas").mangoFont(.subheadline).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { yearSwitch; Spacer(minLength: 8); showSwitch }
                 VStack(alignment: .leading, spacing: 8) { yearSwitch; showSwitch }
@@ -78,7 +78,7 @@ struct PadEvidenceView: View {
         let progress = model.progress
         return HStack(spacing: 10) {
             ProgressView(value: progress.fractionDone).frame(maxWidth: 160).tint(.green)
-            Text("\(progress.done) of \(progress.total) collected").figureText().font(.subheadline.weight(.semibold))
+            Text("\(progress.done) of \(progress.total) collected").figureText().mangoFont(.subheadline, weight: .semibold)
         }
         .accessibilityElement(children: .combine)
     }
@@ -89,13 +89,13 @@ struct PadEvidenceView: View {
         VStack(alignment: .leading, spacing: 8) {
             let missing = area.missingCount
             Text("\(area.title.uppercased()) · \(missing == 0 ? "nothing missing" : "\(missing) missing")".figuresUnbroken)
-                .font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                .mangoFont(.caption, weight: .bold).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.middle)
                 .accessibilityAddTraits(.isHeader)
             if area.items.isEmpty {
                 Text(model.missingOnly && missing == 0 && !(model.areas.first { $0.area == area.area }?.items.isEmpty ?? true)
                      ? "Everything here is collected." : "Nothing asked for in this tax year.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .mangoFont(.callout).foregroundStyle(.secondary)
             }
             ForEach(area.items) { item in row(item) }
         }
@@ -109,15 +109,15 @@ struct PadEvidenceView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         PadEvidenceStatusIcon(status: item.item.status)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(item.item.title.figuresUnbroken).font(.body.weight(.semibold)).lineLimit(2).truncationMode(.middle)
+                            Text(item.item.title.figuresUnbroken).mangoFont(.body, weight: .semibold).lineLimit(2).truncationMode(.middle)
                             if let detail = Self.detail(item.item) {
-                                Text(detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                Text(detail).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
                             (Text("Why: ").bold() + Text(item.why))
-                                .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                .mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             if let source = item.source {
                                 (Text("Fetch from: ") + Text(source).bold().foregroundColor(.primary))
-                                    .font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                    .mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -159,7 +159,7 @@ struct PadEvidenceView: View {
     private var utilityPointer: some View {
         HStack(spacing: 4) {
             Text(TaxYearEvidence.utilityPointer.replacingOccurrences(of: " Bills & recharges.", with: ""))
-                .font(.footnote).foregroundStyle(.secondary)
+                .mangoFont(.footnote).foregroundStyle(.secondary)
             Button("Bills & recharges", action: showBills)
                 .buttonStyle(.pad(.textLink, size: .small))
                 .accessibilityHint("Opens Bills & recharges")
@@ -219,9 +219,9 @@ struct PadEvidenceItemBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.item.title.figuresUnbroken).font(.headline).lineLimit(2).truncationMode(.middle)
+                Text(item.item.title.figuresUnbroken).mangoFont(.headline).lineLimit(2).truncationMode(.middle)
                 Text("Needs " + (item.item.expectedKindNames.isEmpty ? "any document" : item.item.expectedKindNames.joined(separator: " or ")))
-                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let note = model.note(for: item.id) {
                 InlineBanner(tone: .neutral, text: note.figuresUnbroken)
@@ -235,7 +235,7 @@ struct PadEvidenceItemBlock: View {
                     PadStatusPill(text: "Suggested", tone: .neutral)
                     if !suggestion.reasons.isEmpty {
                         Text(suggestion.reasons.joined(separator: " · ").figuresUnbroken)
-                            .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 if model.canLink, item.canLink {
@@ -291,8 +291,8 @@ struct PadEvidenceItemBlock: View {
     private func otherRow(_ id: Int64, name: String, caption: String) -> some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.subheadline).lineLimit(1).truncationMode(.middle)
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(name).mangoFont(.subheadline).lineLimit(1).truncationMode(.middle)
+                Text(caption).mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             RowIconButton(.view, item: name, size: .small) { model.openDocumentId = id }
@@ -312,9 +312,9 @@ struct PadEvidenceItemPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("No document yet").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                Text("No document yet").mangoFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
                 Button { model.selectedItemId = nil } label: {
-                    Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary)
+                    Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: 44, minHeight: 44)
@@ -324,13 +324,13 @@ struct PadEvidenceItemPanel: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(item.why).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(item.why).mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if let source = item.source {
-                        (Text("Fetch from: ") + Text(source).bold()).font(.callout).lineLimit(1).truncationMode(.middle)
+                        (Text("Fetch from: ") + Text(source).bold()).mangoFont(.callout).lineLimit(1).truncationMode(.middle)
                     }
                     if model.panel?.itemId == item.id {
                         Text("No library document looks like this item's evidence yet.")
-                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     } else {
                         HStack(spacing: 8) {
                             ProgressView()

@@ -15,7 +15,7 @@ struct MortgageCard: View {
                     MoneyText(minorUnits: amount, currency: currency, role: .due)
                 } else {
                     Text(PropertyCopy.amountNotKnown)
-                        .font(.subheadline)
+                        .mangoFont(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -48,9 +48,9 @@ struct MortgageCard: View {
                 MoneyText(minorUnits: mortgage.outstandingMinorUnits, currency: currency, role: .neutral)
                 if currency != .gbp {
                     Text(MoneyPresentation.format(mortgage.outstandingGBPMinorUnits, currency: .gbp))
-                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .figureText()
+                        .mangoFont(.subheadline)
                 }
             }
         }

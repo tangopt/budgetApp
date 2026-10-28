@@ -131,7 +131,7 @@ struct PadMortgageTermsSheet: View {
                                 if isOn { form.months.remove(month) } else { form.months.insert(month) }
                             } label: {
                                 Text(MortgageTerms.shortMonthName(month))
-                                    .font(.subheadline.weight(.semibold))
+                                    .mangoFont(.subheadline, weight: .semibold)
                                     .frame(maxWidth: .infinity, minHeight: 44)
                                     .foregroundStyle(isOn ? Color.white : theme.accent)
                                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -178,7 +178,7 @@ struct PadMortgageTermsSheet: View {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Final instalment")
-                        Text("From the first and their number").font(.footnote).foregroundStyle(.secondary)
+                        Text("From the first and their number").mangoFont(.footnote).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
                     Text(PhoneDateFormat.day(derived).unbroken).monospacedDigit().lineLimit(1).fixedSize()

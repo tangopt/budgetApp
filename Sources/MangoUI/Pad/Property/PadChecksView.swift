@@ -111,9 +111,9 @@ struct PadChecksView: View {
         } label: {
             HStack(spacing: 6) {
                 Text("\(model.periodTitle), up to today".figuresUnbroken).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.footnote)
+                Image(systemName: "chevron.up.chevron.down").mangoFont(.footnote)
             }
-            .font(.headline)
+            .mangoFont(.headline)
             .frame(minHeight: 44)
         }
         .accessibilityLabel("Period")
@@ -143,7 +143,7 @@ struct PadChecksView: View {
         Card {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(model.headline).font(.title3.weight(.semibold)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                    Text(model.headline).mangoFont(.title3, weight: .semibold).lineLimit(1).accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 8)
                 }
                 .padding(.bottom, 6)
@@ -159,10 +159,10 @@ struct PadChecksView: View {
         let isSelected = model.selected == line.check
         return Button { model.select(line.check) } label: {
             HStack(spacing: 12) {
-                Image(systemName: symbol(line.state)).foregroundStyle(color(line.state)).font(.title3).accessibilityHidden(true)
+                Image(systemName: symbol(line.state)).foregroundStyle(color(line.state)).mangoFont(.title3).accessibilityHidden(true)
                 Text(line.text.figuresUnbroken).foregroundStyle(line.state == .notChecked ? Color.secondary : Color.primary)
                     .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true)
+                Image(systemName: "chevron.right").mangoFont(.footnote, weight: .semibold).foregroundStyle(.tertiary).accessibilityHidden(true)
             }
             .padding(.vertical, 8)
             .padding(.horizontal, 8)
@@ -198,12 +198,12 @@ struct PadChecksView: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(PadChecksModel.cardTitle(check)).font(.headline).lineLimit(2)
+                    Text(PadChecksModel.cardTitle(check)).mangoFont(.headline).lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: model.closeCard) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary) }
+                    Button(action: model.closeCard) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
                         .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
                 }
-                Text(PadChecksModel.cardSubtitle(check)).font(.subheadline).foregroundStyle(.secondary)
+                Text(PadChecksModel.cardSubtitle(check)).mangoFont(.subheadline).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 findingsContent(check)
             }
@@ -225,9 +225,9 @@ struct PadChecksView: View {
             ForEach(report.receiptsWithoutCredit, id: \.id) { receipt in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("No. \(receipt.receiptNumber)".figuresUnbroken).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Text("No. \(receipt.receiptNumber)".figuresUnbroken).mangoFont(.subheadline, weight: .semibold).lineLimit(1)
                         Text("\(PhoneDateFormat.day(receipt.periodStart)) – \(PhoneDateFormat.day(receipt.periodEnd))".figuresUnbroken)
-                            .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            .mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
                     MoneyText(minorUnits: receipt.amountReceivedMinorUnits, currency: model.currency, role: .neutral, font: .subheadline)
@@ -243,8 +243,8 @@ struct PadChecksView: View {
             ForEach(report.creditsWithoutReceipt, id: \.id) { credit in
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(model.creditTitle(credit)).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                        Text(PhoneDateFormat.day(credit.date).unbroken).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        Text(model.creditTitle(credit)).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
+                        Text(PhoneDateFormat.day(credit.date).unbroken).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
                     MoneyText(minorUnits: credit.amountMinorUnits, currency: model.currency, role: .neutral, font: .subheadline)
@@ -257,11 +257,11 @@ struct PadChecksView: View {
             if let deposit = report.deposit {
                 HStack(spacing: 8) {
                     PadStatusPill(text: PadChecksModel.depositPill(deposit, currency: model.currency), tone: deposit.matches ? .positive : .warning)
-                    Text("Held on \(PhoneDateFormat.day(deposit.date))".figuresUnbroken).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text("Held on \(PhoneDateFormat.day(deposit.date))".figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
                 ForEach(PadChecksModel.depositLines(deposit)) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(line.title).font(.subheadline).lineLimit(1)
+                        Text(line.title).mangoFont(.subheadline).lineLimit(1)
                         if line.matches { Image(systemName: "checkmark").foregroundStyle(theme.income).accessibilityLabel("Matches") }
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: line.amountMinorUnits, currency: model.currency, role: .neutral,
@@ -270,7 +270,7 @@ struct PadChecksView: View {
                 }
             } else {
                 Text("Link a deposit account in Profile (and set the tenancy's deposit months) to check it.")
-                    .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         case .recurring:
             if model.overdueCosts.isEmpty { allWell("No recurring cost is overdue.") }
@@ -279,7 +279,7 @@ struct PadChecksView: View {
     }
 
     private func allWell(_ text: String) -> some View {
-        Label(text, systemImage: "checkmark.circle.fill").font(.subheadline).foregroundStyle(theme.income)
+        Label(text, systemImage: "checkmark.circle.fill").mangoFont(.subheadline).foregroundStyle(theme.income)
     }
 
     private func fact<Value: View>(_ label: String, _ value: Value) -> some View {
@@ -288,7 +288,7 @@ struct PadChecksView: View {
             Spacer(minLength: 12)
             value.lineLimit(1).truncationMode(.middle)
         }
-        .font(.subheadline)
+        .mangoFont(.subheadline)
     }
 
     // MARK: Recurring costs
@@ -297,11 +297,11 @@ struct PadChecksView: View {
     private var recurringSection: some View {
         let costs = model.recurringCosts
         VStack(alignment: .leading, spacing: 4) {
-            Text("Recurring costs").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            Text("By provider: overdue, or when the next one is expected").font(.footnote).foregroundStyle(.secondary)
+            Text("Recurring costs").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
+            Text("By provider: overdue, or when the next one is expected").mangoFont(.footnote).foregroundStyle(.secondary)
         }
         if costs.isEmpty {
-            Text("No cost repeats in the property's history yet.").font(.callout).foregroundStyle(.secondary)
+            Text("No cost repeats in the property's history yet.").mangoFont(.callout).foregroundStyle(.secondary)
         }
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
             ForEach(costs) { cost in
@@ -321,10 +321,10 @@ struct PadChecksView: View {
         let pattern = cost.pattern
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(pattern.title).font(compact ? .subheadline.weight(.semibold) : .headline).lineLimit(1).truncationMode(.middle)
+                Text(pattern.title).mangoFont(compact ? .subheadline : .headline, weight: compact ? .semibold : nil).lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 6) {
                     PadStatusPill(text: cost.isOverdue ? "Overdue" : "Expected", tone: cost.isOverdue ? .warning : .neutral)
-                    Text(every(pattern.everyMonths)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text(every(pattern.everyMonths)).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
@@ -332,7 +332,7 @@ struct PadChecksView: View {
                 MoneyText(minorUnits: pattern.lastAmountMinorUnits, currency: pattern.currency, role: .neutral,
                           font: compact ? .subheadline : .headline)
                 Text("around \(PhoneDateFormat.day(cost.overdueSince ?? pattern.nextDate))".figuresUnbroken)
-                    .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    .mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
             ForEach(model.actions(for: cost), id: \.self) { action in
                 if let icon = action.rowAction {

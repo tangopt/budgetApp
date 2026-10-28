@@ -36,7 +36,7 @@ public struct DocumentPanel<Extra: View>: View {
                         if let details = model.details {
                             if details.waiting {
                                 Label(DocumentPanelDetails.waitingLine, systemImage: "clock")
-                                    .font(.callout)
+                                    .mangoFont(.callout)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,12 +72,12 @@ public struct DocumentPanel<Extra: View>: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(model?.title ?? "")
-                .font(.headline)
+                .mangoFont(.headline)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary)
+                Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .frame(minWidth: 44, minHeight: 44)
@@ -213,7 +213,7 @@ struct DocumentThumbnailView: View {
         #if canImport(UIKit)
         DocumentThumbnailImage(url: url)
         #else
-        Image(systemName: "doc.text").font(.largeTitle).foregroundStyle(.secondary)
+        Image(systemName: "doc.text").mangoFont(.largeTitle).foregroundStyle(.secondary)
         #endif
     }
 }
@@ -229,7 +229,7 @@ struct DocumentThumbnailImage: View {
             if let image {
                 Image(uiImage: image).resizable().scaledToFit().accessibilityHidden(true)
             } else {
-                Image(systemName: "doc.text").font(.largeTitle).foregroundStyle(.secondary)
+                Image(systemName: "doc.text").mangoFont(.largeTitle).foregroundStyle(.secondary)
             }
         }
         .task(id: url) { image = await Self.render(url) }

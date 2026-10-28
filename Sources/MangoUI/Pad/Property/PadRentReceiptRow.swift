@@ -21,9 +21,9 @@ struct PadRentReceiptRow: View {
             Button(action: select) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(PadTenanciesModel.monthTitle(receipt)).font(.headline).lineLimit(1)
+                        Text(PadTenanciesModel.monthTitle(receipt)).mangoFont(.headline).lineLimit(1)
                         Text("Receipt \(receipt.receipt.receiptNumber)".figuresUnbroken)
-                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            .mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 8)
                     MoneyText(minorUnits: receipt.receipt.amountMinorUnits, currency: receipt.currency, role: .neutral, font: .headline)

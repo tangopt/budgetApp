@@ -184,7 +184,7 @@ public struct SettingsSheet: View {
                         SyncStatusLine(status: status, now: now())
                         if let detail = SyncStatusCopy.detail(status) {
                             Text(detail)
-                                .font(.caption)
+                                .mangoFont(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }

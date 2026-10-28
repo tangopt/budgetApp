@@ -219,9 +219,9 @@ struct PrepareEmailSheet: View {
         }
         Card {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Message").font(.footnote).foregroundStyle(.secondary)
+                Text("Message").mangoFont(.footnote).foregroundStyle(.secondary)
                 Text(package.body)
-                    .font(.body)
+                    .mangoFont(.body)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Email text as it will be sent")
@@ -230,14 +230,14 @@ struct PrepareEmailSheet: View {
         }
         Card {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Attachments").font(.footnote).foregroundStyle(.secondary)
+                Text("Attachments").mangoFont(.footnote).foregroundStyle(.secondary)
                 ForEach(package.attachments, id: \.url) { attachment in
                     Label {
                         Text(attachment.fileName).lineLimit(1).truncationMode(.middle)
                     } icon: {
                         Image(systemName: "doc.richtext").foregroundStyle(theme.accent)
                     }
-                    .font(.subheadline)
+                    .mangoFont(.subheadline)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -247,8 +247,8 @@ struct PrepareEmailSheet: View {
 
     private func field(_ label: String, _ value: String, secondary: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.footnote).foregroundStyle(.secondary)
-            Text(value).font(.body).foregroundStyle(secondary ? .secondary : .primary)
+            Text(label).mangoFont(.footnote).foregroundStyle(.secondary)
+            Text(value).mangoFont(.body).foregroundStyle(secondary ? .secondary : .primary)
                 .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
         }
     }
@@ -259,7 +259,7 @@ struct PrepareEmailSheet: View {
             Button("Try again") { Task { await model.reload() } }.buttonStyle(.pad(.secondary))
         } else if model.flow.stage != .markedSent {
             if model.route() == .shareSheet {
-                Text(Self.noMailCopy).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(Self.noMailCopy).mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) { buttons(package) }

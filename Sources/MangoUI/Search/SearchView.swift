@@ -82,11 +82,11 @@ public struct SearchView: View {
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.isBrowsing ? SearchCopy.recentTitle : SearchCopy.matches(results.matchCount))
-                    .font(.headline)
+                    .mangoFont(.headline)
                     .accessibilityAddTraits(.isHeader)
                 if results.isCapped, !model.isBrowsing {
                     Text(SearchCopy.capped(shown: results.shownCount))
-                        .font(.subheadline)
+                        .mangoFont(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -96,7 +96,7 @@ public struct SearchView: View {
                     SearchDayHeader(day: day)
                     if day.listsUncountedTransfer {
                         Text(SearchCopy.transferNote)
-                            .font(.footnote)
+                            .mangoFont(.footnote)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

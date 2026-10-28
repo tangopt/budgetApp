@@ -25,7 +25,7 @@ public struct HouseholdJoinView: View {
                 symbol
                 VStack(spacing: 12) {
                     Text(title)
-                        .font(.headline)
+                        .mangoFont(.headline)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                     if case .showCode(let code) = state {
@@ -36,7 +36,7 @@ public struct HouseholdJoinView: View {
                     }
                     if let detail {
                         Text(detail)
-                            .font(.callout)
+                            .mangoFont(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)

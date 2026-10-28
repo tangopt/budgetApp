@@ -28,6 +28,7 @@ extension Text {
     @MainActor
     public func figureText(_ fit: FigureFit = .natural, file: StaticString = #fileID, line: UInt = #line) -> some View {
         monospacedDigit()
+            .modifier(FigureFontModifier())
             .modifier(FigureFitModifier(fit: fit, kind: "figure", text: WrapProbeRegistry.describe(self),
                                         source: "\(file):\(line)"))
     }

@@ -92,7 +92,7 @@ struct AccountRowView: View {
                         .accessibilityHidden(true)
                     Text(AccountsCopy.needsUpdate)
                 }
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(theme.pending)
             }
         }
@@ -110,17 +110,17 @@ struct AccountRowView: View {
     private var labels: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(row.name)
-                .font(.body)
+                .mangoFont(.body)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
             Text(row.caption.figuresUnbroken)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if !row.isInNetWorth {
                 Text(AccountsCopy.notInNetWorth)
-                    .font(.footnote)
+                    .mangoFont(.footnote)
                     .foregroundStyle(.secondary)
             }
             if let badge = row.sharingBadge {
@@ -134,9 +134,9 @@ struct AccountRowView: View {
             MoneyText(minorUnits: row.nativeMinorUnits, currency: row.currency, role: .balance)
             if let gbp = row.gbpMinorUnits {
                 Text(MoneyPresentation.format(gbp, currency: .gbp))
-                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .figureText()
+                    .mangoFont(.subheadline)
             }
         }
     }

@@ -56,7 +56,7 @@ struct ThisMonthCard: View {
                     Text(status.figuresUnbroken)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(theme.pending)
             }
         }
@@ -72,7 +72,7 @@ struct ThisMonthCard: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
             Text(status)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .fixedSize(horizontal: false, vertical: true)

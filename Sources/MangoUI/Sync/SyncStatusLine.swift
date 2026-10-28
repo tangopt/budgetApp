@@ -24,7 +24,7 @@ public struct SyncStatusLine: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .font(.footnote)
+        .mangoFont(.footnote)
         .accessibilityElement(children: .combine)
     }
 }

@@ -41,7 +41,7 @@ struct QuickSortContent: View {
                 PadRefusalBanner(message: model.refusal)
                 if let card = model.queue.first {
                     Text("\(model.queue.count) left to sort")
-                        .font(.subheadline)
+                        .mangoFont(.subheadline)
                         .foregroundStyle(.secondary)
                     QuickSortCardView(card: card)
                     QuickSortButtons(card: card, model: model)
@@ -77,7 +77,7 @@ private struct QuickSortCardView: View {
             MoneyText(minorUnits: amount.minorUnits, currency: card.currency, role: amount.role,
                       fit: .shrink(), font: .largeTitle.weight(.semibold))
             Text(card.description)
-                .font(.title3.weight(.semibold))
+                .mangoFont(.title3, weight: .semibold)
                 .lineLimit(3)
                 .truncationMode(.middle)
                 .accessibilityAddTraits(.isHeader)
@@ -88,7 +88,7 @@ private struct QuickSortCardView: View {
                     .truncationMode(.middle)
                 DateText(card.date, font: .subheadline)
             }
-            .font(.subheadline)
+            .mangoFont(.subheadline)
             .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -163,7 +163,7 @@ struct QuickSortEntryRow: View {
                         Label("Sort \(model.queue.count) uncategorised", systemImage: "tag")
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
+                            .mangoFont(.footnote, weight: .semibold)
                             .foregroundStyle(.tertiary)
                     }
                     .frame(minHeight: 44)

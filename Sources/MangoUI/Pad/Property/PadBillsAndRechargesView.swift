@@ -74,7 +74,7 @@ struct PadBillsAndRechargesView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(property.selectedTenancy?.referenceLabel ?? "")
-                    .font(.title2.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    .mangoFont(.title2, weight: .semibold).lineLimit(1).truncationMode(.middle)
                     .accessibilityAddTraits(.isHeader)
                 if property.tenancies.count > 1 {
                     Menu {
@@ -115,7 +115,7 @@ struct PadBillsAndRechargesView: View {
             .frame(minHeight: 44)
             .accessibilityLabel("Year")
         } else {
-            Text(String(model.year)).font(.headline.monospacedDigit())
+            Text(String(model.year)).mangoFont(.headline, figures: true)
         }
     }
 
@@ -173,7 +173,7 @@ struct PadBillsAndRechargesView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(reason.text.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
+                        Text(reason.text.figuresUnbroken).mangoFont(.callout).foregroundStyle(.secondary)
                         HStack(spacing: 4) {
                             ForEach(Array(zip(reason.statementIds, reason.statementNames)), id: \.0) { id, name in
                                 Button("\(name) ›") { model.openStatementId = id }
@@ -189,9 +189,9 @@ struct PadBillsAndRechargesView: View {
 
     private func tile<Value: View>(_ title: String, caption: String, pill: String? = nil, @ViewBuilder value: () -> Value) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(2)
             value()
-            Text(caption.figuresUnbroken).font(.footnote).foregroundStyle(.secondary)
+            Text(caption.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
             if let pill { PadStatusPill(text: pill, tone: .warning) }
         }
         .padding(14)
@@ -262,7 +262,7 @@ struct PadBillPanelExtra: View {
             Card {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(bill.providerName).font(.headline).lineLimit(1).truncationMode(.middle)
+                        Text(bill.providerName).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: bill.amountMinorUnits, currency: model.currency, role: .neutral)
                     }
@@ -279,7 +279,7 @@ struct PadBillPanelExtra: View {
                                 Text(fact.value).fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        .font(.subheadline)
+                        .mangoFont(.subheadline)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -331,7 +331,7 @@ struct PadTotalSheet: View {
             Form {
                 Section { PadRefusalBanner(message: write.message(for: bill.id)) }
                     .listRowBackground(Color.clear).listRowInsets(EdgeInsets())
-                Section { Text(bill.providerName).font(.headline).lineLimit(2).truncationMode(.middle) }
+                Section { Text(bill.providerName).mangoFont(.headline).lineLimit(2).truncationMode(.middle) }
                 Section("Invoice total") {
                     TextField("Total", text: $text, prompt: Text(Money.format(bill.invoice?.amountMinorUnits ?? bill.amountMinorUnits, currency: model.currency)))
                         #if os(iOS)
@@ -421,9 +421,9 @@ struct PadBillPlainPanel<Extra: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(bill.providerName).font(.headline).lineLimit(2).truncationMode(.middle)
+                Text(bill.providerName).mangoFont(.headline).lineLimit(2).truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary) }
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
                     .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
             }
             .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)

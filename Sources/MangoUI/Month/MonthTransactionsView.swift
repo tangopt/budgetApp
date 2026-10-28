@@ -157,7 +157,7 @@ public struct MonthTransactionsView: View {
             // Not lazy: few rows, and the snapshot probe measures every one.
             VStack(alignment: .leading, spacing: 16) {
                 Text(MonthCopy.range(model.range).figuresUnbroken)
-                    .font(.subheadline)
+                    .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
                 content
             }

@@ -51,7 +51,7 @@ struct SavedSitesStrip: View {
                 Image(systemName: Self.symbol(site.kind)).accessibilityHidden(true)
                 Text(site.name).lineLimit(1).truncationMode(.middle)
             }
-            .font(.subheadline.weight(.semibold))
+            .mangoFont(.subheadline, weight: .semibold)
             .padding(.horizontal, 12)
             .frame(minHeight: PadButtonSize.small.minimumTapTarget)
             .frame(maxWidth: 220)

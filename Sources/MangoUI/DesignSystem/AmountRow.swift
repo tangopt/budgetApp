@@ -55,11 +55,11 @@ public struct FigureRow<Figure: View>: View {
     private var labels: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.body)
+                .mangoFont(.body)
                 .fixedSize(horizontal: false, vertical: true)
             if let secondary {
                 Text(secondary.figuresUnbroken)
-                    .font(.subheadline)
+                    .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

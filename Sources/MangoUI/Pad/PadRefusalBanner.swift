@@ -176,7 +176,7 @@ struct PadChoiceSheet: View {
                 ForEach(request.choices) { choice in
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(choice.title).font(.body)
+                            Text(choice.title).mangoFont(.body)
                             HStack(spacing: 8) {
                                 if let date = choice.date { DateText(date, font: .subheadline) }
                                 if let amount = choice.amountMinorUnits {

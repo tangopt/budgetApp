@@ -38,7 +38,7 @@ struct PadAddAccountSheet: View {
                         .accessibilityIdentifier("account-opening-balance")
                 }
                 .frame(minHeight: 44)
-                if let error = model.balanceError { Text(error).font(.footnote).foregroundStyle(.red) }
+                if let error = model.balanceError { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
                 if !model.balanceText.trimmingCharacters(in: .whitespaces).isEmpty {
                     DatePicker("As of", selection: $model.asOf, in: ...Date(), displayedComponents: .date).frame(minHeight: 44)
                 }
@@ -141,7 +141,7 @@ private struct PadAccountNameField: View {
             }
             .frame(minHeight: 44)
                 .accessibilityIdentifier("account-name")
-            if let error = model.nameError { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let error = model.nameError { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
         }
     }
 }
@@ -189,7 +189,7 @@ private struct PadAccountBankSection: View {
                     #endif
             }
             .frame(minHeight: 44)
-            if let error = model.detailError(field) { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let error = model.detailError(field) { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
         }
     }
 
@@ -243,20 +243,20 @@ private struct PadAccountSharingSection: View {
             }
             if let warning = model.loweringWarning() {
                 VStack(alignment: .leading, spacing: 6) {
-                    if let count = model.preview?.affectedCount, count > 0 { Text(SharingCopy.moves(count: count)).font(.subheadline.weight(.semibold)) }
-                    Text(warning).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let count = model.preview?.affectedCount, count > 0 { Text(SharingCopy.moves(count: count)).mangoFont(.subheadline, weight: .semibold) }
+                    Text(warning).mangoFont(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else if let preview = model.preview, preview.affectedCount > 0 {
-                Text(SharingCopy.moves(count: preview.affectedCount)).font(.subheadline).foregroundStyle(.secondary)
+                Text(SharingCopy.moves(count: preview.affectedCount)).mangoFont(.subheadline).foregroundStyle(.secondary)
             }
             if model.preview?.isBlocked == true {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(SharingCopy.blockedNote).font(.footnote).foregroundStyle(.secondary)
-                    ForEach(model.blockerLines(), id: \.self) { Text($0).font(.footnote).foregroundStyle(.red) }
+                    Text(SharingCopy.blockedNote).mangoFont(.footnote).foregroundStyle(.secondary)
+                    ForEach(model.blockerLines(), id: \.self) { Text($0).mangoFont(.footnote).foregroundStyle(.red) }
                 }
             }
             if model.context.sharing?.isConfirmed == false, model.sharingChange != nil {
-                Text(SharingCopy.confirmsDefaultsNote).font(.footnote).foregroundStyle(.secondary)
+                Text(SharingCopy.confirmsDefaultsNote).mangoFont(.footnote).foregroundStyle(.secondary)
             }
         } header: {
             Text(SharingCopy.sectionTitle)

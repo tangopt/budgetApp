@@ -39,7 +39,7 @@ public struct InlineBanner: View {
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
             Text(text.figuresUnbroken)
-                .font(.callout)
+                .mangoFont(.callout)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

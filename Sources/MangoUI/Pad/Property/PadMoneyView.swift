@@ -83,7 +83,7 @@ struct PadMoneyView: View {
                 }
             }
             if let note = model.rateNote {
-                Text(note.figuresUnbroken).font(.footnote).foregroundStyle(.secondary)
+                Text(note.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
             }
         }
     }
@@ -107,9 +107,9 @@ struct PadMoneyView: View {
         } label: {
             HStack(spacing: 6) {
                 Text(model.periodTitle.figuresUnbroken).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.footnote)
+                Image(systemName: "chevron.up.chevron.down").mangoFont(.footnote)
             }
-            .font(.headline)
+            .mangoFont(.headline)
             .frame(minHeight: 44)
         }
         .accessibilityLabel("Period")
@@ -150,15 +150,15 @@ struct PadMoneyView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12, alignment: .top)], spacing: 12) {
             ForEach(model.tiles) { tile in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(tile.title).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                    Text(tile.title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(2)
                     if let amount = tile.amount {
                         MoneyText(minorUnits: model.shown(amount), currency: model.displayCurrency, role: tile.role, fit: .shrink(),
                                   font: .title2.weight(.semibold))
                     } else if let text = tile.text {
-                        Text(text).font(.title2.weight(.semibold).monospacedDigit()).lineLimit(1)
+                        Text(text).mangoFont(.title2, weight: .semibold, figures: true).lineLimit(1)
                     }
                     if let caption = tile.caption {
-                        Text(caption.figuresUnbroken).font(.footnote).foregroundStyle(.secondary)
+                        Text(caption.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 .padding(14)
@@ -174,7 +174,7 @@ struct PadMoneyView: View {
         let categories = model.categoryChips
         if !categories.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Costs by category").font(.headline)
+                Text("Costs by category").mangoFont(.headline)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         chip(PadMoneyModel.allCosts)
@@ -188,7 +188,7 @@ struct PadMoneyView: View {
     private func chip(_ drill: PadMoneyModel.Drill) -> some View {
         let selected = model.mode == .transactions && model.drill?.id == drill.id
         return Button { Task { await model.show(drill) } } label: {
-            Text(drill.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+            Text(drill.title).mangoFont(.subheadline, weight: .semibold).lineLimit(1).truncationMode(.middle)
                 .padding(.horizontal, 14).frame(minHeight: 44)
                 .foregroundStyle(selected ? Color.white : theme.accent)
                 .background(Capsule().fill(selected ? theme.accent : theme.accent.opacity(0.1)))
@@ -202,7 +202,7 @@ struct PadMoneyView: View {
 
     private var monthList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Months").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Text("Months").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
             ForEach(model.months, id: \.start) { month in
                 monthCard(month)
             }
@@ -214,10 +214,10 @@ struct PadMoneyView: View {
         return VStack(alignment: .leading, spacing: 10) {
             Button { Task { await model.toggle(month) } } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(PadMoneyModel.monthTitle(month).figuresUnbroken).font(.headline).lineLimit(1)
+                    Text(PadMoneyModel.monthTitle(month).figuresUnbroken).mangoFont(.headline).lineLimit(1)
                     Spacer(minLength: 8)
                     MoneyText(minorUnits: model.shown(month.figures.netCashFlow), currency: model.displayCurrency, role: .income, font: .headline)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.footnote).foregroundStyle(.secondary)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").mangoFont(.footnote).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
                 .frame(minHeight: 44)
@@ -243,12 +243,12 @@ struct PadMoneyView: View {
                 figure("Net cash flow", breakdown.netCashFlow, .income, bold: true)
             }
             if breakdown.groups.isEmpty {
-                Text("No transactions in this month.").font(.callout).foregroundStyle(.secondary)
+                Text("No transactions in this month.").mangoFont(.callout).foregroundStyle(.secondary)
             }
             ForEach(breakdown.groups) { group in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(group.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(group.kind.title).mangoFont(.subheadline, weight: .semibold).foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: model.shown(group.total), currency: model.displayCurrency, role: .income, font: .subheadline)
                     }
@@ -271,7 +271,7 @@ struct PadMoneyView: View {
             Spacer(minLength: 8)
             MoneyText(minorUnits: model.shown(amount), currency: model.displayCurrency, role: role, font: .body.weight(bold ? .semibold : .regular))
         }
-        .font(.body)
+        .mangoFont(.body)
     }
 
     // MARK: Transactions
@@ -280,14 +280,14 @@ struct PadMoneyView: View {
         let drill = model.drill ?? PadMoneyModel.allCosts
         let lines = model.drillLines
         return VStack(alignment: .leading, spacing: 8) {
-            Text(drill.title).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Text(drill.title).mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
             Text("\(lines.count) transaction\(lines.count == 1 ? "" : "s") · \(model.summary?.period.label ?? "")".figuresUnbroken)
-                .font(.subheadline).foregroundStyle(.secondary)
+                .mangoFont(.subheadline).foregroundStyle(.secondary)
             if lines.isEmpty {
-                Text("No transactions in this period.").font(.callout).foregroundStyle(.secondary)
+                Text("No transactions in this period.").mangoFont(.callout).foregroundStyle(.secondary)
             }
             if model.displayCurrency != model.currency || model.showsGBP && model.offersGBP {
-                Text("Transactions keep their own currency.").font(.footnote).foregroundStyle(.secondary)
+                Text("Transactions keep their own currency.").mangoFont(.footnote).foregroundStyle(.secondary)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], spacing: 12) {
                 ForEach(lines) { line in
@@ -337,25 +337,25 @@ struct PadMoneyLineRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(line.transaction.rawDescription).font(.headline).lineLimit(1).truncationMode(.middle)
+                        Text(line.transaction.rawDescription).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
                         if !line.detail.isEmpty {
-                            Text(line.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text(line.detail).mangoFont(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     amount
                 }
                 HStack(spacing: 8) {
-                    Text(PhoneDateFormat.day(line.transaction.date).unbroken).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(PhoneDateFormat.day(line.transaction.date).unbroken).mangoFont(.footnote, figures: true).foregroundStyle(.secondary)
                     if line.documentCount > 0 {
-                        Label("\(line.documentCount)", systemImage: "paperclip").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        Label("\(line.documentCount)", systemImage: "paperclip").mangoFont(.footnote, figures: true).foregroundStyle(.secondary)
                             .labelStyle(.titleAndIcon)
                             .accessibilityLabel("\(line.documentCount) document\(line.documentCount == 1 ? "" : "s")")
                     }
                     Spacer(minLength: 4)
                 }
                 if let note = line.note {
-                    Text(note.figuresUnbroken).font(.footnote).foregroundStyle(.secondary)
+                    Text(note.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
                 }
             }
             .padding(.vertical, card ? 14 : 8).padding(.horizontal, card ? 14 : 10)
@@ -434,8 +434,8 @@ struct PadMoneyPlainPanel<Extra: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Transaction").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.secondary) }
+                Text("Transaction").mangoFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
                     .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
             }
             .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
@@ -466,7 +466,7 @@ struct PadMoneyPanelExtra: View {
             }
             Card(title: "Transaction") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(transaction.rawDescription).font(.subheadline.weight(.semibold)).lineLimit(3).truncationMode(.middle)
+                    Text(transaction.rawDescription).mangoFont(.subheadline, weight: .semibold).lineLimit(3).truncationMode(.middle)
                     fact("Date", Text(PhoneDateFormat.day(transaction.date).unbroken))
                     fact("Amount", MoneyText(minorUnits: transaction.amountMinorUnits, currency: line.currency, role: .income, font: .subheadline))
                     if let counted = line.counted {
@@ -474,7 +474,7 @@ struct PadMoneyPanelExtra: View {
                     }
                     if let name = line.categoryName { fact("Category", Text(name).lineLimit(1).truncationMode(.middle)) }
                     if !line.accountName.isEmpty { fact("Account", Text(line.accountName).lineLimit(1).truncationMode(.middle)) }
-                    if let note = line.note { Text(note.figuresUnbroken).font(.footnote).foregroundStyle(.secondary) }
+                    if let note = line.note { Text(note.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -494,8 +494,8 @@ struct PadMoneyPanelExtra: View {
                         ForEach(documents) { document in
                             HStack(spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(document.displayName).font(.subheadline).lineLimit(1).truncationMode(.middle)
-                                    Text(document.kindLabel).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(document.displayName).mangoFont(.subheadline).lineLimit(1).truncationMode(.middle)
+                                    Text(document.kindLabel).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 if document.id == model.panelDocumentId {
@@ -546,7 +546,7 @@ struct PadMoneyPanelExtra: View {
                 value.fixedSize(horizontal: false, vertical: true)
             }
         }
-        .font(.subheadline)
+        .mangoFont(.subheadline)
     }
 }
 

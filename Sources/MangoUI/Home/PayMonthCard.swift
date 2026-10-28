@@ -12,7 +12,7 @@ struct PayMonthCard: View {
         let month = summary.month
         Card(title: "This pay month") {
             Text("\(PhoneDateFormat.day(month.start)) – \(PhoneDateFormat.day(month.end))".figuresUnbroken)
-                .font(.subheadline)
+                .mangoFont(.subheadline)
                 .foregroundStyle(.secondary)
             FigureRow(label: "Spent") {
                 MoneyText(minorUnits: month.expenses.actual, currency: .gbp, role: .expense)
@@ -53,7 +53,7 @@ struct PayMonthCard: View {
                 legend(Rectangle().fill(theme.expense), "Spent")
                 legend(Hatch(color: theme.expense), "Still expected")
             }
-            .font(.caption)
+            .mangoFont(.caption)
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .ignore)

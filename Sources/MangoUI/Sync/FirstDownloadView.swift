@@ -99,11 +99,11 @@ public struct FirstDownloadView: View {
                     .accessibilityHidden(true)
             }
             Text((waiting ? SyncStatusCopy.firstDownloadWaiting : SyncStatusCopy.firstDownload(received: received)).figuresUnbroken)
-                .font(.headline)
+                .mangoFont(.headline)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Text("This happens once; afterwards only changes come down.")
-                .font(.callout)
+                .mangoFont(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

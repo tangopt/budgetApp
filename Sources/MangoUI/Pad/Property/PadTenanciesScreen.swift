@@ -143,9 +143,9 @@ struct PadTenanciesScreen: View {
         } label: {
             HStack(spacing: 6) {
                 Text(property.selectedTenancy?.referenceLabel ?? "Tenancy").lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.up.chevron.down").font(.footnote)
+                Image(systemName: "chevron.up.chevron.down").mangoFont(.footnote)
             }
-            .font(.headline)
+            .mangoFont(.headline)
             .frame(minHeight: 44)
         }
         .accessibilityLabel("Tenancy")
@@ -164,11 +164,11 @@ struct PadTenanciesScreen: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Rent receipts").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    Text("Rent receipts").mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
                     if !model.detail.receipts.isEmpty {
                         Text("\(model.detail.receipts.count) receipt\(model.detail.receipts.count == 1 ? "" : "s") · \(model.paidCount) of \(model.issuedCount) issued paid"
                             .figuresUnbroken)
-                            .font(.subheadline).foregroundStyle(.secondary)
+                            .mangoFont(.subheadline).foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 8)
@@ -184,18 +184,18 @@ struct PadTenanciesScreen: View {
             }
             if browser != nil, PadTenanciesModel.portalSite(in: browser?.sites ?? []) == nil {
                 HStack(spacing: 6) {
-                    Text("No tax site saved yet.").font(.subheadline).foregroundStyle(.secondary)
+                    Text("No tax site saved yet.").mangoFont(.subheadline).foregroundStyle(.secondary)
                     Button { run(.fetchFromPortal, nil, nil) } label: { Label("Add site", systemImage: "plus") }
                         .buttonStyle(.pad(.textLink, size: .small))
                 }
             }
             if model.detail.receipts.isEmpty {
                 Text("No rent receipts yet: fetch them from Portal das Finanças, or the Mac imports the portal's export.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .mangoFont(.callout).foregroundStyle(.secondary)
             }
             ForEach(model.years) { year in
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(String(year.year)).font(.headline.monospacedDigit()).foregroundStyle(.secondary).padding(.top, 4)
+                    Text(String(year.year)).mangoFont(.headline, figures: true).foregroundStyle(.secondary).padding(.top, 4)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(year.receipts) { receipt in
                             PadRentReceiptRow(receipt: receipt, isSelected: receipt.id == model.selectedReceiptId,
