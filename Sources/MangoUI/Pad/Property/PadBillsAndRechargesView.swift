@@ -99,7 +99,7 @@ struct PadBillsAndRechargesView: View {
                 } label: {
                     Label("Actions", systemImage: "ellipsis.circle").frame(minHeight: 44)
                 }
-                .buttonStyle(.pad(.secondary))
+                .buttonStyle(.pad(.textLink))
             }
             if let message = model.matchMessage {
                 InlineBanner(tone: .neutral, text: message)
@@ -127,15 +127,15 @@ struct PadBillsAndRechargesView: View {
     private var actionButtons: some View {
         if browser != nil {
             Button { openUtilitySite() } label: { Label(PadBillsAction.utilityInvoices.title, systemImage: RowAction.openSite.systemImage) }
-                .buttonStyle(.pad(.secondary))
+                .buttonStyle(.pad(.textLink))
         }
         if write.canEdit {
-            Button { Task { await model.matchCredits() } } label: { Text(PadBillsAction.matchCredits.title) }
-                .buttonStyle(.pad(.secondary))
+            Button { Task { await model.matchCredits() } } label: { Label(PadBillsAction.matchCredits.title, systemImage: "arrow.left.arrow.right") }
+                .buttonStyle(.pad(.textLink))
             Button { Task { await model.prepareNext() } } label: {
-                Text("Prepare \(RechargeEmail.monthName(model.nextMonth, language: .english))")
+                Label("Prepare \(RechargeEmail.monthName(model.nextMonth, language: .english))", systemImage: "square.and.pencil")
             }
-            .buttonStyle(.pad(.primary))
+            .buttonStyle(.pad(.textLink))
         }
     }
 

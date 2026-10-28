@@ -95,7 +95,7 @@ struct PadBillsGridView: View {
                     Button { back = max(back - months.count, 0) } label: { Label("Later", systemImage: "chevron.right") }
                         .disabled(back == 0)
                 }
-                .buttonStyle(.pad(.secondary, size: .small))
+                .buttonStyle(.pad(.textLink, size: .small))
             }
             HStack(alignment: .top, spacing: Self.spacing) {
                 VStack(alignment: .leading, spacing: Self.spacing) {
