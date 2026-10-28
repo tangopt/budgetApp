@@ -40,9 +40,15 @@ struct PadRentReceiptRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens the receipt")
-                ForEach(actions.filter { Self.rowActions.contains($0) && ($0 != .addDocument || receipt.row.documentCount == 0) }, id: \.self) { action in
+                // One fixed slot per row action, kept (hidden) when this receipt doesn't offer it, so the
+                // status, amount and icons line up in columns down the list.
+                ForEach(Self.rowActions, id: \.self) { action in
                     if let row = action.rowAction {
+                        let offered = actions.contains(action) && (action != .addDocument || receipt.row.documentCount == 0)
                         RowIconButton(row, item: "receipt \(receipt.receipt.receiptNumber)", size: .small) { perform(action) }
+                            .opacity(offered ? 1 : 0)
+                            .disabled(!offered)
+                            .accessibilityHidden(!offered)
                     }
                 }
             }
