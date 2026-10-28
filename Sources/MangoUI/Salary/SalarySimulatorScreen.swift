@@ -42,24 +42,25 @@ public struct SalarySimulatorScreen: View {
                         .padding(.top, usesPadPage ? PadSpacing.xs : 16).padding(.bottom, 8)
                 }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
                         if !pinned { strip }
-                        if wide {
-                            HStack(alignment: .top, spacing: 16) {
-                                column(.current)
-                                column(.offer)
-                            }
-                        } else {
+                        if !wide {
                             Picker("Salary", selection: $side) {
                                 ForEach(Side.allCases) { Text($0.rawValue).tag($0) }
                             }
                             .pickerStyle(.segmented)
                             .frame(minHeight: 44)
-                            column(side)
                         }
+                        let sides: [Side] = wide ? Side.allCases : [side]
+                        settingsCard
+                        if viewModel.canUsePrefill && sides.contains(.current) { prefillCard }
+                        SalaryFormCard(sides: sides, current: $viewModel.current, offer: $viewModel.offer)
+                        SalaryResultsCard(sides: sides, comparison: viewModel.comparison, ready: viewModel.ready)
+                        SalaryBarsCard(sides: sides, comparison: viewModel.comparison, ready: viewModel.ready)
                         Text("An estimate from published UK rates, not tax advice.")
                             .mangoFont(.caption).foregroundStyle(.secondary)
                     }
+                    .mangoFont(.body)
                     .phonePageContent()
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -107,94 +108,181 @@ public struct SalarySimulatorScreen: View {
         }
     }
 
-    // MARK: Columns
+    // MARK: Tax year and region (one setting for both salaries)
 
-    @ViewBuilder
-    private func column(_ side: Side) -> some View {
-        let isCurrent = side == .current
-        let comparison = viewModel.comparison
-        VStack(alignment: .leading, spacing: 16) {
-            SalaryResultsCard(title: side.rawValue, result: isCurrent ? comparison.current : comparison.offer,
-                              ready: isCurrent ? viewModel.ready.current : viewModel.ready.offer)
-            if isCurrent && viewModel.canUsePrefill { prefillCard }
-            SalaryFormCard(title: side.rawValue, inputs: isCurrent ? $viewModel.current : $viewModel.offer)
+    private var settingsCard: some View {
+        Card(title: "Tax year and region") {
+            SalaryRow(label: "Tax year") {
+                Picker("Tax year", selection: Binding(get: { viewModel.current.taxYearStart },
+                                                      set: { viewModel.current.taxYearStart = $0; viewModel.offer.taxYearStart = $0 })) {
+                    ForEach(SalaryRules.all.map(\.startYear).sorted(), id: \.self) { year in
+                        Text(UKTaxYear(startYear: year).label).tag(year)
+                    }
+                }
+                .labelsHidden()
+            }
+            SalaryRow(label: "Region") {
+                Picker("Region", selection: Binding(get: { viewModel.current.region },
+                                                    set: { viewModel.current.region = $0; viewModel.offer.region = $0 })) {
+                    Text("England, Wales, NI").tag(SalaryRegion.englandWalesNI)
+                    Text("Scotland").tag(SalaryRegion.scotland)
+                }
+                .labelsHidden()
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+/// One row of the salary screen: a label, then one cell per salary shown, at one height so Current and New line up.
+struct SalaryRow<Cell: View>: View {
+    let label: String
+    let cells: [Cell]
+    var minimumHeight: CGFloat = 36
+
+    init(label: String, minimumHeight: CGFloat = 36, @ViewBuilder cell: () -> Cell) {
+        self.label = label
+        self.cells = [cell()]
+        self.minimumHeight = minimumHeight
+    }
+
+    init(label: String, minimumHeight: CGFloat = 36, cells: [Cell]) {
+        self.label = label
+        self.cells = cells
+        self.minimumHeight = minimumHeight
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: PadSpacing.s) {
+            Text(label).mangoFont(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .frame(width: SalaryMetrics.labelWidth, alignment: .leading)
+            ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                cell.frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .frame(minHeight: minimumHeight)
+    }
+}
+
+enum SalaryMetrics {
+    static var labelWidth: CGFloat { 132 }
+}
+
+/// A header over the cells: "Current" and "New" (nothing when one salary shows).
+struct SalarySideHeader: View {
+    let sides: [SalarySimulatorScreen.Side]
+
+    var body: some View {
+        if sides.count > 1 {
+            HStack(spacing: PadSpacing.s) {
+                Color.clear.frame(width: SalaryMetrics.labelWidth, height: 1)
+                ForEach(sides) { side in
+                    Text(side.rawValue).mangoFont(.subheadline, weight: .semibold).frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+        }
     }
 }
 
 // MARK: - Results
 
-/// What one salary comes to, and where its year of gross pay goes.
+/// What each salary comes to, one row for both: the figures line up Current under New.
 struct SalaryResultsCard: View {
-    let title: String
-    let result: SalaryResult
-    let ready: Bool
-    @Environment(\.phoneTheme) private var theme
+    let sides: [SalarySimulatorScreen.Side]
+    let comparison: SalaryComparison
+    let ready: (current: Bool, offer: Bool)
+
+    private func result(_ side: SalarySimulatorScreen.Side) -> SalaryResult { side == .current ? comparison.current : comparison.offer }
+    private func isReady(_ side: SalarySimulatorScreen.Side) -> Bool { side == .current ? ready.current : ready.offer }
 
     var body: some View {
-        Card(title: "\(title) take-home") {
-            if !ready {
-                Text("Enter a salary to see the take-home.").foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 0) {
-                    AmountRow(label: "A year", amount: money(result.takeHomeAnnual, .neutral))
-                    AmountRow(label: "A month", amount: money(result.takeHomeMonthly, .neutral))
-                    AmountRow(label: "A week", amount: money(result.takeHomeWeekly, .neutral))
-                }
-                Divider()
-                // Every row is always there (a dash when it doesn't apply), so nothing moves as figures are typed.
-                VStack(spacing: 0) {
-                    optional("Income tax", result.incomeTax, .expense)
-                    optional("National Insurance", result.employeeNI, .expense)
-                    optional("Student loan", result.studentLoan, .expense)
-                    optional("Postgraduate loan", result.postgraduateLoan, .expense)
-                    optional("Your pension", result.employeePension, .expense)
-                    optional("Employer pension", result.employerPension, .neutral)
-                    optional("Tax on benefits in kind", result.benefitsInKindTax, .expense)
-                }
-                Divider()
-                VStack(spacing: 0) {
-                    AmountRow(label: "Personal allowance", amount: money(result.personalAllowance, .neutral))
-                    percent("Effective rate", result.effectiveRateBP)
-                    percent("Marginal rate", result.marginalRateBP)
-                    Text(SalaryResult.marginalPensionCaption(result) ?? " ").mangoFont(.caption).foregroundStyle(.secondary)
-                        .lineLimit(3, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Divider()
-                bar
+        Card(title: "Take-home") {
+            SalarySideHeader(sides: sides)
+            money("A year", .neutral) { $0.takeHomeAnnual }
+            money("A month", .neutral) { $0.takeHomeMonthly }
+            money("A week", .neutral) { $0.takeHomeWeekly }
+            Divider()
+            optional("Income tax", .expense) { $0.incomeTax }
+            optional("National Insurance", .expense) { $0.employeeNI }
+            optional("Student loan", .expense) { $0.studentLoan }
+            optional("Postgraduate loan", .expense) { $0.postgraduateLoan }
+            optional("Your pension", .expense) { $0.employeePension }
+            optional("Employer pension", .neutral) { $0.employerPension }
+            optional("Tax on benefits", .expense) { $0.benefitsInKindTax }
+            Divider()
+            money("Personal allowance", .neutral) { $0.personalAllowance }
+            SalaryRow(label: "Effective rate", cells: sides.map { side in percent(isReady(side) ? result(side).effectiveRateBP : nil) })
+            SalaryRow(label: "Marginal rate", cells: sides.map { side in percent(isReady(side) ? result(side).marginalRateBP : nil) })
+            // Notes: the same height whatever they say, so nothing below or beside them moves while typing.
+            SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
+                Text(SalaryResult.marginalPensionCaption(result(side)) ?? " ").mangoFont(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
+            })
+            SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
+                Text(notes(result(side), ready: isReady(side))).mangoFont(.caption).foregroundStyle(.secondary)
+                    .lineLimit(4, reservesSpace: true).multilineTextAlignment(.trailing)
+            })
+        }
+    }
+
+    private func notes(_ result: SalaryResult, ready: Bool) -> String {
+        if !ready { return "Enter a salary to see the take-home." }
+        var lines = result.notices.filter { $0 != TaxCode.unreadableNotice }
+        if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
+            lines.append("Rates for \(rules.ukTaxYear.label) not yet confirmed")
+        }
+        return lines.isEmpty ? " " : lines.joined(separator: "\n")
+    }
+
+    private func money(_ label: String, _ role: MoneyRole, _ value: @escaping (SalaryResult) -> Int) -> some View {
+        SalaryRow(label: label, cells: sides.map { side in
+            Group {
+                if isReady(side) { MoneyText(minorUnits: value(result(side)), currency: .gbp, role: role) }
+                else { Text("—").foregroundStyle(.secondary).accessibilityLabel("none") }
             }
-            notices
+        })
+    }
+
+    private func optional(_ label: String, _ role: MoneyRole, _ value: @escaping (SalaryResult) -> Int) -> some View {
+        SalaryRow(label: label, cells: sides.map { side in
+            Group {
+                if isReady(side), value(result(side)) > 0 { MoneyText(minorUnits: value(result(side)), currency: .gbp, role: role) }
+                else { Text("—").foregroundStyle(.secondary).accessibilityLabel("none") }
+            }
+        })
+    }
+
+    private func percent(_ basisPoints: Int?) -> some View {
+        Group {
+            if let basisPoints { Text(String(format: "%.1f%%", Double(basisPoints) / 100)).figureText() }
+            else { Text("—").foregroundStyle(.secondary) }
         }
+        .mangoFont(.subheadline)
     }
+}
 
-    @ViewBuilder private func optional(_ label: String, _ pence: Int, _ role: MoneyRole) -> some View {
-        if pence > 0 {
-            AmountRow(label: label, amount: money(pence, role))
-        } else {
-            FigureRow(label: label) { Text("—").mangoFont(.body).foregroundStyle(.secondary).accessibilityLabel("none") }
-        }
-    }
-
-    private func money(_ pence: Int, _ role: MoneyRole) -> MoneyText {
-        MoneyText(minorUnits: pence, currency: .gbp, role: role)
-    }
-
-    private func percent(_ label: String, _ basisPoints: Int) -> some View {
-        FigureRow(label: label) {
-            Text(String(format: "%.1f%%", Double(basisPoints) / 100)).figureText().mangoFont(.body)
-        }
-    }
-
-    // MARK: Where the money goes
+/// Where a year of gross pay goes, one bar for each salary shown.
+struct SalaryBarsCard: View {
+    let sides: [SalarySimulatorScreen.Side]
+    let comparison: SalaryComparison
+    let ready: (current: Bool, offer: Bool)
+    @Environment(\.phoneTheme) private var theme
 
     private var colors: [Color] { [theme.accent, theme.expense, theme.pending, Color.purple, Color.primary] }
 
-    private var bar: some View {
+    var body: some View {
+        Card(title: "Where a year of gross pay goes") {
+            ForEach(sides) { side in
+                let result = side == .current ? comparison.current : comparison.offer
+                if (side == .current ? ready.current : ready.offer) { bar(side.rawValue, result, showsTitle: sides.count > 1) }
+            }
+        }
+    }
+
+    private func bar(_ title: String, _ result: SalaryResult, showsTitle: Bool) -> some View {
         let segments = SalaryBarSegments.segments(result).enumerated().filter { $0.element.pence > 0 }
         let total = max(1, segments.reduce(0) { $0 + $1.element.pence })
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Where a year of gross pay goes").mangoFont(.subheadline).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 6) {
+            if showsTitle { Text(title).mangoFont(.subheadline, weight: .semibold) }
             GeometryReader { proxy in
                 HStack(spacing: 2) {
                     ForEach(segments, id: \.offset) { index, segment in
@@ -204,121 +292,144 @@ struct SalaryResultsCard: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 4))
             }
-            .frame(height: 16)
+            .frame(height: 14)
             .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(segments, id: \.offset) { index, segment in
-                    HStack(spacing: 8) {
-                        Circle().fill(colors[index % colors.count]).frame(width: 10, height: 10)
-                        Text(segment.label).mangoFont(.caption)
-                    }
-                }
-            }
-            .accessibilityHidden(true)
+            FlowLegend(segments: segments.map { ($0.offset, $0.element.label) }, colors: colors)
         }
     }
+}
 
-    @ViewBuilder private var notices: some View {
-        ForEach(result.notices.filter { $0 != TaxCode.unreadableNotice }, id: \.self) { notice in
-            Text(notice).mangoFont(.caption).foregroundStyle(.secondary)
+private struct FlowLegend: View {
+    let segments: [(Int, String)]
+    let colors: [Color]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(segments, id: \.0) { index, label in
+                HStack(spacing: 8) {
+                    Circle().fill(colors[index % colors.count]).frame(width: 10, height: 10)
+                    Text(label).mangoFont(.caption)
+                }
+            }
         }
-        if let rules = SalaryRules.forYear(result.effectiveTaxYear), !rules.checkedFields.isEmpty {
-            Text("Rates for \(rules.ukTaxYear.label) not yet confirmed").mangoFont(.caption).foregroundStyle(.secondary)
-        }
+        .accessibilityHidden(true)
     }
 }
 
 // MARK: - Form
 
-/// The inputs for one salary.
+/// The inputs for the salaries shown, one row for both: Current beside New, label on the left.
 struct SalaryFormCard: View {
-    let title: String
-    @Binding var inputs: SalaryInputs
+    let sides: [SalarySimulatorScreen.Side]
+    @Binding var current: SalaryInputs
+    @Binding var offer: SalaryInputs
+
+    private func inputs(_ side: SalarySimulatorScreen.Side) -> Binding<SalaryInputs> { side == .current ? $current : $offer }
 
     var body: some View {
-        Card(title: title) {
-            VStack(alignment: .leading, spacing: 0) {
-                field("Salary a year") { PoundsInput(label: "Salary a year", pence: $inputs.grossAnnual) }
-                field("Bonus a year") { PoundsInput(label: "Bonus a year", pence: $inputs.bonusAnnual) }
-                field("Tax year") {
-                    Picker("Tax year", selection: $inputs.taxYearStart) {
-                        ForEach(SalaryRules.all.map(\.startYear).sorted(), id: \.self) { year in
-                            Text(UKTaxYear(startYear: year).label).tag(year)
-                        }
-                    }
-                    .labelsHidden()
-                }
-                field("Region") {
-                    Picker("Region", selection: $inputs.region) {
-                        Text("England, Wales, NI").tag(SalaryRegion.englandWalesNI)
-                        Text("Scotland").tag(SalaryRegion.scotland)
-                    }
-                    .labelsHidden()
-                }
-                field("Tax code") {
-                    TextField("1257L", text: $inputs.taxCode)
-                        .multilineTextAlignment(.trailing)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.characters)
-                        #endif
-                        .autocorrectionDisabled()
-                        .frame(minWidth: 80)
-                }
-                Text(TaxCode.parse(inputs.taxCode).notice ?? " ").mangoFont(.caption).foregroundStyle(.orange)
-                    .lineLimit(3, reservesSpace: true).frame(maxWidth: .infinity, alignment: .leading)
-                Divider().padding(.vertical, 4)
-                stacked("Pension") { PensionInput(label: "Pension", amount: $inputs.pension) }
-                field("Taken") {
-                    Picker("Pension method", selection: $inputs.pensionMethod) {
-                        Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
-                        Text("Net pay").tag(PensionMethod.netPay)
-                        Text("Relief at source").tag(PensionMethod.reliefAtSource)
-                    }
-                    .labelsHidden()
-                    .disabled(inputs.pension == .percentOfGross(basisPoints: 0))
-                }
-                stacked("Employer pension") { PensionInput(label: "Employer pension", amount: $inputs.employerPension) }
-                Divider().padding(.vertical, 4)
-                field("Student loan") {
-                    Picker("Student loan", selection: $inputs.studentLoan) {
-                        Text("None").tag(StudentLoanPlan?.none)
-                        Text("Plan 1").tag(StudentLoanPlan?.some(.plan1))
-                        Text("Plan 2").tag(StudentLoanPlan?.some(.plan2))
-                        Text("Plan 4").tag(StudentLoanPlan?.some(.plan4))
-                        Text("Plan 5").tag(StudentLoanPlan?.some(.plan5))
-                    }
-                    .labelsHidden()
-                }
-                Toggle("Postgraduate loan", isOn: $inputs.postgraduateLoan).frame(minHeight: 44)
-                field("Benefits in kind a year") { PoundsInput(label: "Benefits in kind a year", pence: $inputs.benefitsInKindAnnual) }
+        Card(title: "Inputs") {
+            SalarySideHeader(sides: sides)
+            row("Salary a year") { PoundsInput(label: "Salary a year", pence: $0.grossAnnual) }
+            row("Bonus") { BonusInput(inputs: $0) }
+            row("Tax code") { inputs in
+                TextField("1257L", text: inputs.taxCode)
+                    .multilineTextAlignment(.trailing)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.characters)
+                    #endif
+                    .autocorrectionDisabled()
+                    .frame(minWidth: 70)
             }
+            SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
+                Text(TaxCode.parse(inputs(side).wrappedValue.taxCode).notice ?? " ").mangoFont(.caption).foregroundStyle(.orange)
+                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
+            })
+            Divider()
+            row("Pension") { PensionInput(label: "Pension", amount: $0.pension) }
+            row("Pension taken") { inputs in
+                Picker("Pension method", selection: inputs.pensionMethod) {
+                    Text("Salary sacrifice").tag(PensionMethod.salarySacrifice)
+                    Text("Net pay").tag(PensionMethod.netPay)
+                    Text("Relief at source").tag(PensionMethod.reliefAtSource)
+                }
+                .labelsHidden()
+                .disabled(inputs.wrappedValue.pension == .percentOfGross(basisPoints: 0))
+            }
+            row("Employer pension") { PensionInput(label: "Employer pension", amount: $0.employerPension) }
+            Divider()
+            row("Student loan") { inputs in
+                Picker("Student loan", selection: inputs.studentLoan) {
+                    Text("None").tag(StudentLoanPlan?.none)
+                    Text("Plan 1").tag(StudentLoanPlan?.some(.plan1))
+                    Text("Plan 2").tag(StudentLoanPlan?.some(.plan2))
+                    Text("Plan 4").tag(StudentLoanPlan?.some(.plan4))
+                    Text("Plan 5").tag(StudentLoanPlan?.some(.plan5))
+                }
+                .labelsHidden()
+            }
+            row("Postgraduate loan") { inputs in Toggle("Postgraduate loan", isOn: inputs.postgraduateLoan).labelsHidden() }
+            row("Benefits in kind a year") { PoundsInput(label: "Benefits in kind a year", pence: $0.benefitsInKindAnnual) }
         }
     }
 
-    /// A label with its control beside it (under it when the label needs the room).
-    private func field<Control: View>(_ label: String, @ViewBuilder control: () -> Control) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                Text(label).fixedSize()
-                Spacer(minLength: 8)
-                control().fixedSize()
+    /// One row: the control built for each side's inputs, all at the same height.
+    private func row<Control: View>(_ label: String, @ViewBuilder control: @escaping (Binding<SalaryInputs>) -> Control) -> some View {
+        SalaryRow(label: label, cells: sides.map { control(inputs($0)) })
+    }
+}
+
+enum SalaryBonusUnit { case pounds, percent }
+
+/// The bonus: pounds a year, or a percentage of salary (a £/% choice, as pension has).
+struct BonusInput: View {
+    @Binding var inputs: SalaryInputs
+    @State private var text = ""
+
+    private var isPercent: Bool { inputs.bonusPercentBP != nil }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Picker("Bonus unit", selection: Binding(get: { isPercent }, set: { setPercent($0) })) {
+                Text("£").tag(false)
+                Text("%").tag(true)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label).fixedSize(horizontal: false, vertical: true)
-                control().frame(maxWidth: .infinity, alignment: .leading)
-            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 84)
+            TextField(isPercent ? "0%" : "£0", text: $text)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                #if os(iOS)
+                .keyboardType(.decimalPad)
+                #endif
+                .frame(minWidth: 60, maxWidth: 110)
+                .accessibilityLabel("Bonus a year")
+                .onChange(of: text) { _, new in
+                    if isPercent {
+                        let trimmed = new.trimmingCharacters(in: .whitespaces)
+                        let value = trimmed.isEmpty ? 0 : Double(trimmed.replacingOccurrences(of: ",", with: "."))
+                        if let value { inputs.bonusPercentBP = max(0, Int((value * 100).rounded())) }
+                    } else {
+                        let shown = Money.poundsFieldText(typed: new)
+                        if shown != new { text = shown; return }
+                        if shown.isEmpty { if inputs.bonusAnnual != 0 { inputs.bonusAnnual = 0 } }
+                        else if let value = Money.parseMinorUnits(shown), value != inputs.bonusAnnual { inputs.bonusAnnual = max(0, value) }
+                    }
+                }
         }
-        .frame(minHeight: 44)
+        .onAppear { sync() }
     }
 
-    /// A label over a wide control.
-    private func stacked<Control: View>(_ label: String, @ViewBuilder control: () -> Control) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-            control()
-        }
-        .padding(.vertical, 6)
-        .frame(minHeight: 44, alignment: .topLeading)
+    private func setPercent(_ percent: Bool) {
+        guard percent != isPercent else { return }
+        inputs.bonusPercentBP = percent ? 0 : nil
+        if !percent { inputs.bonusAnnual = 0 }
+        text = ""
+    }
+
+    private func sync() {
+        if let bp = inputs.bonusPercentBP { text = bp == 0 ? "" : String(format: "%g", Double(bp) / 100) }
+        else { text = Money.poundsFieldText(pence: inputs.bonusAnnual) }
     }
 }
 
@@ -373,7 +484,7 @@ struct PensionInput: View {
     var body: some View {
         let unit = Picker("\(label) unit", selection: Binding(get: { isPercent }, set: { setPercent($0) })) {
             Text("%").tag(true)
-            Text("£ a year").tag(false)
+            Text("£").tag(false)
         }
         .labelsHidden()
         let amountField = TextField(isPercent ? "0" : "£0", text: $text)
@@ -390,15 +501,7 @@ struct PensionInput: View {
                 }
                 commit(new)
             }
-        // Segments don't grow with Dynamic Type: a menu takes over at accessibility sizes.
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 4) { unit.pickerStyle(.menu); amountField }
-            } else {
-                HStack(spacing: 8) { unit.pickerStyle(.segmented); amountField.frame(minWidth: 60, maxWidth: 110) }
-            }
-        }
-        .frame(minHeight: 44)
+        HStack(spacing: 6) { unit.pickerStyle(.menu); amountField.frame(minWidth: 60, maxWidth: 110) }
         .onAppear { sync() }
     }
 
