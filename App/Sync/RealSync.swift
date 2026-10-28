@@ -147,6 +147,7 @@ final class RealSync: ObservableObject {
         progressTask?.cancel()
         if let running = scheduler {
             scheduler = nil
+            household.engine = nil
             await running.stop()
         }
         status = .off
@@ -227,6 +228,7 @@ final class RealSync: ObservableObject {
         guard identityConfirmed, engineUserId != appUserId else { return }
         if let running = scheduler {
             scheduler = nil
+            household.engine = nil
             statusTask?.cancel()
             await running.stop()
         }
@@ -254,6 +256,8 @@ final class RealSync: ObservableObject {
                                     viewer: role.viewer, revalidatesAccess: revalidates)
         let scheduler = SyncScheduler(engine: engine, db: dbQueue, afterPull: Self.linkWaitingDocuments(dbQueue))
         self.scheduler = scheduler
+        // Settings ▸ Household removes the member through it (step 15: the new household key and the re-seal sweep).
+        household.engine = engine
         statusTask = Task { @MainActor [weak self] in
             for await status in await scheduler.statusStream() {
                 guard let self else { return }

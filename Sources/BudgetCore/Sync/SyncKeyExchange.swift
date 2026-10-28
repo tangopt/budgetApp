@@ -457,7 +457,8 @@ public enum SyncKeyExchange {
                            transcript: transcript)
         }
 
-        /// The admin confirmed the code: seals every household key to her device and saves the grant, once.
+        /// The admin confirmed the code: seals every household key to her device (but those a removed member held, step 15)
+        /// and saves the grant, once.
         public func grant(_ request: Request, keys: any SyncKeyStore, now: Date) async throws {
             guard let answered, answered.requestId == request.id, try await ledger().closed[request.id] == nil else {
                 throw ExchangeError.notConfirmable
@@ -470,7 +471,9 @@ public enum SyncKeyExchange {
                 try await close(request.id, now: now, failed: false)
                 throw ExchangeError.notAMember
             }
-            let held = try keys.allKeys(zone: SyncZones.household)
+            // Step 15: never a key a removed member held (none left while a removal's new key is still owed).
+            let revoked = try await db.read { db in try SyncKeyRotation.revokedKeyIds(db: db) }
+            let held = try keys.allKeys(zone: SyncZones.household).filter { !revoked.contains($0.key) }
             guard !held.isEmpty else { throw ExchangeError.noKeys }
             guard held.count <= maxKeys else { throw ExchangeError.tooManyKeys }
             // The newest key goes last, so it is her newest too.

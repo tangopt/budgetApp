@@ -16,6 +16,13 @@ Status: 2026-10-28, written unattended; calls marked *(my call)*. Budget ~2%. Bu
   where the household/member list already shows it *(member names are allowed in Settings ▸ Household)*.
 - Progress: "Securing the household… 1,240 of 9,934" in Settings ▸ Household; resumable after quit/crash.
 
+- *Built (2026-10-28):* only the household zone is rotated: private zones are never shared (sync spec §3.1), so it is
+  the only zone she could read. A future shared area zone must be added to `SyncKeyRotation`/`HouseholdRemoval`.
+- *Security review fixes:* the sweep pulls first and re-seals as is only versions the admin's own user wrote; anyone
+  else's goes up as the Mac holds it (re-validated, clocks clamped); a version the Mac hasn't applied is left to the pull
+  path. Every push reads the server's household marker before sealing; a record pulled under a revoked key reopens the
+  sweep. Taking her off the share is owed work, retried before anything is rotated ("Removing … — finishes when online").
+
 ## Constraints
 All crypto/sync in MangoSync/BudgetCore; tests with the CloudKit fake: rotate → old key cannot open any record or
 document written after rotation; re-seal sweep converts every old-key record; resume after interruption; offline

@@ -180,7 +180,7 @@ struct HouseholdPane: View {
             Button("Remove", role: .destructive) { actions.remove() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(HouseholdCopy.removeMessage)
+            Text(HouseholdCopy.removeMessage + " " + HouseholdCopy.removeRecall(state.member ?? ""))
         }
     }
 
