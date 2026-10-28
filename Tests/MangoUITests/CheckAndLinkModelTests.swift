@@ -51,6 +51,28 @@ final class CheckAndLinkModelTests: XCTestCase {
             return CheckAndLinkResult(documentId: 1, summary: CheckAndLinkCopy.saved(proposal.check.title))
         }
         func discard(_ item: TrayItem?) { discards += 1 }
+        var imports = 0
+        var importError: Error?
+        func importStatement(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
+                             importer: PadStatementImport, now: Date) async throws -> CheckAndLinkResult {
+            imports += 1
+            if let importError { throw importError }
+            return CheckAndLinkResult(documentId: nil, importRunId: 9, summary: "1 statement imported")
+        }
+    }
+
+    /// The lease as another device or the server leaves it (step 19).
+    private struct FakeLeases: ImportLeasing {
+        var holder: ImportLeaseRecord?
+        var offline = false
+        var leaseDevice: SyncDevice { SyncDevice(id: "ipad", name: "iPad") }
+        func importZones() async -> [String]? { nil }
+        func importLeaseHolder() async throws -> ImportLeaseRecord? {
+            if offline { throw LeaseStoreError.unavailable("offline") }
+            return holder
+        }
+        func acquireImportLease() async throws {}
+        func releaseImportLease() async throws {}
     }
 
     private struct FiledYear: LocalizedError {
@@ -89,6 +111,69 @@ final class CheckAndLinkModelTests: XCTestCase {
     }
 
     // MARK: Tests
+
+    /// Step 19: with statement import on, the sheet offers Import (the lease free), waits while another device holds it
+    /// or offline, and Send to the Mac stays Save's.
+    func testStatementRouteDecidesImport() async throws {
+        let manager = try TestDatabase.migratedManager()
+        let created = Self.day(2026, 1, 1)
+        try await manager.dbQueue.write { db in
+            var person = Person(name: "Person A", shortName: "A")
+            try People.save(db: db, &person)
+            var admin = AppUser(personId: person.id!, displayName: "A", isAdmin: true, createdAt: created)
+            try admin.insert(db)
+        }
+        let writer = DeviceWriter(db: manager.dbQueue, viewer: { .demoAdmin }, afterWrite: {})
+        let library = EvidenceLibrary(root: folder.appendingPathComponent("Library", isDirectory: true), database: manager.dbQueue)
+        func make(_ leases: FakeLeases) -> (CheckAndLinkModel, FakeEngine) {
+            let engine = FakeEngine(statement())
+            let statements = PadStatementImport(dbQueue: manager.dbQueue, library: library, leases: leases)
+            return (CheckAndLinkModel(item: item, tray: tray, engine: engine, writer: writer, statements: statements), engine)
+        }
+
+        let (free, freeEngine) = make(FakeLeases())
+        await free.start()
+        XCTAssertEqual(free.route, .importHere)
+        XCTAssertTrue(free.canImport)
+        XCTAssertTrue(free.canFinishOnMac, "the admin may hand it to the Mac")
+        XCTAssertNil(free.importWaitMessage)
+        let imported = await free.importStatement()
+        XCTAssertTrue(imported)
+        XCTAssertEqual(freeEngine.imports, 1)
+        XCTAssertEqual(freeEngine.saves, 0, "not sent to the Mac")
+        XCTAssertEqual(free.importedRunId, 9)
+        XCTAssertEqual(free.phase, .saved("1 statement imported"))
+
+        let since = Self.day(2026, 10, 28)
+        let (held, heldEngine) = make(FakeLeases(holder: ImportLeaseRecord(holderId: "mac", holderName: "Mac", takenAt: since,
+                                                                           expiresAt: since.addingTimeInterval(1800))))
+        await held.start()
+        XCTAssertEqual(held.route, .heldBy(deviceName: "Mac", since: since))
+        XCTAssertFalse(held.canImport)
+        XCTAssertEqual(held.importWaitMessage, PadStatementImportCopy.heldBy("Mac", since: since))
+        let refused = await held.importStatement()
+        XCTAssertFalse(refused)
+        XCTAssertEqual(heldEngine.imports, 0)
+
+        let (offline, _) = make(FakeLeases(offline: true))
+        await offline.start()
+        XCTAssertEqual(offline.route, .offline)
+        XCTAssertEqual(offline.importWaitMessage, "Connect to the internet to import")
+
+        // Another device took the lease between reading and Import: the refusal updates the route.
+        let (raced, racedEngine) = make(FakeLeases())
+        racedEngine.importError = PadImportRefusal.heldBy(deviceName: "Mac", since: since)
+        await raced.start()
+        _ = await raced.importStatement()
+        XCTAssertEqual(raced.route, .heldBy(deviceName: "Mac", since: since))
+        XCTAssertEqual(raced.refusal, PadStatementImportCopy.heldBy("Mac", since: since))
+
+        // Without statement import (no importer), Save still sends it to the Mac.
+        let plain = model(FakeEngine(statement()))
+        await plain.start()
+        XCTAssertNil(plain.route)
+        XCTAssertFalse(plain.canImport)
+    }
 
     func testSaveDisabledUntilRequiredFieldsPresent() async {
         let engine = FakeEngine(bill(blockers: ["Pick the property"]))

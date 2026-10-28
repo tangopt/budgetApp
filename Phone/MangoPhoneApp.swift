@@ -218,7 +218,7 @@ struct PhoneRoot: View {
                 return await tabs.salaryPrefill(today: environment.today())
             }
             stage = .ready(environment, tabs)
-            await PhoneBrowser.attach(environment)
+            await PhoneBrowser.attach(environment, leases: { [sync] in await sync.importLeases() })
             await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
             outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
             refreshOutputs()

@@ -36,6 +36,9 @@ enum CheckSamples {
         context.closePDF()
     }
 
+    /// When the Mac's import in the held-lease route started (shown "started 10:42" in the device's time zone).
+    static let importStarted = MonthRange.calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 10, minute: 42))!
+
     /// An electricity bill: the amount read by text recognition (to check), the payment suggested, the tenant's share
     /// joining the October draft.
     static func utility(refusal: String?) -> CheckAndLinkModel {
@@ -60,8 +63,9 @@ enum CheckSamples {
         return CheckAndLinkModel(item: item, tray: tray, proposal: .utilityBill(bill), refusal: refusal)
     }
 
-    /// A bank statement the balance of which matches; Save sends it to the Mac.
-    static func statement() -> CheckAndLinkModel {
+    /// A bank statement the balance of which matches; Save sends it to the Mac (`route` nil), or (step 19) Import
+    /// imports it here, waits for another device or a connection, or Send to the Mac sends it.
+    static func statement(route: PadImportRoute? = nil, canFinishOnMac: Bool = false, refusal: String? = nil) -> CheckAndLinkModel {
         let (item, tray) = trayItem("pad-check-statement", fileName: "statement-2026-09-current-account.pdf", lines: [
             "Example Bank - statement", "Current account ending 0000", "1 Sep 2026 to 30 Sep 2026",
             "Opening balance 2,410.55 EUR", "Closing balance 1,982.10 EUR"])
@@ -71,6 +75,7 @@ enum CheckSamples {
             periodStart: CheckedValue(value: day(2026, 9, 1), origin: .read), periodEnd: CheckedValue(value: day(2026, 9, 30), origin: .read),
             openingBalance: CheckedValue(value: 241_055, origin: .read), closingBalance: CheckedValue(value: 198_210, origin: .read),
             rowsToAdd: 14, alreadyImported: 2, instalments: "1 instalment: interest €112.53, capital €700.00")
-        return CheckAndLinkModel(item: item, tray: tray, proposal: .statement(summary))
+        return CheckAndLinkModel(item: item, tray: tray, proposal: .statement(summary), refusal: refusal, route: route,
+                                 canFinishOnMac: canFinishOnMac)
     }
 }

@@ -11,7 +11,8 @@ struct CheckAndLinkHost: View {
     let onClose: () -> Void
 
     init(item: TrayItem, tray: DownloadsTray, source: CheckAndLinkSource, showsLivePreview: Bool = true, onClose: @escaping () -> Void) {
-        _model = State(initialValue: CheckAndLinkModel(item: item, tray: tray, engine: source.engine, writer: source.writer))
+        _model = State(initialValue: CheckAndLinkModel(item: item, tray: tray, engine: source.engine, writer: source.writer,
+                                                       statements: source.statements))
         self.showsLivePreview = showsLivePreview
         self.onClose = onClose
     }
@@ -77,10 +78,22 @@ struct CheckAndLinkSheet: View {
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             if case .saved = model.phase {
+                if model.importedRunId != nil {
+                    Button(PadStatementImportCopy.undo) { Task { await model.undoImport() } }
+                        .buttonStyle(.pad(.secondary))
+                        .disabled(model.isWorking)
+                }
                 Button("Done") { close() }.buttonStyle(.pad(.primary))
+            } else if let route = model.route, route != .sendToMac {
+                // Step 19: a bank statement imported here, under the household's import lease.
+                Button { Task { await model.importStatement() } } label: {
+                    if model.isWorking { ProgressView().tint(.white) } else { Text(PadStatementImportCopy.importButton) }
+                }
+                .buttonStyle(.pad(.primary))
+                .disabled(!model.canImport)
             } else {
                 Button { Task { await model.save() } } label: {
-                    if model.isWorking { ProgressView().tint(.white) } else { Text("Save") }
+                    if model.isWorking { ProgressView().tint(.white) } else { Text(model.route == .sendToMac ? PadStatementImportCopy.sendToMac : "Save") }
                 }
                 .buttonStyle(.pad(.primary))
                 .disabled(!model.canSave)
@@ -303,9 +316,39 @@ struct CheckAndLinkSheet: View {
                 }
                 .mangoFont(.subheadline)
             }
-            Text(CheckAndLinkSheetCopy.statementNote).mangoFont(.subheadline).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            statementActions(statement)
         }
+    }
+
+    /// Step 19: how the statement is imported. Without a route (no import here) Save sends it to the Mac; with one,
+    /// Import adds the new rows here (waiting while another device imports, or for a connection), or Send to the Mac.
+    @ViewBuilder
+    private func statementActions(_ statement: StatementImportSummary) -> some View {
+        switch model.route {
+        case nil:
+            note(CheckAndLinkSheetCopy.statementNote)
+        case .sendToMac?:
+            note(CheckAndLinkSheetCopy.sendToMacNote)
+        default:
+            if case .saved = model.phase {
+                EmptyView()
+            } else {
+                if let wait = model.importWaitMessage {
+                    InlineBanner(tone: .amber, text: wait)
+                }
+                note(CheckAndLinkSheetCopy.importNote(rows: statement.rowsToAdd, skipped: statement.alreadyImported))
+                if model.canFinishOnMac {
+                    Button(PadStatementImportCopy.finishOnMac) { Task { await model.save() } }
+                        .buttonStyle(.pad(.secondary))
+                        .disabled(!model.canSave)
+                    note(CheckAndLinkSheetCopy.finishOnMacNote)
+                }
+            }
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }
 
