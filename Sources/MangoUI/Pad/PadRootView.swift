@@ -107,7 +107,7 @@ public struct PadRootView: View {
     private func sectionDetail(_ section: PadSection) -> some View {
         switch section {
         case .home:
-            HomeView(model: tabs.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
+            PadHomeScreen(tabs: tabs, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .month:
             MonthView(model: tabs.month, syncStatus: syncStatus, onRefresh: onRefresh)
@@ -201,5 +201,27 @@ private struct BrowserPresentation: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Home on the iPad: the shared Home plus the recharges-status chart, which follows the bills model.
+private struct PadHomeScreen: View {
+    let tabs: PhoneTabsModel
+    @ObservedObject var bills: PadBillsAndRechargesModel
+    let syncStatus: SyncStatus
+    let onRefresh: () async -> Void
+    let onSettings: () -> Void
+
+    init(tabs: PhoneTabsModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void, onSettings: @escaping () -> Void) {
+        self.tabs = tabs
+        self.bills = tabs.padBills
+        self.syncStatus = syncStatus
+        self.onRefresh = onRefresh
+        self.onSettings = onSettings
+    }
+
+    var body: some View {
+        HomeView(model: tabs.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings,
+                 recharges: bills.stageCounts(year: bills.year))
     }
 }

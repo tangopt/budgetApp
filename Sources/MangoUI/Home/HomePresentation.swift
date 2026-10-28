@@ -3,6 +3,9 @@ import BudgetCore
 
 /// Home's words (iPhone spec §3.2): how the cards name what `HomeSummary` gives them. Wording only, no figures.
 public enum HomeCopy {
+    /// "1 bill", "3 bills" (the recharges chart's readout).
+    public static func billCount(_ count: Int) -> String { "\(count) \(count == 1 ? "bill" : "bills")" }
+
     /// Upcoming lists this many items.
     public static let upcomingLimit = 5
 
