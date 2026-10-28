@@ -386,27 +386,8 @@ struct PadMoneyPanelHost<PanelExtra: View>: ViewModifier {
     @Environment(\.phoneTheme) private var theme
 
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let placement = DocumentPanelLayout.placement(containerWidth: geometry.size.width)
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if let panel = model.panel, placement == .beside {
-                        Divider()
-                        self.panel(panel)
-                    }
-                }
-                if let panel = model.panel, placement == .overlay {
-                    HStack(spacing: 0) {
-                        Divider()
-                        self.panel(panel)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .background(theme.background)
-                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 0)
-                    .transition(.move(edge: .trailing))
-                }
-            }
+        content.padSidePanel(isPresented: model.panel != nil, onClose: { model.closePanel() }) {
+            if let panel = model.panel { self.panel(panel) }
         }
     }
 
@@ -428,20 +409,7 @@ struct PadMoneyPlainPanel<Extra: View>: View {
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Transaction").mangoFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
-            }
-            .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) { extra }.padding(16)
-            }
-        }
-        .frame(width: DocumentPanelLayout.width)
-        .background(theme.background)
+        PadSidePanel(title: "Transaction", onClose: onClose) { extra }
     }
 }
 
@@ -569,15 +537,15 @@ struct PadMoneyCustomRangeSheet: View {
                 if first > last {
                     Text("Pick a range that ends after it starts.").foregroundStyle(.secondary)
                 }
-            }
+            }.padFormChrome()
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .environment(\.calendar, MonthRange.calendar)
             .navigationTitle("Custom range")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Show") {
+                    PadIconButton(systemImage: "checkmark", label: "Show", prominent: true) {
                         model.customFirstDay = first
                         model.customLastDay = last
                         Task {
@@ -586,7 +554,7 @@ struct PadMoneyCustomRangeSheet: View {
                         }
                     }
                     .disabled(first > last)
-                }
+                }.padFlatToolbarItem()
             }
         }
     }

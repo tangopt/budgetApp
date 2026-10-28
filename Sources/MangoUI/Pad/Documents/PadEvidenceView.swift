@@ -38,7 +38,7 @@ struct PadEvidenceView: View {
             .offlineBannerSlot()
             .padPage("Evidence", subtitle: "Whole tax year · all areas")
         }
-        .modifier(PadEvidencePanelHost(isOpen: model.selectedItem != nil) { panel })
+        .modifier(PadEvidencePanelHost(isOpen: model.selectedItem != nil, onClose: { model.selectedItemId = nil }) { panel })
         .task(id: SyncReloadTrigger(syncStatus)) { await model.reload() }
         .sheet(item: $request) { PadChoiceSheet(request: $0) }
     }
@@ -308,40 +308,22 @@ struct PadEvidenceItemPanel: View {
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("No document yet").mangoFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                Button { model.selectedItemId = nil } label: {
-                    Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("Close")
+        PadSidePanel(title: "No document yet", onClose: { model.selectedItemId = nil }) {
+            Text(item.why).mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let source = item.source {
+                (Text("Fetch from: ") + Text(source).bold()).mangoFont(.callout).lineLimit(1).truncationMode(.middle)
             }
-            .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(item.why).mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if let source = item.source {
-                        (Text("Fetch from: ") + Text(source).bold()).mangoFont(.callout).lineLimit(1).truncationMode(.middle)
-                    }
-                    if model.panel?.itemId == item.id {
-                        Text("No library document looks like this item's evidence yet.")
-                            .mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("Looking in the library…").foregroundStyle(.secondary)
-                        }
-                    }
-                    PadEvidenceItemBlock(model: model, item: item, documentId: nil, openSite: openSite, searchLibrary: searchLibrary)
+            if model.panel?.itemId == item.id {
+                Text("No library document looks like this item's evidence yet.")
+                    .mangoFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Looking in the library…").foregroundStyle(.secondary)
                 }
-                .padding(16)
             }
+            PadEvidenceItemBlock(model: model, item: item, documentId: nil, openSite: openSite, searchLibrary: searchLibrary)
         }
-        .frame(width: DocumentPanelLayout.width)
-        .background(theme.background)
     }
 }
 
@@ -349,32 +331,11 @@ struct PadEvidenceItemPanel: View {
 /// document panel's host places it.
 private struct PadEvidencePanelHost<Panel: View>: ViewModifier {
     let isOpen: Bool
+    let onClose: () -> Void
     @ViewBuilder let panel: () -> Panel
-    @Environment(\.phoneTheme) private var theme
 
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let placement = DocumentPanelLayout.placement(containerWidth: geometry.size.width)
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if isOpen, placement == .beside {
-                        Divider()
-                        panel()
-                    }
-                }
-                if isOpen, placement == .overlay {
-                    HStack(spacing: 0) {
-                        Divider()
-                        panel()
-                    }
-                    .frame(maxHeight: .infinity)
-                    .background(theme.background)
-                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 0)
-                    .transition(.move(edge: .trailing))
-                }
-            }
-        }
+        content.padSidePanel(isPresented: isOpen, onClose: onClose, panel: panel)
     }
 }
 

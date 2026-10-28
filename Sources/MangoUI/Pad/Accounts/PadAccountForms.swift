@@ -105,15 +105,15 @@ private struct PadAccountFormScaffold<Content: View>: View {
                 Section { PadRefusalBanner(message: model.write.message(for: PadAccountFormModel.rowId)) }
                     .listRowBackground(Color.clear).listRowInsets(EdgeInsets())
                 content
-            }
+            }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle(title)
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(button) {
+                    PadIconButton(systemImage: "checkmark", label: button, prominent: true) {
                         Task {
                             if await model.save() {
                                 onSaved(model.addedId)
@@ -123,7 +123,7 @@ private struct PadAccountFormScaffold<Content: View>: View {
                     }
                     .disabled(!model.canPressSave)
                     .accessibilityIdentifier("account-save")
-                }
+                }.padFlatToolbarItem()
             }
         }
         .task { await model.load() }

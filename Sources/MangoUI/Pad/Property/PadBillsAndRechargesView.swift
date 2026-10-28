@@ -337,15 +337,15 @@ struct PadTotalSheet: View {
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("invoice-total-field")
                 }
-            }
+            }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Correct total")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) {
                         guard let amount else { return }
                         saving = true
                         Task {
@@ -355,7 +355,7 @@ struct PadTotalSheet: View {
                         }
                     }
                     .disabled(amount == nil || saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
         .presentationDetents([.medium])
@@ -373,27 +373,8 @@ struct PadBillPanelHost<PanelExtra: View>: ViewModifier {
     @Environment(\.phoneTheme) private var theme
 
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let placement = DocumentPanelLayout.placement(containerWidth: geometry.size.width)
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if let bill = model.selectedBill, placement == .beside {
-                        Divider()
-                        panel(bill)
-                    }
-                }
-                if let bill = model.selectedBill, placement == .overlay {
-                    HStack(spacing: 0) {
-                        Divider()
-                        panel(bill)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .background(theme.background)
-                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 0)
-                    .transition(.move(edge: .trailing))
-                }
-            }
+        content.padSidePanel(isPresented: model.selectedBill != nil, onClose: { model.closePanel() }) {
+            if let bill = model.selectedBill { panel(bill) }
         }
     }
 
@@ -416,25 +397,10 @@ struct PadBillPlainPanel<Extra: View>: View {
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(bill.providerName).mangoFont(.headline).lineLimit(2).truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
-            }
-            .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(bill.invoice == nil ? "No invoice recorded for this payment." : "This invoice has no document yet.")
-                        .foregroundStyle(.secondary)
-                    extra
-                }
-                .padding(16)
-            }
+        PadSidePanel(title: bill.providerName, onClose: onClose) {
+            Text(bill.invoice == nil ? "No invoice recorded for this payment." : "This invoice has no document yet.")
+                .foregroundStyle(.secondary)
+            extra
         }
-        .frame(width: DocumentPanelLayout.width)
-        .background(theme.background)
     }
 }

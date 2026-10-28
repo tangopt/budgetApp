@@ -149,13 +149,13 @@ struct PadKindSheet: View {
                 } header: {
                     Text(editor.name)
                 }
-            }
+            }.padFormChrome()
             .navigationTitle("Change kind")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) {
                         guard let kind else { return }
                         Task {
                             _ = await save(kind)
@@ -163,7 +163,7 @@ struct PadKindSheet: View {
                         }
                     }
                     .disabled(kind == nil || kind == editor.kind)
-                }
+                }.padFlatToolbarItem()
             }
         }
     }

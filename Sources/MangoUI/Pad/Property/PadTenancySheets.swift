@@ -80,7 +80,7 @@ struct PadTenancyFormSheet: View {
                 Section("Notes") {
                     TextField("Notes", text: $draft.notes, prompt: Text("Optional"), axis: .vertical).lineLimit(2...4)
                 }
-            }
+            }.padFormChrome()
             .environment(\.calendar, calendar)
             .environment(\.timeZone, calendar.timeZone)
             .scrollContentBackground(.hidden)
@@ -88,9 +88,9 @@ struct PadTenancyFormSheet: View {
             .navigationTitle(draft.existing == nil ? "New tenancy" : "Edit tenancy")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(draft.existing == nil ? "Add tenancy" : "Save") {
+                    PadIconButton(systemImage: "checkmark", label: draft.existing == nil ? "Add tenancy" : "Save", prominent: true) {
                         saving = true
                         Task {
                             let saved = await model.save(draft)
@@ -99,7 +99,7 @@ struct PadTenancyFormSheet: View {
                         }
                     }
                     .disabled(!draft.canSave || saving)
-                }
+                }.padFlatToolbarItem()
             }
         }
         .interactiveDismissDisabled(saving)
@@ -161,7 +161,7 @@ struct PadLinkedDocumentsSheet: View {
             .background(theme.background)
             .navigationTitle(title)
             .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
             .task {
                 documents = await load()
                 loaded = true
@@ -252,27 +252,8 @@ struct PadReceiptPanelHost<PanelExtra: View>: ViewModifier {
     @Environment(\.phoneTheme) private var theme
 
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let placement = DocumentPanelLayout.placement(containerWidth: geometry.size.width)
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if let receipt = model.selectedReceipt, placement == .beside {
-                        Divider()
-                        panel(receipt)
-                    }
-                }
-                if let receipt = model.selectedReceipt, placement == .overlay {
-                    HStack(spacing: 0) {
-                        Divider()
-                        panel(receipt)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .background(theme.background)
-                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 0)
-                    .transition(.move(edge: .trailing))
-                }
-            }
+        content.padSidePanel(isPresented: model.selectedReceipt != nil, onClose: { model.closePanel() }) {
+            if let receipt = model.selectedReceipt { panel(receipt) }
         }
     }
 
@@ -295,40 +276,25 @@ struct PadReceiptPlainPanel<Extra: View>: View {
     @Environment(\.phoneTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Receipt \(receipt.receipt.receiptNumber)").mangoFont(.headline).lineLimit(2).truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onClose) { Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).frame(minWidth: 44, minHeight: 44).accessibilityLabel("Close")
-            }
-            .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 4)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(receipt.receipt.status == .cancelled ? "Cancelled: no PDF needed." : "No receipt PDF yet.")
-                        .foregroundStyle(.secondary)
-                    Card {
-                        VStack(alignment: .leading, spacing: 8) {
-                            fact("Period", Text("\(PhoneDateFormat.day(receipt.receipt.periodStart)) – \(PhoneDateFormat.day(receipt.receipt.periodEnd))".unbroken))
-                            fact("Rent", MoneyText(minorUnits: receipt.receipt.amountMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
-                            if receipt.receipt.withholdingMinorUnits != 0 {
-                                fact("Tax withheld", MoneyText(minorUnits: receipt.receipt.withholdingMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
-                            }
-                            fact("Received", MoneyText(minorUnits: receipt.receipt.amountReceivedMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
-                            if let day = receipt.receipt.receiptDate {
-                                fact("Received on", Text(PhoneDateFormat.day(day).unbroken))
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        PadSidePanel(title: "Receipt \(receipt.receipt.receiptNumber)", onClose: onClose) {
+            Text(receipt.receipt.status == .cancelled ? "Cancelled: no PDF needed." : "No receipt PDF yet.")
+                .foregroundStyle(.secondary)
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    fact("Period", Text("\(PhoneDateFormat.day(receipt.receipt.periodStart)) – \(PhoneDateFormat.day(receipt.receipt.periodEnd))".unbroken))
+                    fact("Rent", MoneyText(minorUnits: receipt.receipt.amountMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
+                    if receipt.receipt.withholdingMinorUnits != 0 {
+                        fact("Tax withheld", MoneyText(minorUnits: receipt.receipt.withholdingMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
                     }
-                    extra
+                    fact("Received", MoneyText(minorUnits: receipt.receipt.amountReceivedMinorUnits, currency: receipt.currency, role: .neutral, font: .subheadline))
+                    if let day = receipt.receipt.receiptDate {
+                        fact("Received on", Text(PhoneDateFormat.day(day).unbroken))
+                    }
                 }
-                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            extra
         }
-        .frame(width: DocumentPanelLayout.width)
-        .background(theme.background)
     }
 
     private func fact<Value: View>(_ label: String, _ value: Value) -> some View {

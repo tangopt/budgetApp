@@ -26,8 +26,9 @@ enum PadMetrics {
     static let compactPageInset: CGFloat = 20
     /// Below this page width (iPad multitasking) the compact inset is used.
     static let compactWidth: CGFloat = 500
-    /// The widest a page's content (and title row) grows; it stays leading-aligned beyond that.
-    static let contentMaxWidth: CGFloat = 1120
+    /// The widest a page's content (and title row) grows: the whole detail column (round 2: a cap left an empty band
+    /// on the right). A block of running text caps itself.
+    static let contentMaxWidth: CGFloat = .infinity
     /// Every card's and tile's corner radius.
     static let cardRadius: CGFloat = 16
     /// Every card's and tile's inner padding.

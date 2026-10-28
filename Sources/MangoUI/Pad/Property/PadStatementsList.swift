@@ -154,7 +154,7 @@ struct PadStatementSheet: View {
             .background(theme.background)
             .navigationTitle(model.statements.first { $0.id == statementId }.map(model.monthTitle) ?? "Statement")
             .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
         }
         .sheet(isPresented: $emailing) {
             PrepareEmailSheet(model: model.prepareEmailModel(statementId: statementId, open: documentSource?.open), write: write)

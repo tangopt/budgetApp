@@ -25,36 +25,26 @@ public struct DocumentPanel<Extra: View>: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let model {
-                        DocumentThumbnailView(file: model.file, onOpen: { showsFullView = true }, onRetry: { Task { await model.retry() } })
-                        buttons(model)
-                        if let details = model.details {
-                            if details.waiting {
-                                Label(DocumentPanelDetails.waitingLine, systemImage: "clock")
-                                    .mangoFont(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .accessibilityElement(children: .combine)
-                                    .accessibilityLabel("Waiting for its payment. Mango links it when the statement arrives.")
-                            }
-                            DocumentDetailsCard(details: details)
-                        }
-                    } else {
-                        ProgressView().frame(maxWidth: .infinity, minHeight: 160)
+        PadSidePanel(title: model?.title ?? "", onClose: onClose, actions: { headerActions }) {
+            if let model {
+                DocumentThumbnailView(file: model.file, onOpen: { showsFullView = true }, onRetry: { Task { await model.retry() } })
+                if let details = model.details {
+                    if details.waiting {
+                        Label(DocumentPanelDetails.waitingLine, systemImage: "clock")
+                            .mangoFont(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("Waiting for its payment. Mango links it when the statement arrives.")
                     }
-                    extra
+                    DocumentDetailsCard(details: details)
                 }
-                .padding(16)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 160)
             }
+            extra
         }
-        .frame(width: DocumentPanelLayout.width)
-        .background(theme.background)
         .onAppear {
             guard model == nil else { return }
             let loaded = DocumentPanelModel(documentId: documentId, source: source)
@@ -69,45 +59,20 @@ public struct DocumentPanel<Extra: View>: View {
         .documentFullViewCover(isPresented: $showsFullView, documentId: documentId)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(model?.title ?? "")
-                .mangoFont(.headline)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill").mangoFont(.title2).foregroundStyle(.secondary)
+    /// Open full view and Download/Share as header icons.
+    @ViewBuilder
+    private var headerActions: some View {
+        PadIconButton(systemImage: "arrow.up.left.and.arrow.down.right", label: "Open full view", prominent: true) { showsFullView = true }
+            .disabled(model?.file.isReady != true)
+        if case .ready(let url)? = model?.file {
+            ShareLink(item: url) {
+                Image(systemName: "square.and.arrow.up").mangoFont(.body, weight: .semibold)
+                    .foregroundStyle(theme.accent).frame(width: 44, height: 44).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .frame(minWidth: 44, minHeight: 44)
-            .accessibilityLabel("Close")
+            .accessibilityLabel("Download or share")
+        } else {
+            PadIconButton(systemImage: "square.and.arrow.up", label: "Download or share", prominent: true) {}.disabled(true)
         }
-        .padding(.leading, 16).padding(.trailing, 4)
-        .padding(.vertical, 4)
-    }
-
-    private func buttons(_ model: DocumentPanelModel) -> some View {
-        VStack(spacing: 8) {
-            Button { showsFullView = true } label: {
-                Label("Open full view", systemImage: "arrow.up.left.and.arrow.down.right").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.pad(.secondary))
-            .disabled(!model.file.isReady)
-            if case .ready(let url) = model.file {
-                ShareLink(item: url) {
-                    Label("Download/Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.pad(.secondary))
-            } else {
-                Button {} label: {
-                    Label("Download/Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.pad(.secondary))
-                .disabled(true)
-            }
-        }
-        .controlSize(.large)
     }
 }
 
@@ -257,27 +222,8 @@ struct DocumentPanelHost<PanelExtra: View>: ViewModifier {
     @Environment(\.phoneTheme) private var theme
 
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let placement = DocumentPanelLayout.placement(containerWidth: geometry.size.width)
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if let id = selection, placement == .beside {
-                        Divider()
-                        panel(id)
-                    }
-                }
-                if let id = selection, placement == .overlay {
-                    HStack(spacing: 0) {
-                        Divider()
-                        panel(id)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .background(theme.background)
-                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 0)
-                    .transition(.move(edge: .trailing))
-                }
-            }
+        content.padSidePanel(isPresented: selection != nil, onClose: { selection = nil }) {
+            if let id = selection { panel(id) }
         }
     }
 

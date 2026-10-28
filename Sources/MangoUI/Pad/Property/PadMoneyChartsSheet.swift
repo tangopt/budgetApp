@@ -31,7 +31,7 @@ struct PadMoneyChartsSheet: View {
             .background(theme.background)
             .navigationTitle("Charts and figures")
             .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
         }
     }
 
