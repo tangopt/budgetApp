@@ -16,7 +16,8 @@ struct SalarySimulatorView: View {
                 VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
                     HStack(alignment: .top, spacing: ScreenMetrics.spacing) {
                         SalaryColumnView(title: "Current", inputs: $model.current,
-                                         result: model.comparison.current, ready: model.ready.current)
+                                         result: model.comparison.current, ready: model.ready.current,
+                                         usePrefill: model.canUsePrefill ? { model.usePrefill() } : nil)
                         SalaryColumnView(title: "Offer", inputs: $model.offer,
                                          result: model.comparison.offer, ready: model.ready.offer)
                     }
@@ -28,6 +29,7 @@ struct SalarySimulatorView: View {
         }
         .padding(ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task { await model.refreshPrefill() }
         .navigationTitle("Salary simulator")
     }
 
@@ -35,7 +37,7 @@ struct SalarySimulatorView: View {
 
     private var strip: some View {
         Panel("Offer against current", accessory: {
-            Button("Reset") { model.reset() }.buttonStyle(.link).font(.caption)
+            Button(model.resetTitle) { model.reset() }.buttonStyle(.link).font(.caption)
         }, content: {
             FigureStrip([
                 FigureTile(title: "Take-home a month", value: .money(model.comparison.monthlyDifference, .gbp, .signed)),

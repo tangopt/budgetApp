@@ -136,6 +136,17 @@ public final class PhoneTabsModel: ObservableObject {
         }
     }
 
+    /// The signed-in person and their own latest pay for the salary simulator's Current column (`SalaryPrefill`). Nobody,
+    /// and nothing, while the viewer isn't a particular person (not known yet, or "everyone").
+    public func salaryPrefill(today: Date) async -> (personId: Int64?, inputs: SalaryInputs?) {
+        let viewer = viewer
+        let found = try? await dbQueue.read { db -> (Int64?, SalaryInputs?) in
+            guard let id = try viewer.resolve(db: db).personId else { return (nil, nil) }
+            return (id, try SalaryPrefill.latest(db: db, personId: id, today: today))
+        }
+        return found ?? (nil, nil)
+    }
+
     /// Follows this iPhone's iCloud user as sync reads it (`PhoneSyncController.$viewerRecordName`, on the main actor):
     /// the name already read first, then each change. This model lives above the lock cover, which keeps the content
     /// out of the view tree while locked, and the app launches locked: a view's `onChange` there never saw a name read

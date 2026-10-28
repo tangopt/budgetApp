@@ -51,17 +51,43 @@ extension SalaryInputs {
 
 /// The salary simulator's two columns. The offer starts as a copy of the current salary; the
 /// comparison is recomputed whenever either side changes.
+///
+/// With a `SalaryDraftStore` the two salaries are kept on this device as they change (after `saveDelay`) and come
+/// back next time; the draft wins over the prefill until "Reset". The prefill is the signed-in person's own latest
+/// P60 or payslip (`SalaryPrefill`), offered by the host through `loadPrefill`; nothing is written back to the database.
 @MainActor @Observable
 public final class SalaryComparisonViewModel {
-    public var current: SalaryInputs { didSet { recompute() } }
-    public var offer: SalaryInputs { didSet { recompute() } }
+    public var current: SalaryInputs { didSet { changed() } }
+    public var offer: SalaryInputs { didSet { changed() } }
     public private(set) var comparison: SalaryComparison
+    /// The signed-in person's latest pay as inputs; nil when there is none or the person isn't known.
+    public private(set) var prefill: SalaryInputs?
 
-    public init(current: SalaryInputs = .typicalCurrent(), offer: SalaryInputs? = nil) {
-        let offer = offer ?? current
-        self.current = current
-        self.offer = offer
-        comparison = .make(current: SalaryCalculator.calculate(current), offer: SalaryCalculator.calculate(offer))
+    /// The host's way to read the signed-in person's prefill (their own employment data only); nil person means unknown.
+    @ObservationIgnored public var loadPrefill: (() async -> (personId: Int64?, inputs: SalaryInputs?))?
+    /// Drafts are written only while this is true (off in demo data).
+    @ObservationIgnored public var savesDrafts = true
+
+    @ObservationIgnored private let store: SalaryDraftStore?
+    @ObservationIgnored private let saveDelay: Duration
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var applying = false
+    /// Edited or restored from a draft: the prefill no longer replaces the columns by itself.
+    @ObservationIgnored private var touched = false
+    @ObservationIgnored private var owner: Int64?
+
+    public init(current: SalaryInputs = .typicalCurrent(), offer: SalaryInputs? = nil,
+                store: SalaryDraftStore? = nil, saveDelay: Duration = .milliseconds(500)) {
+        self.store = store
+        self.saveDelay = saveDelay
+        let draft = store?.load()
+        let start = draft?.current ?? current
+        let second = draft?.offer ?? offer ?? current
+        self.current = start
+        self.offer = second
+        owner = draft?.personId
+        touched = draft != nil
+        comparison = .make(current: SalaryCalculator.calculate(start), offer: SalaryCalculator.calculate(second))
     }
 
     /// Whether each side has pay to work from.
@@ -69,11 +95,89 @@ public final class SalaryComparisonViewModel {
         (current.grossAnnual + current.bonusAnnual > 0, offer.grossAnnual + offer.bonusAnnual > 0)
     }
 
-    /// Back to the starting point: the typical salary on both sides.
+    /// The "Use my latest payslip/P60" button shows when there is a prefill the Current column doesn't already hold.
+    public var canUsePrefill: Bool { prefill != nil && prefill != current }
+
+    public var resetTitle: String { prefill == nil ? "Reset" : "Reset to my latest pay" }
+
+    /// Said under the button: what the prefill can't know.
+    public static let prefillNote = "Pension and student loan aren't on your payslip data; check them."
+
+    /// Puts the latest pay in the Current column (the offer follows when it still equalled Current).
+    public func usePrefill() {
+        guard let prefill else { return }
+        let followed = offer == current
+        current = prefill
+        if followed { offer = prefill }
+    }
+
+    /// Back to the starting point: the person's latest pay (else the typical salary) on both sides; the draft goes.
     public func reset() {
-        let start = SalaryInputs.typicalCurrent()
-        current = start
-        offer = start
+        saveTask?.cancel()
+        store?.clear()
+        touched = false
+        apply(prefill ?? .typicalCurrent())
+    }
+
+    /// Reads the prefill through `loadPrefill`. A draft made for another person goes; with no draft or edit yet, the
+    /// prefill fills both columns.
+    public func refreshPrefill() async {
+        guard let loadPrefill else { return }
+        let loaded = await loadPrefill()
+        setPrefill(loaded.inputs, for: loaded.personId)
+    }
+
+    func setPrefill(_ inputs: SalaryInputs?, for personId: Int64?) {
+        var dropped = false
+        if let personId, let owner, owner != personId { discard(); dropped = true }
+        if let personId { owner = personId }
+        let hadPrefill = prefill != nil
+        prefill = inputs
+        guard !touched else { return }
+        if let inputs { apply(inputs) } else if hadPrefill || dropped { apply(.typicalCurrent()) }
+    }
+
+    /// Sign-out, leaving the household, demo data: the draft, the prefill and what is on show all go.
+    public func forget() {
+        discard()
+        prefill = nil
+        owner = nil
+        apply(.typicalCurrent())
+    }
+
+    /// Writes the draft now (what the delay would do).
+    public func flushDraft() {
+        saveTask?.cancel()
+        guard savesDrafts, let store else { return }
+        store.save(SalaryDraft(current: current, offer: offer, personId: owner))
+    }
+
+    private func discard() {
+        saveTask?.cancel()
+        store?.clear()
+        touched = false
+    }
+
+    private func apply(_ inputs: SalaryInputs) {
+        applying = true
+        current = inputs
+        offer = inputs
+        applying = false
+        recompute()
+    }
+
+    private func changed() {
+        recompute()
+        guard !applying else { return }
+        touched = true
+        guard store != nil, savesDrafts else { return }
+        saveTask?.cancel()
+        let delay = saveDelay
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.flushDraft()
+        }
     }
 
     private func recompute() {

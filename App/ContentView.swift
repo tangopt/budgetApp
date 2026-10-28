@@ -105,7 +105,8 @@ struct ContentView: View {
     // (and any in-progress edits) every time ContentView's own @State changes.
     @StateObject private var budgetGridViewModel: BudgetGridViewModel
     @StateObject private var scenarioLabViewModel: ScenarioLabViewModel
-    @State private var salaryViewModel = SalaryComparisonViewModel()
+    /// Kept on this device between launches (`SalaryDraftStore`), except in the snapshot build.
+    @State private var salaryViewModel: SalaryComparisonViewModel
     @StateObject private var rulesViewModel: RulesViewModel
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
@@ -139,6 +140,14 @@ struct ContentView: View {
         self.environment = environment
         self.snapshotSetup = snapshotSetup
         _shownForUserId = State(initialValue: environment.session.currentAppUserId)
+        // The prefill is the signed-in person's own latest pay, read when the screen opens (nobody while locked).
+        let salary = SalaryComparisonViewModel(store: SnapshotMode.isActive ? nil : SalaryDraftStore())
+        salary.loadPrefill = { [dbQueue = environment.dbQueue, session = environment.session] in
+            guard let personId = await session.currentUser?.personId else { return (nil, nil) }
+            let inputs = try? await dbQueue.read { try SalaryPrefill.latest(db: $0, personId: personId, today: AppClock.now) }
+            return (personId, inputs)
+        }
+        _salaryViewModel = State(initialValue: salary)
         if let screen = snapshotSetup?.screen {
             _selection = State(initialValue: screen)
             _sidebarSelection = State(initialValue: .screen(screen))
@@ -370,6 +379,9 @@ struct ContentView: View {
         // reads again; the others read on appearing.
         .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in
             guard id != shownForUserId else { return }
+            // Someone else signed in: the salary draft and the last person's pay go.
+            if shownForUserId != nil { salaryViewModel.forget() }
+            Task { await salaryViewModel.refreshPrefill() }
             shownForUserId = id
             reloadSharedFigures()
         }

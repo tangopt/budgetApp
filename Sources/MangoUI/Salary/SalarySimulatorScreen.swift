@@ -65,6 +65,7 @@ public struct SalarySimulatorScreen: View {
             }
         }
         .background(theme.background)
+        .task { await viewModel.refreshPrefill() }
         .navigationTitle("Salary simulator")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -79,7 +80,7 @@ public struct SalarySimulatorScreen: View {
             HStack {
                 Text("Offer against current").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
-                Button("Reset") { viewModel.reset() }.frame(minHeight: 44)
+                Button(viewModel.resetTitle) { viewModel.reset() }.frame(minHeight: 44)
             }
             VStack(spacing: 0) {
                 AmountRow(label: "Take-home a month",
@@ -97,6 +98,14 @@ public struct SalarySimulatorScreen: View {
         String(format: "%.0fp", Double(basisPoints) / 100)
     }
 
+    /// "Use my latest payslip/P60", with what it can't fill in.
+    private var prefillCard: some View {
+        Card {
+            Button("Use my latest payslip/P60") { viewModel.usePrefill() }.frame(minHeight: 44)
+            Text(SalaryComparisonViewModel.prefillNote).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: Columns
 
     @ViewBuilder
@@ -106,6 +115,7 @@ public struct SalarySimulatorScreen: View {
         VStack(alignment: .leading, spacing: 16) {
             SalaryResultsCard(title: side.rawValue, result: isCurrent ? comparison.current : comparison.offer,
                               ready: isCurrent ? viewModel.ready.current : viewModel.ready.offer)
+            if isCurrent && viewModel.canUsePrefill { prefillCard }
             SalaryFormCard(title: side.rawValue, inputs: isCurrent ? $viewModel.current : $viewModel.offer)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)

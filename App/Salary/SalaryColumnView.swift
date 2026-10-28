@@ -8,11 +8,22 @@ struct SalaryColumnView: View {
     @Binding var inputs: SalaryInputs
     let result: SalaryResult
     let ready: Bool
+    /// "Use my latest payslip/P60" (the Current column, when there is one to use); nil hides the button.
+    var usePrefill: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             Panel("\(title) take-home") { results }
-            Panel(title) { form }
+            Panel(title) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let usePrefill {
+                        Button("Use my latest payslip/P60", action: usePrefill).buttonStyle(.link)
+                        Text(SalaryComparisonViewModel.prefillNote).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    form
+                }
+            }
         }
     }
 

@@ -60,7 +60,8 @@ struct PhoneRoot: View {
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
     @State private var showingSalary = false
-    @State private var salary = SalaryComparisonViewModel()
+    /// Kept on this device (`SalaryDraftStore`); gone on leaving the household and with demo data.
+    @State private var salary = SalaryComparisonViewModel(store: SalaryDraftStore())
     /// "Show what's here" on the iCloud explanation, for this run of the app.
     @State private var showsLocalData = false
     /// A PDF shared to Mango where it isn't collected (the iPhone, demo data): said once, then gone.
@@ -126,6 +127,10 @@ struct PhoneRoot: View {
             case .background: sync.sceneEnteredBackground()
             default: break
             }
+        }
+        .onChange(of: sync.householdNotice) { _, notice in
+            // Removed from the household: the salary draft and the prefill leave with its data.
+            if notice != nil { salary.forget() }
         }
         .onChange(of: sync.account) { _, account in
             // Signed in again: the explanation may show again if it goes once more.
@@ -197,6 +202,12 @@ struct PhoneRoot: View {
                     tabs.padDocuments.open = { path in try await sync.openDocument(storedRelativePath: path) }
                 }
             }
+            // The salary simulator: no drafts in demo data; otherwise the signed-in person's own latest pay as Current.
+            salary.savesDrafts = !environment.isDemo
+            salary.loadPrefill = { [weak tabs] in
+                guard let tabs else { return (nil, nil) }
+                return await tabs.salaryPrefill(today: environment.today())
+            }
             stage = .ready(environment, tabs)
             await PhoneBrowser.attach(environment)
             await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
@@ -214,6 +225,7 @@ struct PhoneRoot: View {
         showingSettings = false
         Task {
             await sync.enterDemo()
+            salary.forget()
             PhoneDemoData.turnOn()
             stage = .loading
             await load()
@@ -236,6 +248,7 @@ struct PhoneRoot: View {
             // Demo data's sites, sessions and downloads go before the phone's own database opens.
             await PhoneBrowser.purge()
             sync.leaveDemo()
+            salary.forget()
             await load()
         }
     }
@@ -244,7 +257,7 @@ struct PhoneRoot: View {
     private func content(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         if environment.isDemo {
             if UIDevice.current.userInterfaceIdiom == .pad {
-                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
+                PadRootView(tabs: tabs, syncStatus: .off, isDemo: true, salary: salary, onRefresh: {}, onSettings: { showingSettings = true })
             } else {
                 PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: { showingSettings = true })
             }
@@ -262,7 +275,7 @@ struct PhoneRoot: View {
         } else {
             if UIDevice.current.userInterfaceIdiom == .pad {
                 PadRootView(tabs: tabs, syncStatus: sync.status, lastSync: sync.lastSync, waitingChanges: sync.waitingChanges,
-                            browser: PhoneBrowser.shared, onRefresh: { await sync.syncNow() },
+                            browser: PhoneBrowser.shared, salary: salary, onRefresh: { await sync.syncNow() },
                             onSettings: { showingSettings = true })
             } else {
                 PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
