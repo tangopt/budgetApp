@@ -7,7 +7,23 @@ import BudgetCore
 /// with the difference pinned above the forms.
 struct SalarySimulatorView: View {
     @Bindable var model: SalaryComparisonViewModel
+    /// The Forecast screen's model, for "Try in Forecast…"; nil (the button off) where there is none.
+    var forecast: ScenarioLabViewModel? = nil
+    /// "Edit offer…" from the scenario lab: opens the sheet on this scenario, then clears.
+    @Binding var editRequest: OfferEditRequest?
+    /// After a scenario is saved: the shell shows the Forecast screen.
+    var openForecast: () -> Void = {}
     @Environment(\.theme) private var theme
+    @State private var sheet: TryInForecastViewModel?
+    @State private var sheetError: String?
+
+    init(model: SalaryComparisonViewModel, forecast: ScenarioLabViewModel? = nil,
+         editRequest: Binding<OfferEditRequest?> = .constant(nil), openForecast: @escaping () -> Void = {}) {
+        self.model = model
+        self.forecast = forecast
+        self._editRequest = editRequest
+        self.openForecast = openForecast
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
@@ -18,8 +34,11 @@ struct SalarySimulatorView: View {
                         SalaryColumnView(title: "Current", inputs: $model.current,
                                          result: model.comparison.current, ready: model.ready.current,
                                          usePrefill: model.canUsePrefill ? { model.usePrefill() } : nil)
-                        SalaryColumnView(title: "Offer", inputs: $model.offer,
-                                         result: model.comparison.offer, ready: model.ready.offer)
+                        VStack(alignment: .leading, spacing: 8) {
+                            SalaryColumnView(title: "Offer", inputs: $model.offer,
+                                             result: model.comparison.offer, ready: model.ready.offer)
+                            tryInForecast
+                        }
                     }
                     chart
                 }
@@ -30,7 +49,50 @@ struct SalarySimulatorView: View {
         .padding(ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await model.refreshPrefill() }
+        .onAppear { openPendingEdit() }
+        .onChange(of: editRequest) { openPendingEdit() }
+        .sheet(item: $sheet) { host in
+            TryInForecastSheet(host: host, onSaved: openForecast)
+        }
         .navigationTitle("Salary simulator")
+    }
+
+    // MARK: Try in Forecast
+
+    private var offerReason: String? {
+        if forecast == nil { return "The forecast isn't available here." }
+        if model.offer.grossAnnual <= 0 { return "Enter a gross salary for the offer first." }
+        return nil
+    }
+
+    private var tryInForecast: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button("Try in Forecast…") { openSheet(edit: nil) }
+                .disabled(offerReason != nil)
+            if let reason = offerReason ?? sheetError {
+                Text(reason).font(.caption).foregroundStyle(offerReason == nil ? .red : .secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, ScreenMetrics.padding)
+    }
+
+    private func openSheet(edit: OfferEditRequest?) {
+        guard let forecast else { return }
+        do {
+            sheet = try TryInForecastViewModel(offer: model.offer, current: model.current, edit: edit, lab: forecast)
+            sheetError = nil
+        } catch {
+            sheetError = "Couldn't read the budget: \(error.localizedDescription)"
+        }
+    }
+
+    private func openPendingEdit() {
+        guard let request = editRequest else { return }
+        editRequest = nil
+        model.current = request.spec.current
+        model.offer = request.spec.offer
+        openSheet(edit: request)
     }
 
     // MARK: Comparison strip

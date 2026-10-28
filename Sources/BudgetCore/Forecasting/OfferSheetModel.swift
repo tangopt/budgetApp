@@ -1,0 +1,144 @@
+import Foundation
+import Observation
+
+/// The state of the "Try in Forecast…" sheet (spec 2026-10-28-step14-job-offer-forecast-design.md), kept apart
+/// from SwiftUI so it can be tested: which salary entry the offer replaces, when it starts, a notice-period
+/// gap, a signing bonus and the scenario's name. `spec()` is what `OfferScenarioBuilder` is given.
+///
+/// In edit mode ("Edit offer…" on a scenario) everything starts from the stored spec and the scenario's name.
+@MainActor @Observable
+public final class OfferSheetModel {
+    /// The one-off label the sheet's signing bonus field writes (and reads back when editing).
+    public static let signingBonusLabel = "Signing bonus"
+
+    public let offer: SalaryInputs
+    public let current: SalaryInputs
+    public let salaryCandidates: [ForecastEntry]
+    public let pensionCandidates: [ForecastEntry]
+    /// Set in edit mode: the scenario being rebuilt.
+    public let editingScenarioId: Int64?
+
+    public var name: String
+    /// The budget salary entry the offer replaces; nil = none (the offer is new income, in `newIncomeCategoryId`).
+    public var salaryEntryId: Int64?
+    /// The budget pension entry whose amount becomes the offer's pension; nil = leave the pension alone.
+    public var pensionEntryId: Int64?
+    /// The income category for "Add as new income" when `salaryEntryId` is nil.
+    public var newIncomeCategoryId: Int64?
+    /// First day of the new job's month (UTC); moving it renames a name still at its default.
+    public var startMonth: Date {
+        didSet {
+            let month = Self.firstOfMonth(startMonth)
+            if month != startMonth { startMonth = month; return }
+            if name == Self.defaultName(for: oldValue) { name = Self.defaultName(for: startMonth) }
+        }
+    }
+    /// Months from `startMonth` with no salary.
+    public var noticeGapMonths: Int { didSet { if noticeGapMonths < 0 { noticeGapMonths = 0 } } }
+    /// Pence; nil or 0 = none.
+    public var signingBonus: Int?
+
+    /// One-offs of a stored spec other than the signing bonus: kept as they were.
+    private let otherOneOffs: [OfferOneOff]
+
+    public init(offer: SalaryInputs, current: SalaryInputs, candidates: [ForecastEntry], pensionCandidates: [ForecastEntry],
+                editing: (scenarioId: Int64, spec: OfferScenarioSpec)?, scenarioName: String? = nil,
+                newIncomeCategoryId: Int64? = nil, today: Date = Date()) {
+        self.salaryCandidates = candidates
+        self.pensionCandidates = pensionCandidates
+        if let editing {
+            let spec = editing.spec
+            self.offer = spec.offer
+            self.current = spec.current
+            self.editingScenarioId = editing.scenarioId
+            self.name = scenarioName ?? Self.defaultName(for: spec.startMonth)
+            // An entry that has since left the budget is no longer a choice.
+            self.salaryEntryId = candidates.contains { $0.id == spec.salaryEntryId } ? spec.salaryEntryId : nil
+            self.pensionEntryId = pensionCandidates.contains { $0.id == spec.pensionEntryId } ? spec.pensionEntryId : nil
+            self.newIncomeCategoryId = spec.newIncomeCategoryId ?? newIncomeCategoryId
+            self.startMonth = Self.firstOfMonth(spec.startMonth)
+            self.noticeGapMonths = max(0, spec.noticeGapMonths)
+            let bonus = spec.oneOffs.first { $0.label == Self.signingBonusLabel }
+            self.signingBonus = bonus?.amountMinorUnits
+            self.otherOneOffs = spec.oneOffs.filter { $0.label != Self.signingBonusLabel }
+        } else {
+            self.offer = offer
+            self.current = current
+            self.editingScenarioId = nil
+            let start = MonthRange.calendar.date(byAdding: .month, value: 1, to: Self.firstOfMonth(today))!
+            self.name = Self.defaultName(for: start)
+            self.salaryEntryId = Self.mostRecent(candidates)?.id
+            self.pensionEntryId = Self.mostRecent(pensionCandidates)?.id
+            self.newIncomeCategoryId = newIncomeCategoryId
+            self.startMonth = start
+            self.noticeGapMonths = 0
+            self.signingBonus = nil
+            self.otherOneOffs = []
+        }
+    }
+
+    public var isEditing: Bool { editingScenarioId != nil }
+
+    /// A name, and a salary to replace or an income category for the offer to go in (in edit mode, the
+    /// scenario's own earlier salary entry stands in when the budget's has gone).
+    public var canSave: Bool {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return salaryEntryId != nil || newIncomeCategoryId != nil || isEditing
+    }
+
+    public var salaryEntry: ForecastEntry? { salaryCandidates.first { $0.id == salaryEntryId } }
+
+    /// "From Apr 2026: £2,600.00 a month net, was £2,000.00": the offer's take-home from the month its salary
+    /// starts (after any gap), against the entry it replaces; "£200.00 less than …" when it pays less.
+    public var preview: String {
+        let takeHome = SalaryCalculator.calculate(offer).takeHomeMonthly
+        let from = MonthRange.calendar.date(byAdding: .month, value: noticeGapMonths, to: startMonth)!
+        let head = "From \(Self.monthLabel(from)): \(Money.format(takeHome, currency: .gbp)) a month net"
+        guard let was = salaryEntry?.amountMinorUnits else { return head + ", new income" }
+        if takeHome < was { return head + ", \(Money.format(was - takeHome, currency: .gbp)) less than \(Money.format(was, currency: .gbp))" }
+        return head + ", was \(Money.format(was, currency: .gbp))"
+    }
+
+    /// The spec to build (or rebuild) the scenario from.
+    public func spec() -> OfferScenarioSpec {
+        var oneOffs = otherOneOffs
+        if let signingBonus, signingBonus > 0 {
+            oneOffs.insert(OfferOneOff(label: Self.signingBonusLabel, amountMinorUnits: signingBonus, month: startMonth), at: 0)
+        }
+        return OfferScenarioSpec(current: current, offer: offer, salaryEntryId: salaryEntryId, pensionEntryId: pensionEntryId,
+                                 startMonth: startMonth, noticeGapMonths: noticeGapMonths, oneOffs: oneOffs,
+                                 newIncomeCategoryId: salaryEntryId == nil ? newIncomeCategoryId : nil)
+    }
+
+    /// The scenario name to save, trimmed.
+    public var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// The months the start picker offers: from this month a few years ahead, plus `startMonth` itself.
+    public func monthOptions(today: Date = Date(), count: Int = 36) -> [Date] {
+        let first = Self.firstOfMonth(today)
+        var months = (0..<count).map { MonthRange.calendar.date(byAdding: .month, value: $0, to: first)! }
+        if !months.contains(startMonth) { months = ([startMonth] + months).sorted() }
+        return months
+    }
+
+    // MARK: Wording
+
+    public static func defaultName(for month: Date) -> String { "Job offer \(monthLabel(month))" }
+
+    public static func monthLabel(_ month: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = MonthRange.calendar.timeZone
+        formatter.dateFormat = "MMM yyyy"
+        return formatter.string(from: month)
+    }
+
+    private static func mostRecent(_ entries: [ForecastEntry]) -> ForecastEntry? {
+        entries.max { ($0.startDate, $0.id ?? 0) < ($1.startDate, $1.id ?? 0) }
+    }
+
+    private static func firstOfMonth(_ date: Date) -> Date {
+        let (year, month) = MonthRange.components(of: date)
+        return MonthRange.calendar.date(from: DateComponents(year: year, month: month, day: 1))!
+    }
+}

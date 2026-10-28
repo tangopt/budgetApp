@@ -893,6 +893,16 @@ enum SnapshotCatalog {
 
     static var sheets: [SnapshotRoute] {
         [
+            // The salary simulator's Offer column: "Try in Forecast…" over a £52,000 offer against £40,000.
+            sheet("try_in_forecast", "Try in Forecast… (an offer against the demo's budget)", settle: 1) { context in
+                var offer = SalaryInputs.typicalCurrent(today: AppClock.now)
+                offer.grossAnnual = 5_200_000
+                let host = try TryInForecastViewModel(offer: offer, current: .typicalCurrent(today: AppClock.now), edit: nil,
+                                                      lab: ScenarioLabViewModel(dbQueue: context.dbQueue))
+                host.model.noticeGapMonths = 1
+                host.model.signingBonus = 500_000
+                return AnyView(TryInForecastSheet(host: host, onSaved: {}))
+            },
             // Property
             sheet("property_form", "Edit property") { context in
                 let model = await context.propertyModel()
