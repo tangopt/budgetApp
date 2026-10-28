@@ -47,6 +47,7 @@ struct DashboardView: View {
             }
             .padding(16)
         }
+        .onDisappear { viewModel.markVisited() }
         .sheet(item: $closeTarget, onDismiss: { viewModel.clearCloseError() }) { target in
             if let calendar = viewModel.payCalendar {
                 CloseMonthView(month: target.month, calendar: calendar, errorMessage: viewModel.closeErrorMessage) { day in

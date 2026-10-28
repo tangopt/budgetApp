@@ -105,6 +105,16 @@ public struct DashboardReview: Equatable, Sendable {
     public var importsWaiting: Int
     public var attention: [AttentionLine]
 
+    public init(tax: TaxPosition? = nil, property: [PropertyRow]? = nil, evidence: EvidenceSummary? = nil,
+                mortgages: [MortgageSummary]? = nil, importsWaiting: Int = 0, attention: [AttentionLine] = []) {
+        self.tax = tax
+        self.property = property
+        self.evidence = evidence
+        self.mortgages = mortgages
+        self.importsWaiting = importsWaiting
+        self.attention = attention
+    }
+
     /// How far ahead a payment on account counts as needing attention.
     public static let taxDeadlineAttentionDays = 60
     /// How far ahead a mortgage rate review counts as needing attention.
