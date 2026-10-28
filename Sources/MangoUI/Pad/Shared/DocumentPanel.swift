@@ -33,7 +33,18 @@ public struct DocumentPanel<Extra: View>: View {
                     if let model {
                         DocumentThumbnailView(file: model.file, onOpen: { showsFullView = true }, onRetry: { Task { await model.retry() } })
                         buttons(model)
-                        if let details = model.details { DocumentDetailsCard(details: details) }
+                        if let details = model.details {
+                            if details.waiting {
+                                Label(DocumentPanelDetails.waitingLine, systemImage: "clock")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityLabel("Waiting for its payment. Mango links it when the statement arrives.")
+                            }
+                            DocumentDetailsCard(details: details)
+                        }
                     } else {
                         ProgressView().frame(maxWidth: .infinity, minHeight: 160)
                     }

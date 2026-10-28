@@ -152,7 +152,13 @@ public enum ImportUndo {
             let current = try ImportChangeCapture.rowJSON(db: db, table: key.table, rowId: key.rowId)
             switch change.operation {
             case .insert:
-                guard let current else { found.append(.removedSince(table: key.table, rowId: key.rowId)); continue }
+                guard let current else {
+                    // A document link the run added that was unlinked since (the summary's Undo of an automatic
+                    // link, an unlink by hand): already reverted.
+                    if key.table == DocumentLink.databaseTableName { continue }
+                    found.append(.removedSince(table: key.table, rowId: key.rowId))
+                    continue
+                }
                 guard current != change.afterJSON else { continue }
                 let now = try values(db: db, current, table: key.table), after = try values(db: db, change.afterJSON, table: key.table)
                 // Only what the run left: a column added since (a later migration) isn't a change.

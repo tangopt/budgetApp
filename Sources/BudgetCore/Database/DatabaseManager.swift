@@ -154,5 +154,7 @@ public final class DatabaseManager {
         registerImportWaitingFileMigration(&migrator)
         registerSharingMigration(&migrator)
         registerSavedSiteMigration(&migrator)
+        registerAutoLinkDeclinedMigration(&migrator)
+        registerAutoLinkRecentMigration(&migrator)
     }
 }

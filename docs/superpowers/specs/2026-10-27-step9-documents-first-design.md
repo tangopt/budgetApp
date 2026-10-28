@@ -33,6 +33,8 @@ someone links it by hand. The user wants it to wait quietly and link itself when
    forever.
 5. Runs on the Mac (statement imports happen there) after every import and after sync merges; the iPad shows the
    state and accepts suggestions through DeviceWriter.
+   Known gap: an automatic link undone on one Mac before its push (about 5 s) can be made again by another Mac
+   that pulls the same transaction, since undone pairs are remembered per device.
 
 ## 3. Constraints
 

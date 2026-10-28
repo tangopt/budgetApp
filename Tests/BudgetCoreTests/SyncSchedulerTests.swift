@@ -180,7 +180,8 @@ final class SyncSchedulerTests: XCTestCase {
         var queue: DatabaseQueue { manager.dbQueue }
     }
 
-    private func device(_ user: String, keys: (any SyncKeyStore)? = nil, batchSize: Int = 200) async throws -> Device {
+    private func device(_ user: String, keys: (any SyncKeyStore)? = nil, batchSize: Int = 200,
+                        afterPull: (@Sendable () async -> Void)? = nil) async throws -> Device {
         let manager = try TestDatabase.migratedManager()
         try await manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
         let transport = ScriptedTransport(cloud)
@@ -189,7 +190,7 @@ final class SyncSchedulerTests: XCTestCase {
         let clock = self.clock!
         let sleeper = self.sleeper!
         let scheduler = SyncScheduler(engine: engine, db: manager.dbQueue, clock: { clock.now }, sleep: { try await sleeper.sleep($0) },
-                                      pushDebounce: 5, periodic: 3600, keyWaitRetry: 300)
+                                      pushDebounce: 5, periodic: 3600, keyWaitRetry: 300, afterPull: afterPull)
         schedulers.append(scheduler)
         await scheduler.start()
         return Device(manager: manager, transport: transport, engine: engine, scheduler: scheduler)
@@ -278,6 +279,44 @@ final class SyncSchedulerTests: XCTestCase {
         XCTAssertTrue(sent.contains { if case .save = $0 { return true } else { return false } })
         XCTAssertFalse(sent.contains { if case .changes = $0 { return true } else { return false } }, "a local change only pushes")
         await eventually("idle again") { await mac.scheduler.status == .idle(lastSync: self.start) }
+    }
+
+    // MARK: After a pull
+
+    /// Step 9: `afterPull` (the Mac's waiting-documents job) runs once per full sync, after its pull and before its
+    /// push; never for a push-only sync, nor when the pull throws.
+    func testSchedulerRunsAfterPullOnly() async throws {
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        let cloud = self.cloud!
+        let pushedBefore = OSAllocatedUnfairLock(initialState: [Bool]())
+        let mac = try await device("user-a", afterPull: {
+            count.withLock { $0 += 1 }
+            let saved = await cloud.calls.contains { if case .save = $0 { return true } else { return false } }
+            pushedBefore.withLock { $0.append(saved) }
+        })
+        try addAccount(mac.queue, "Synthetic After Pull")
+        await mac.scheduler.requestSync(.launch)
+        XCTAssertEqual(count.withLock { $0 }, 1)
+        XCTAssertEqual(pushedBefore.withLock { $0 }, [false], "before the push")
+        XCTAssertEqual(try pending(mac.queue), [])
+
+        await mac.scheduler.requestSync(.userRefresh)
+        XCTAssertEqual(count.withLock { $0 }, 2, "once per full sync")
+
+        try addAccount(mac.queue, "Synthetic Push Only")
+        await mac.scheduler.requestSync(.localChange)
+        await eventually("the debounce waiting") { self.sleeper.pending(5) == 1 }
+        sleeper.fire(5)
+        try await eventually("the debounced push") { try self.pending(mac.queue).isEmpty }
+        await eventually("idle again") { if case .idle = await mac.scheduler.status { return true } else { return false } }
+        XCTAssertEqual(count.withLock { $0 }, 2, "a push-only sync doesn't run it")
+
+        await mac.transport.failNextChanges(with: BrokenDisk())
+        do {
+            _ = try await mac.scheduler.syncNowAndWait()
+            XCTFail("the pull failed")
+        } catch {}
+        XCTAssertEqual(count.withLock { $0 }, 2, "a pull that threw doesn't run it")
     }
 
     // MARK: Retry

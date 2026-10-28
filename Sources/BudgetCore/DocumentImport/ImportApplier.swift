@@ -21,6 +21,9 @@ public struct ImportRunSummary: Equatable, Sendable {
     /// The files it left unimported that can be set aside (kept for later, copied to a folder): not
     /// those already waiting, identical to a library document or read from the library.
     public var setAside: [SetAsideFile] = []
+    /// The waiting documents the run's new transactions paid, linked automatically (`WaitingDocuments.run`), each
+    /// with its own Undo in the summary.
+    public var paymentLinks: [WaitingDocuments.Pair] = []
 
     public init(runId: Int64, filed: Int, linked: Int, recorded: Int, transactions: Int, duplicates: Int, leftOut: Int,
                 backupPath: String?) {
@@ -34,14 +37,22 @@ public struct ImportRunSummary: Equatable, Sendable {
         self.backupPath = backupPath
     }
 
-    /// "3 documents filed, 2 linked, 142 transactions"; counts that are zero are left out
+    /// "3 documents filed, 2 linked, 142 transactions, 1 document linked to its payment"; counts that are zero are left out
     /// (except the documents), duplicates and left-out files last; then the run's notes.
-    public var text: String {
+    public var text: String { text(paymentLinksUndone: 0) }
+
+    /// `text` once `undone` of the payment links were taken back from the summary: "2 documents linked to their
+    /// payments · 1 undone".
+    public func text(paymentLinksUndone undone: Int) -> String {
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
         var parts = [plural(filed, "document", "documents") + " filed"]
         if linked > 0 { parts.append("\(linked) linked") }
         if recorded > 0 { parts.append("\(recorded) recorded") }
         if transactions > 0 { parts.append(plural(transactions, "transaction", "transactions")) }
+        if !paymentLinks.isEmpty {
+            let linked = paymentLinks.count == 1 ? "1 document linked to its payment" : "\(paymentLinks.count) documents linked to their payments"
+            parts.append(undone > 0 ? "\(linked) · \(undone) undone" : linked)
+        }
         if duplicates > 0 { parts.append(plural(duplicates, "duplicate", "duplicates") + " skipped") }
         if leftOut > 0 { parts.append("\(leftOut) left out") }
         return ([parts.joined(separator: ", ")] + notes).joined(separator: ". ")
@@ -331,6 +342,8 @@ public struct ImportApplier: Sendable {
         // area (renamed during the review, or a kind of the same name saved meanwhile).
         let kindsNow = try DocumentKindCatalog.load(db: db)
 
+        // The last transaction before the run: the waiting documents are matched only when it adds some.
+        let lastTransaction = try Int64.fetchOne(db, sql: "SELECT MAX(id) FROM \(Transaction.databaseTableName)") ?? 0
         var documents: [UUID: Int64] = [:]
         var touched: Set<Int64>? = []
         for item in applied {
@@ -381,6 +394,11 @@ public struct ImportApplier: Sendable {
         let used = applied.flatMap { $0.appliedRules.map(\.ruleId) }
         if !used.isEmpty { try ImportRuleStore.markUsed(db: db, ids: used, now: now) }
         try ImportEffects.followOns(db: db, propertyIds: touched)
+        // Documents first, statements later: the waiting documents the new rows paid are linked, each in its own
+        // filed-year-guarded savepoint (a refused one stays a suggestion), captured with the run so its Undo
+        // takes them back too.
+        let added = Set(try Int64.fetchAll(db, sql: "SELECT id FROM \(Transaction.databaseTableName) WHERE id > ?", arguments: [lastTransaction]))
+        let paymentLinks = try added.isEmpty ? [] : WaitingDocuments.run(db: db, newTransactions: added, now: now).linked
         try AutoForecastGenerator.refresh(db: db)
 
         // The confirm-time backstop: the batch as a whole (per-item checks aren't additive).
@@ -390,6 +408,7 @@ public struct ImportApplier: Sendable {
         var summary = ImportRunSummary(runId: runId, filed: 0, linked: 0, recorded: 0, transactions: 0, duplicates: 0, leftOut: 0,
                                        backupPath: backupPath)
         summary.notes = kindNotes + learningNotes
+        summary.paymentLinks = paymentLinks
         let leftOut = Self.leftOutIds(plan)
         let byId = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.id, $0) })
         summary.filed = Set(documents.values).count

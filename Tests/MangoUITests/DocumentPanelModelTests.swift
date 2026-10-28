@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import struct BudgetCore.Transaction
 import BudgetDemo
 @testable import MangoUI
 import TestSupport
@@ -20,6 +21,34 @@ final class DocumentPanelModelTests: XCTestCase {
                                         amountMinorUnits: amount, currency: currency, persons: persons, addedAt: utc(2026, 1, 1))
         try document.insert(db)
         return document.id!
+    }
+
+    private func recentDay(_ ago: Int) -> Date { Calendar.current.date(byAdding: .day, value: -ago, to: Date())! }
+
+    func testPanelShowsWaitingForABillWithNoPayment() throws {
+        let db = try demo()
+        let id = try db.write { try insert($0, name: "Example Power", kind: .utilityInvoice, docDate: recentDay(3), amount: 6_000, currency: .eur) }
+        let details = try db.read { try DocumentPanelDetails.load(db: $0, documentId: id) }
+        XCTAssertTrue(details.waiting)
+        XCTAssertEqual(DocumentPanelDetails.waitingLine, "Waiting for its payment — Mango links it when the statement arrives")
+        let old = try db.write { try insert($0, name: "Old Power", kind: .utilityInvoice, docDate: recentDay(200), amount: 6_000, currency: .eur) }
+        let lapsed = try db.read { try DocumentPanelDetails.load(db: $0, documentId: old) }
+        XCTAssertFalse(lapsed.waiting, "an expired one is an ordinary unlinked document")
+        let note = try db.write { try insert($0, name: "Note", kind: .other, docDate: recentDay(3)) }
+        let plain = try db.read { try DocumentPanelDetails.load(db: $0, documentId: note) }
+        XCTAssertFalse(plain.waiting)
+    }
+
+    func testPanelNotWaitingOnceLinked() throws {
+        let db = try demo()
+        let id = try db.write { db -> Int64 in
+            let id = try insert(db, name: "Example Power", kind: .utilityInvoice, docDate: recentDay(3), amount: 6_000, currency: .eur)
+            let transaction = try XCTUnwrap(try Transaction.fetchOne(db))
+            try EvidenceLinks.link(db: db, documentId: id, to: .transaction(transaction.id!))
+            return id
+        }
+        let details = try db.read { try DocumentPanelDetails.load(db: $0, documentId: id) }
+        XCTAssertFalse(details.waiting)
     }
 
     func testDetailsOmitMissingFields() throws {

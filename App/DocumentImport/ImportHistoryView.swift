@@ -10,6 +10,8 @@ struct ImportHistoryView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
     @State private var setAsideFiles: [SetAsideFile]?
+    /// The payment links undone from the finished import's summary, by run (the banner counts them).
+    @State private var undonePaymentLinks: [Int64: Set<WaitingDocuments.Pair.ID>] = [:]
 
     static let tableMinimumWidth: CGFloat = 400
     static let detailWidth: CGFloat = 340
@@ -24,8 +26,16 @@ struct ImportHistoryView: View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             switch center.phase {
             case .finished(let summary):
-                InlineBanner(.success, "Imported: \(summary.text)" + (summary.backupPath == nil ? "" : ". The database was backed up first."),
+                InlineBanner(.success, "Imported: \(summary.text(paymentLinksUndone: undonePaymentLinks[summary.runId]?.count ?? 0))"
+                                 + (summary.backupPath == nil ? "" : ". The database was backed up first."),
                              onDismiss: center.discard)
+                if !summary.paymentLinks.isEmpty {
+                    ImportPaymentLinksList(center: center, pairs: summary.paymentLinks,
+                                           undone: Binding(get: { undonePaymentLinks[summary.runId] ?? [] },
+                                                           set: { undonePaymentLinks[summary.runId] = $0 }))
+                        // Another run's links start with their own names and refusals.
+                        .id(summary.runId)
+                }
             case .failed(let message):
                 InlineBanner(.error, message, onDismiss: center.discard)
             default:
@@ -84,6 +94,66 @@ struct ImportHistoryView: View {
     private func offerSetAside() {
         let offer = center.takeSetAsideOffer()
         if !offer.isEmpty { setAsideFiles = offer }
+    }
+}
+
+// MARK: Payment links
+
+/// Under a finished import's banner: each waiting document the import linked to its payment, "invoice name  ↔
+/// transaction title", with Undo (unlinks it and never makes it again). A row leaves once undone; a refusal (a
+/// filed return it would change, no permission) shows under it.
+struct ImportPaymentLinksList: View {
+    @ObservedObject var center: ImportCenterModel
+    let pairs: [WaitingDocuments.Pair]
+    @Environment(\.theme) private var theme
+    @State private var names: [WaitingDocuments.Pair.ID: (document: String, payment: String)] = [:]
+    @Binding var undone: Set<WaitingDocuments.Pair.ID>
+    @State private var refusals: [WaitingDocuments.Pair.ID: String] = [:]
+    @State private var working: WaitingDocuments.Pair.ID?
+
+    private var shown: [WaitingDocuments.Pair] { pairs.filter { !undone.contains($0.id) } }
+
+    var body: some View {
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(shown) { pair in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            let name = names[pair.id]
+                            Text(name?.document ?? "Document")
+                                .lineLimit(1).truncationMode(.middle).help(name?.document ?? "")
+                            Text("↔").foregroundStyle(.secondary)
+                            Text(name?.payment ?? "Payment")
+                                .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary).help(name?.payment ?? "")
+                            Spacer(minLength: 8)
+                            Button("Undo") { undo(pair) }
+                                .controlSize(.small)
+                                .disabled(working != nil)
+                        }
+                        .font(.callout)
+                        if let refusal = refusals[pair.id] {
+                            Text(refusal.figuresUnbroken).font(.caption).foregroundStyle(theme.expense).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .task { names = await center.paymentLinkNames(pairs) }
+        }
+    }
+
+    private func undo(_ pair: WaitingDocuments.Pair) {
+        working = pair.id
+        refusals[pair.id] = nil
+        Task {
+            do {
+                try await center.undoPaymentLink(pair)
+                undone.insert(pair.id)
+            } catch {
+                refusals[pair.id] = error.localizedDescription
+            }
+            working = nil
+        }
     }
 }
 

@@ -269,11 +269,12 @@ public enum SyncSchema {
     public static let historyTables: Set<String> = ["importChange"]
 
     /// Never synced (sync spec §4.3, §11.6): sync bookkeeping, credentials and settings of this device,
-    /// linked source folders and their files (paths and bookmarks), and SQLite's and GRDB's own tables.
+    /// linked source folders and their files (paths and bookmarks), the automatic links undone here (`autoLinkDeclined`) and those made after a pull, until seen (`autoLinkRecent`), and SQLite's and GRDB's own tables.
     public static let localOnlyTables: Set<String> = [
         "syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
         "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
         "localCredential", "localSetting",
+        "autoLinkDeclined", "autoLinkRecent",
         "sourceFolder", "sourceFile",
         "syncZoneMove", "syncCompanion", "syncAccessRevert", "syncPresence", "syncZoneCleanup",
         "grdb_migrations", "sqlite_sequence",

@@ -16,9 +16,15 @@ public struct DocumentPanelDetails: Equatable, Sendable {
     public var date: String?
     /// The records it is linked to, one title per line (`EvidenceLinkTitles`).
     public var linkedTo: String?
+    /// Filed before its payment: the panel says it is waiting (the Mac's line); hidden otherwise.
+    public var waiting: Bool
+
+    /// The panel's quiet line for a waiting document (the Mac's wording).
+    public static let waitingLine = "Waiting for its payment — Mango links it when the statement arrives"
 
     public init(kind: String, from: String? = nil, period: String? = nil, amount: String? = nil, date: String? = nil,
-                linkedTo: String? = nil) {
+                linkedTo: String? = nil, waiting: Bool = false) {
+        self.waiting = waiting
         self.kind = kind
         self.from = from
         self.period = period
@@ -63,7 +69,8 @@ public struct DocumentPanelDetails: Equatable, Sendable {
             period: period,
             amount: document.amountMinorUnits.map { Money.format($0, currency: document.currency ?? .eur) },
             date: document.docDate.map { PhoneDateFormat.day($0).unbroken },
-            linkedTo: titles.isEmpty ? nil : titles.joined(separator: "\n"))
+            linkedTo: titles.isEmpty ? nil : titles.joined(separator: "\n"),
+            waiting: try WaitingDocuments.state(db: db, documentId: documentId, now: Date()) == .waiting)
     }
 }
 

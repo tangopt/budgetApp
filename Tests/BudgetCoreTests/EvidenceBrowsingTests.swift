@@ -429,6 +429,62 @@ final class EvidenceBrowsingTests: XCTestCase {
         }
     }
 
+    // MARK: Waiting for its payment (step 9)
+
+    /// Documents dated 2023-03-05: waiting on 2023-04-01, lapsed on 2023-09-01.
+    private func waitingLibrary() throws -> (waiting: Int64, paid: Int64, statement: Int64, noAmount: Int64) {
+        let (first, _, _, _) = try instalmentLibrary()
+        let waiting = try filed("Waiting bill", amount: 5_000)
+        let paid = try filed("Paid bill", amount: 4_000, linkedTo: [first])
+        let statement = try filed("A statement", amount: 5_000, kind: .bankStatement)
+        let noAmount = try filed("No amount", amount: nil)
+        return (waiting, paid, statement, noAmount)
+    }
+
+    private func listed(_ filter: EvidenceDocumentSearch.Filter, now: Date) throws -> [Int64] {
+        let index = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db, now: now) }
+        return EvidenceDocumentSearch.entries(index, filter: filter).map(\.id).sorted()
+    }
+
+    func testWaitingFilterShowsOnlyWaiting() throws {
+        let ids = try waitingLibrary()
+        let now = Self.date(2023, 4, 1)
+        XCTAssertEqual(try listed(.init(linkState: .waiting), now: now), [ids.waiting])
+        let index = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db, now: now) }
+        XCTAssertEqual(index.entries.first { $0.id == ids.statement }?.waitingState, .notApplicable)
+        XCTAssertEqual(index.entries.first { $0.id == ids.waiting }?.waitingState, .waiting)
+        XCTAssertTrue(EvidenceDocumentSearch.Filter(linkState: .waiting).hasFilters)
+    }
+
+    func testLapsedIsOrdinaryUnlinked() throws {
+        let ids = try waitingLibrary()
+        let later = Self.date(2023, 9, 1)
+        XCTAssertEqual(try listed(.init(linkState: .waiting), now: later), [])
+        XCTAssertTrue(try listed(.init(linkState: .unlinked), now: later).contains(ids.waiting))
+        let index = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db, now: later) }
+        XCTAssertEqual(index.entries.first { $0.id == ids.waiting }?.waitingState, .lapsed)
+    }
+
+    func testWaitingDocumentIsNotInRecentUnlinked() throws {
+        let ids = try waitingLibrary()
+        let now = Self.date(2023, 4, 1)
+        let index = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db, now: now) }
+        let recent = EvidenceDocumentSearch.notLinkedYet(index.entries).map(\.id)
+        XCTAssertFalse(recent.contains(ids.waiting))
+        XCTAssertEqual(Set(recent), [ids.statement, ids.noAmount])
+        // Once lapsed it is listed with the other unlinked documents.
+        let lapsed = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db, now: Self.date(2023, 9, 1)) }
+        XCTAssertTrue(EvidenceDocumentSearch.notLinkedYet(lapsed.entries).map(\.id).contains(ids.waiting))
+    }
+
+    func testAnyAndLinkedFiltersUnchanged() throws {
+        let ids = try waitingLibrary()
+        let now = Self.date(2023, 4, 1)
+        XCTAssertEqual(try listed(.init(), now: now).count, 4)
+        XCTAssertEqual(try listed(.init(linkState: .linked), now: now), [ids.paid])
+        XCTAssertEqual(Set(try listed(.init(linkState: .unlinked), now: now)), [ids.waiting, ids.statement, ids.noAmount])
+    }
+
     func testPartlyPaidDocumentsAreListedWithoutSearching() throws {
         let (first, second, pounds, refund) = try instalmentLibrary()
         // Its refund (a credit) is linked too: never counted as paying it.

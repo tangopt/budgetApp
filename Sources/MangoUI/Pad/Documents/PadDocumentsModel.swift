@@ -8,14 +8,14 @@ public struct PadDocumentNotOnDevice: Error, Equatable, Sendable {
 }
 
 /// The iPad's Documents library (step 8, Task 9; read only): the household's documents grouped by kind, a search
-/// field, an "All" / "Unlinked" filter, and one document's detail (kind, date, period, links) with its preview.
+/// field, an "All" / "Unlinked" / "Waiting" filter, and one document's detail (kind, date, period, links) with its preview.
 ///
 /// `open` gives the local file for a document's `storedRelativePath`, downloading it first when the iPad doesn't
 /// have it yet. Task 5 wires `PhoneSyncController.openDocument` into it (`PhoneTabsModel.padDocuments.open`); until
 /// then the default throws `PadDocumentNotOnDevice`, which the preview shows as "Not on this iPad yet".
 @MainActor
 public final class PadDocumentsModel: ObservableObject {
-    public enum Filter: String, CaseIterable, Sendable { case all = "All", unlinked = "Unlinked" }
+    public enum Filter: String, CaseIterable, Sendable { case all = "All", unlinked = "Unlinked", waiting = "Waiting" }
 
     public struct Group: Equatable, Identifiable, Sendable {
         public var title: String
@@ -46,6 +46,8 @@ public final class PadDocumentsModel: ObservableObject {
     @Published public var query = ""
     @Published public private(set) var all: [EvidenceDocumentSummary] = []
     @Published public private(set) var unlinkedIds: Set<Int64> = []
+    /// The documents waiting for their payment (`WaitingDocuments.states`); Unlinked leaves them out.
+    @Published public private(set) var waitingIds: Set<Int64> = []
     @Published public var selectedId: Int64? {
         didSet { if oldValue != selectedId { preview = .idle; links = []; Task { await loadLinks() } } }
     }
@@ -84,7 +86,8 @@ public final class PadDocumentsModel: ObservableObject {
     public var groups: [Group] {
         let words = query.split(whereSeparator: \.isWhitespace).map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
         let kept = all.filter { document in
-            if filter == .unlinked, !unlinkedIds.contains(document.id) { return false }
+            if filter == .unlinked, !unlinkedIds.contains(document.id) || waitingIds.contains(document.id) { return false }
+            if filter == .waiting, !waitingIds.contains(document.id) { return false }
             guard !words.isEmpty else { return true }
             let haystack = ([document.displayName, document.originalFileName, catalog.displayName(of: document)] + document.persons)
                 .joined(separator: " ").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
@@ -97,14 +100,17 @@ public final class PadDocumentsModel: ObservableObject {
 
     public func reload() async {
         let reader = dbQueue
-        guard let read = try? await reader.read({ db -> ([EvidenceDocumentSummary], Set<Int64>, DocumentKindCatalog) in
+        let now = Date()
+        guard let read = try? await reader.read({ db -> ([EvidenceDocumentSummary], Set<Int64>, DocumentKindCatalog, Set<Int64>) in
             (try EvidenceDocumentSummary.newestFirst.fetchAll(db),
              Set(try Int64.fetchAll(db, sql: "SELECT id FROM document WHERE id NOT IN (SELECT documentId FROM documentLink)")),
-             try DocumentKindCatalog.load(db: db))
+             try DocumentKindCatalog.load(db: db),
+             Set(try WaitingDocuments.states(db: db, now: now).filter { $0.value == .waiting }.keys))
         }) else { return }
         all = read.0
         unlinkedIds = read.1
         catalog = read.2
+        waitingIds = read.3
         if let selectedId, !all.contains(where: { $0.id == selectedId }) { self.selectedId = nil }
     }
 
@@ -112,7 +118,8 @@ public final class PadDocumentsModel: ObservableObject {
         var all: [EvidenceDocumentSummary]
         var unlinked: Set<Int64>
         var catalog: DocumentKindCatalog
-        public static func == (a: Snapshot, b: Snapshot) -> Bool { a.all == b.all && a.unlinked == b.unlinked }
+        var waiting: Set<Int64> = []
+        public static func == (a: Snapshot, b: Snapshot) -> Bool { a.all == b.all && a.unlinked == b.unlinked && a.waiting == b.waiting }
     }
 
     /// The same read, now (the snapshot routes' first frame).
@@ -120,7 +127,8 @@ public final class PadDocumentsModel: ObservableObject {
         (try? dbQueue.read { db in
             Snapshot(all: try EvidenceDocumentSummary.newestFirst.fetchAll(db),
                      unlinked: Set(try Int64.fetchAll(db, sql: "SELECT id FROM document WHERE id NOT IN (SELECT documentId FROM documentLink)")),
-                     catalog: try DocumentKindCatalog.load(db: db))
+                     catalog: try DocumentKindCatalog.load(db: db),
+                     waiting: Set(try WaitingDocuments.states(db: db, now: Date()).filter { $0.value == .waiting }.keys))
         }) ?? Snapshot(all: [], unlinked: [], catalog: DocumentKindCatalog(customKinds: []))
     }
 
@@ -128,6 +136,7 @@ public final class PadDocumentsModel: ObservableObject {
     public func preload(_ snapshot: Snapshot) {
         all = snapshot.all
         unlinkedIds = snapshot.unlinked
+        waitingIds = snapshot.waiting
         catalog = snapshot.catalog
         selectedId = groups.first?.documents.first?.id
     }
