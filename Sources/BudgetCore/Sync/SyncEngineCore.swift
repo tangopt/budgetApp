@@ -233,11 +233,12 @@ public actor SyncEngineCore {
     /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it, and
     /// `SyncKeyError.waitingForHouseholdKey` while this device doesn't hold the household key yet.
     public func acquireImportLease() async throws {
-        // Only the Mac imports: a read-only phone or an iPad (step 8) takes no lease.
-        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
+        // The Mac, and (step 19) an iPad that pushes the household, import; a read-only device takes no lease.
+        guard mode.takesLease else { throw ReadOnlyError.readOnly }
         try await serialized {
             try await self.prepare()
-            let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: true)
+            // Only the Mac makes the household key; an iPad leases with the one it holds (or waits for it).
+            let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: self.mode.ownsZones)
             let now = self.clock()
             let lease = try await ImportLease.acquire(device: self.device, now: now, transport: try self.leaseStore(key))
             try await self.db.write { db in
@@ -249,7 +250,7 @@ public actor SyncEngineCore {
     /// Gives the lease up without importing (the user cancelled). A batch's lease is released by the push
     /// that uploads the batch's close.
     public func releaseImportLease() async throws {
-        guard mode.ownsZones else { throw ReadOnlyError.readOnly }
+        guard mode.takesLease else { throw ReadOnlyError.readOnly }
         try await serialized {
             guard let held = try await self.db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: false)
@@ -263,6 +264,12 @@ public actor SyncEngineCore {
     public func importLeaseHolder() async throws -> ImportLeaseRecord? {
         try await ImportLease.holder(now: clock(), transport: try leaseStore(nil))
     }
+
+    /// The device the lease names (`ImportLeasing`).
+    public nonisolated var leaseDevice: SyncDevice { device }
+
+    /// The zones this device pushes (`ImportLeasing`): where an import made here can go.
+    public nonisolated func importZones() async -> [String]? { pushZones }
 
     /// Runs `body` after every entry point called before it has finished (actor methods are reentrant at
     /// each `await`, so without this two syncs would interleave: double sends, a token going back). Cancelling the
