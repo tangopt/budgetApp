@@ -27,6 +27,9 @@ public struct PadRootView: View {
     let onSettings: () -> Void
     @State private var selection: PadSection
     @State private var userName = "You"
+    @State private var ownSalary = SalaryComparisonViewModel()
+    /// A salary simulator to show instead of the iPad's own (the snapshot routes').
+    private let salary: SalaryComparisonViewModel?
     @SceneStorage("padSidebarCollapsed") private var sidebarCollapsed = false
 
     /// `columns` is kept for the snapshot routes' sake and no longer used: the sidebar is the app's own.
@@ -34,7 +37,7 @@ public struct PadRootView: View {
     /// (`SyncWaitingChanges`). `browser`: the built-in browser; ignored with demo data, where it is hidden.
     public init(tabs: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
                 initialSelection: PadSection = .home, sidebarCollapsed: Bool = false,
-                waitingChanges: Int = 0, browser: BrowserModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
+                waitingChanges: Int = 0, browser: BrowserModel? = nil, salary: SalaryComparisonViewModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
         self.tabs = tabs
         documents = tabs.padDocuments
@@ -49,6 +52,7 @@ public struct PadRootView: View {
         self.onRefresh = onRefresh
         self.onSettings = onSettings
         _selection = State(initialValue: initialSelection)
+        self.salary = salary
         _sidebarCollapsed = SceneStorage(wrappedValue: sidebarCollapsed, "padSidebarCollapsed")
     }
 
@@ -128,6 +132,8 @@ public struct PadRootView: View {
         case .documents:
             PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
+        case .salary:
+            NavigationStack { SalarySimulatorScreen(viewModel: salary ?? ownSalary) }
         case .evidence:
             PadEvidenceView(model: tabs.padEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus,
                             showBills: { selection = .billsAndRecharges })

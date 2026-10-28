@@ -6,7 +6,7 @@ import BudgetCore
 /// The salary simulator: two salaries (what you have, an offer) and what each leaves you,
 /// with the difference pinned above the forms.
 struct SalarySimulatorView: View {
-    @State private var model = SalaryComparisonViewModel()
+    @Bindable var model: SalaryComparisonViewModel
     @Environment(\.theme) private var theme
 
     var body: some View {

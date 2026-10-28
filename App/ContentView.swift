@@ -12,7 +12,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case search = "Search"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
-    case salary = "Salary simulator"
+    case salary = "Salary"
     case accounts = "Accounts"
     /// One sidebar row per property (`ContentView.sidebarRows`); "Property" while there is none.
     case property = "Property"
@@ -105,6 +105,7 @@ struct ContentView: View {
     // (and any in-progress edits) every time ContentView's own @State changes.
     @StateObject private var budgetGridViewModel: BudgetGridViewModel
     @StateObject private var scenarioLabViewModel: ScenarioLabViewModel
+    @State private var salaryViewModel = SalaryComparisonViewModel()
     @StateObject private var rulesViewModel: RulesViewModel
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
@@ -260,7 +261,7 @@ struct ContentView: View {
                     ScenarioLabView(viewModel: scenarioLabViewModel)
                         .onAppear { scenarioLabViewModel.load() }
                 case .salary:
-                    SalarySimulatorView()
+                    SalarySimulatorView(model: salaryViewModel)
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }
@@ -354,7 +355,7 @@ struct ContentView: View {
             }
             refreshSharedState()
             snapshotSetup?.prepare(SnapshotScreenModels(
-                dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,
+                dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel, salary: salaryViewModel,
                 accounts: accountsViewModel, categories: categoriesViewModel, search: searchViewModel,
                 documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, property: propertyViewModel,
                 taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel))

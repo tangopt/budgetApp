@@ -6,7 +6,7 @@ import BudgetCore
 public enum PadSection: Hashable, CaseIterable, Sendable {
     case home, month, accounts, search
     case thisMonth, billsAndRecharges, tenancies, money, calendar, checks, profile
-    case evidence, documents
+    case evidence, documents, salary
 
     /// The section a widget's link opens.
     public init(link: PhoneTabLink) {
@@ -31,6 +31,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .profile: "Profile"
         case .evidence: "Evidence"
         case .documents: "Documents"
+        case .salary: "Salary simulator"
         }
     }
 
@@ -49,6 +50,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .profile: "person.text.rectangle"
         case .evidence: "exclamationmark.magnifyingglass"
         case .documents: "folder"
+        case .salary: "sterlingsign.circle"
         }
     }
 
@@ -71,7 +73,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         if hasProperty {
             groups.append(Group(title: "Property", sections: [.thisMonth, .billsAndRecharges, .tenancies, .money, .calendar, .checks, .profile]))
         }
-        groups.append(Group(title: "Everything else", sections: [.evidence, .documents]))
+        groups.append(Group(title: "Everything else", sections: [.salary, .evidence, .documents]))
         return groups
     }
 }

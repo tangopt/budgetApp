@@ -92,6 +92,8 @@ public struct SettingsSheet: View {
     /// Settings ▸ Notifications (step 7b): what the system allows, and "Allow notifications" (nil: no such row).
     let notificationAccess: NotificationAuthorization
     let onAllowNotifications: (() -> Void)?
+    /// Opens the salary simulator (nil: no such row).
+    let onOpenSalary: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var syncing = false
 
@@ -99,7 +101,8 @@ public struct SettingsSheet: View {
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
                 onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil,
                 outputs: Binding<PhoneOutputSettings>? = nil, notificationAccess: NotificationAuthorization = .notDetermined,
-                onAllowNotifications: (() -> Void)? = nil) {
+                onAllowNotifications: (() -> Void)? = nil, onOpenSalary: (() -> Void)? = nil) {
+        self.onOpenSalary = onOpenSalary
         self.notificationAccess = notificationAccess
         self.onAllowNotifications = onAllowNotifications
         self.demo = demo
@@ -130,6 +133,17 @@ public struct SettingsSheet: View {
                 }
                 if let demo {
                     demoSection(demo)
+                }
+                if let onOpenSalary {
+                    Section("Tools") {
+                        Button {
+                            dismiss()
+                            onOpenSalary()
+                        } label: {
+                            Label("Salary simulator", systemImage: "sterlingsign.circle")
+                                .frame(minHeight: 44)
+                        }
+                    }
                 }
                 Section("Appearance") {
                     Picker("Appearance", selection: $appearance) {

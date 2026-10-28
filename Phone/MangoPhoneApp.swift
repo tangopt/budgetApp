@@ -59,6 +59,8 @@ struct PhoneRoot: View {
     @ObservedObject private var outputs = PhoneOutputs.shared
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
+    @State private var showingSalary = false
+    @State private var salary = SalaryComparisonViewModel()
     /// "Show what's here" on the iCloud explanation, for this run of the app.
     @State private var showsLocalData = false
     /// A PDF shared to Mango where it isn't collected (the iPhone, demo data): said once, then gone.
@@ -91,6 +93,9 @@ struct PhoneRoot: View {
                     .sheet(isPresented: $showingSettings) {
                         settings(environment, tabs)
                     }
+                    .sheet(isPresented: $showingSalary) {
+                        salarySheet
+                    }
             case .failed(let message):
                 ContentUnavailableView("Mango couldn't open its data", systemImage: "exclamationmark.triangle",
                                        description: Text(message))
@@ -108,6 +113,7 @@ struct PhoneRoot: View {
                 return
             }
             showingSettings = false
+            showingSalary = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
             // The browser closes too: nothing of a site shows behind the lock or after it.
             PhoneBrowser.shared?.isPresented = false
@@ -285,12 +291,23 @@ struct PhoneRoot: View {
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
                              outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
-                             onAllowNotifications: { Task { await outputs.allowNotifications() } })
+                             onAllowNotifications: { Task { await outputs.allowNotifications() } },
+                             onOpenSalary: { showingSalary = true })
             .task { await outputs.refreshNotificationAccess() }
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
             .environment(\.phoneTheme, PhoneTheme.named(themeId))
             .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
+    }
+
+    /// The salary simulator (opened from Settings' Tools): a tool, nothing of the household's data.
+    private var salarySheet: some View {
+        NavigationStack {
+            SalarySimulatorScreen(viewModel: salary)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSalary = false } } }
+        }
+        .environment(\.phoneTheme, PhoneTheme.named(themeId))
+        .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Demo")
