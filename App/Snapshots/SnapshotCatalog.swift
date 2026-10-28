@@ -36,6 +36,43 @@ enum SnapshotCatalog {
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + SharingSnapshots.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
             + kindRoutes + waitingRoutes + transactionDocumentsRoutes + evidencePanelRoutes + [AuthSnapshots.attributionRoute] + SharingSnapshots.memberRoutes + [AuthSnapshots.launchLoadsOnceRoute]
+            + panelWidthRoutes
+    }
+
+    // MARK: Resizable panels
+
+    /// The side panels at a remembered width other than the default (last: the widths stay in the
+    /// snapshot defaults), and the salary calculator with a percentage bonus and a moved split.
+    static var panelWidthRoutes: [SnapshotRoute] {
+        func width(_ kind: String, _ value: Double) { SnapshotMode.defaults.set(value, forKey: PaneSizing.widthKey(kind)) }
+        return [
+            screen("property", "recharges_statement_narrow", "Property: Recharges, the statement panel at its narrowest", .property, settle: 1.5) { models, context in
+                width("property", 280)
+                models.property.tab = .recharges
+                if let (statement, tenancy) = context.latestPaidStatement() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .rechargeStatement(id: statement, tenancyId: tenancy)
+                }
+            },
+            screen("property", "recharges_statement_wide", "Property: Recharges, the statement panel dragged wide", .property, settle: 1.5) { models, context in
+                width("property", 560)
+                models.property.tab = .recharges
+                if let (statement, tenancy) = context.latestPaidStatement() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .rechargeStatement(id: statement, tenancyId: tenancy)
+                }
+            },
+            screen("documents", "panel_wide", "Documents: the detail dragged wide", .documents) { models, context in
+                width("documents", 560)
+                models.documents.selectedId = (try? context.demoCustomKinds())?.documentId
+            },
+            screen("salary", "bonus_percent", "UK Salary Calculator: a 10% bonus on the new salary, the split moved left", .salary) { models, _ in
+                SnapshotMode.defaults.set(0.43, forKey: PaneSizing.splitKey("salary"))
+                models.salary.current.grossAnnual = 4_000_000
+                models.salary.offer.grossAnnual = 5_200_000
+                models.salary.offer.bonusPercentBP = 1000
+            }
+        ]
     }
 
     // MARK: Imports, from the demo's samples
