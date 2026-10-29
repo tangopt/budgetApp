@@ -16,6 +16,13 @@ public enum WidgetPresentation {
         return Money.format(net, currency: currency(s))
     }
 
+    /// Home's net worth in whole units, as the small widget shows it ("£12,345"): a figure is never scaled down, so
+    /// the pence go instead. "—" without balances.
+    public static func netWorthWholeText(_ s: WidgetSnapshot) -> String {
+        guard let net = s.netWorthMinorUnits else { return "—" }
+        return wholeText(net, currencyCode: s.currencyCode)
+    }
+
     /// Home's "left to spend" this pay month.
     public static func leftText(_ s: WidgetSnapshot) -> String {
         Money.format(s.leftToSpendMinorUnits, currency: currency(s))

@@ -8,6 +8,7 @@ public struct PropertyMonthWidgetView: View {
     let figures: RechargePipelineFigures
     let size: MangoWidgetSize
     let redacted: Bool
+    @Environment(\.phoneTheme) private var theme
 
     public init(figures: RechargePipelineFigures, size: MangoWidgetSize, redacted: Bool) {
         self.figures = figures
@@ -35,14 +36,13 @@ public struct PropertyMonthWidgetView: View {
 
     private var pipeline: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(figures.tenancyName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(figures.tenancyName).mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             step("Bills", WidgetPresentation.billsText(figures), done: figures.isDone(.billsIn))
             step("Sent", WidgetPresentation.sentText(figures), done: figures.isDone(.statementSent))
             step("Tenant", WidgetPresentation.paidText(figures), done: figures.isDone(.paidByTenant))
             Spacer(minLength: 0)
-            Text(WidgetPresentation.outstandingText(figures)).font(.title3.weight(.semibold))
-                .figureText(.shrink(minimumScale: 0.5)).privacySensitive(redacted)
-            Text("outstanding").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(WidgetPresentation.outstandingText(figures)).mangoFont(MangoType.title3.figure()).privacySensitive(redacted)
+            Text("outstanding").mangoFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -50,25 +50,25 @@ public struct PropertyMonthWidgetView: View {
     private func step(_ label: String, _ value: String, done: Bool) -> some View {
         HStack(spacing: 5) {
             Image(systemName: done ? "checkmark.circle.fill" : "circle").font(.caption)
-                .foregroundStyle(done ? Color.green : Color.secondary)
-            Text(label).font(.caption).lineLimit(1)
+                .foregroundStyle(done ? theme.income : Color.secondary)
+            Text(label).mangoFont(.caption).lineLimit(1)
             Spacer(minLength: 2)
-            Text(value).font(.caption2).foregroundStyle(.secondary).figureText(.shrink(minimumScale: 0.6))
+            Text(value).mangoFont(PhoneTextStyle.caption2.figure()).foregroundStyle(.secondary)
         }
     }
 
     private var utilities: some View {
         let rows = Array(figures.utilities.prefix(Self.chartRows))
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Bills this month").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text("Bills this month").mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1)
             if rows.isEmpty {
-                Text("No bills due").font(.footnote).foregroundStyle(.secondary)
+                Text("No bills due").mangoFont(.footnote).foregroundStyle(.secondary)
             } else {
                 Chart(Array(rows.enumerated()), id: \.offset) { _, row in
                     BarMark(x: .value("Bill", 1), y: .value("Utility", row.name), height: .fixed(14))
                         .foregroundStyle(row.isIn ? Color.accentColor : Color.secondary.opacity(0.25))
                         .annotation(position: .overlay, alignment: .leading) {
-                            Text(row.isIn ? "In" : "Out").font(.caption2.weight(.medium)).padding(.leading, 6)
+                            Text(row.isIn ? "In" : "Out").mangoFont(.caption2, weight: .medium).padding(.leading, 6)
                                 .foregroundStyle(row.isIn ? Color.white : Color.secondary)
                         }
                 }

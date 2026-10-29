@@ -22,10 +22,9 @@ struct NetWorthWidgetView: View {
     var body: some View {
         if let snapshot = entry.snapshot {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Net worth").font(.caption).foregroundStyle(.secondary)
-                Text(WidgetPresentation.netWorthText(snapshot))
-                    .font(.title2.weight(.semibold)).monospacedDigit()
-                    .lineLimit(1).minimumScaleFactor(0.5)
+                Text("Net worth").mangoFont(.caption).foregroundStyle(.secondary)
+                Text(WidgetPresentation.netWorthWholeText(snapshot))
+                    .mangoFont(.figureL)
                     .figureSensitivity(WidgetPresentation.isRedacted(snapshot, isLockScreen: false))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)

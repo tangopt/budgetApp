@@ -15,18 +15,18 @@ public struct WidgetsPreview: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 16) {
-                tile("Net worth", WidgetPresentation.netWorthText(snapshot))
+                tile("Net worth", WidgetPresentation.netWorthWholeText(snapshot))
             }
             HStack(spacing: 16) {
                 Circle().fill(.fill.tertiary).frame(width: 76, height: 76)
                     .overlay {
                         VStack(spacing: 0) {
-                            Text("Payday").font(.system(size: 9)).foregroundStyle(.secondary)
+                            Text("Payday").mangoFont(.caption2).foregroundStyle(.secondary)
                             Text(WidgetPresentation.paydayText(snapshot, on: today))
-                                .font(.system(size: 14, weight: .semibold)).figureText(.shrink())
+                                .mangoFont(MangoType.footnote.weight(.semibold).figure())
                         }
                     }
-                Text(WidgetPresentation.emptyText).font(.footnote).foregroundStyle(.secondary)
+                Text(WidgetPresentation.emptyText).mangoFont(.footnote).foregroundStyle(.secondary)
             }
         }
         .padding()
@@ -35,8 +35,8 @@ public struct WidgetsPreview: View {
 
     private func tile(_ title: String, _ figure: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Text(figure).font(.title2.weight(.semibold)).figureText(.shrink(minimumScale: 0.5))
+            Text(title).mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(figure).mangoFont(.figureL)
         }
         .padding()
         .frame(width: 155, height: 155, alignment: .leading)
