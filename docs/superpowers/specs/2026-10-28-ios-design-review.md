@@ -177,6 +177,7 @@ text anywhere, widgets included.
   segmented toggle beside the input, always visible, not only once a value is entered. The other unit always shows
   as a secondary line, so Current and New stay aligned row by row: % selected → "= £5,200"; £ selected → "= 12.5%"
   of the salary.
+- **Salary results**: Salary results include a Current vs New 'Where the money goes' 100% stacked bar pair with a difference list.
 - **Charts**: accent line, dashed forecast, a dot for today, two gridlines, footnote labels; bars in money colours;
   ≤ 4 series; heights capped (iPad 180 pt, iPhone 120 pt) so a chart never pushes content below the fold.
 - **Empty / loading / error**: empty says what is fine and the next action ("Nothing missing for 2025/26");
