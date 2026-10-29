@@ -30,7 +30,8 @@ public struct TransactionRowPresentation {
     }
 }
 
-/// The amber "?" an uncategorised row carries in place of a category badge, the size of `CategoryBadge`.
+/// The amber "?" an uncategorised row carries in place of a category badge, the size of `CategoryBadge`: a status, so
+/// it keeps its colour (the pending colour on its tint).
 struct UncategorisedBadge: View {
     @Environment(\.phoneTheme) private var theme
     @ScaledMetric(relativeTo: .body) private var scaled: CGFloat = 32
@@ -38,10 +39,10 @@ struct UncategorisedBadge: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(theme.pending)
+            Circle().fill(theme.pendingTint)
             Image(systemName: "questionmark")
                 .font(.system(size: diameter * 0.5, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(theme.pending)
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
