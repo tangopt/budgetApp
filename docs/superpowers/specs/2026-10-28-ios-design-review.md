@@ -176,9 +176,9 @@ text anywhere, widgets included.
   tab; avatar button top-right on Home opens "Me" (tools and settings). iPad sidebar of 11 in three groups, badges for
   work waiting (This month, Documents), collapsible rail, footer = avatar, name, sync, Settings.
 
-### 3.5 Themes (six theme sets)
+### 3.5 Themes (seven theme sets)
 
-A **theme set** replaces today's two separate pickers (15 colour themes in `PhoneTheme`/`ThemePalette`, 13 faces in `FontCatalog`). One choice sets the colour palette (light and dark, filling every role in 3.1) and the font pairing together. Six sets, no more. System / Light / Dark stays a separate Appearance control; every set has both a light and a dark palette.
+A **theme set** replaces today's two separate pickers (15 colour themes in `PhoneTheme`/`ThemePalette`, 13 faces in `FontCatalog`). One choice sets the colour palette (light and dark, filling every role in 3.1) and the font pairing together. Seven sets, no more. System / Light / Dark stays a separate Appearance control; every set has both a light and a dark palette.
 
 | Set | Intent | Display (headings) | Body | Figures (tabular) | Accent light / dark |
 |---|---|---|---|---|---|
@@ -188,8 +188,9 @@ A **theme set** replaces today's two separate pickers (15 colour themes in `Phon
 | **Clear** | Maximum legibility: highest contrast, blue-black accent, visible borders. | Atkinson Hyperlegible | Atkinson Hyperlegible | Atkinson Hyperlegible (tabular digits are in the file) | #0A2472 / #9DBBFF |
 | **Studio** | Graphite, dark-first, lime accent in dark and teal in light; mono figures. | IBM Plex Sans | IBM Plex Sans | IBM Plex Mono | #00695C / #C6F24E |
 | **Calm** | Sage green on soft greys; round humanist type. | Manrope | Source Sans 3 | SF Pro (tabular) | #3A6849 / #8CC4A0 |
+| **Library** | Parchment ground, bottle-green accent in light, deep brown-black with a soft green accent in dark; one serif for everything. | Source Serif 4 | Source Serif 4 | Source Serif 4 (tnum, lnum) | #1F4D36 / #8FC7A0 |
 
-Font roles map onto `mangoFont`: **display** = largeTitle, title2, title3, headline and the sidebar brand; **body** = body, subheadline, footnote, caption, buttons, pills; **figure** = everything with the `.figure` modifier (figureXL, figureL, table cells, pills carrying amounts). `PhoneFont` stays as the file/registration catalogue but the 13-face picker, its Settings section and the per-user font key go; only the six faces used here are registered (SF Pro, SF Pro Rounded and New York are system; Atkinson Hyperlegible, IBM Plex Sans, IBM Plex Mono, Manrope and Source Sans 3 are already bundled; Inter, Public Sans, DM Sans, Lexend and Source Serif 4 can be dropped from the bundle and the licences list). All six figure faces have tabular digits (`hasTabularDigits` is true for each), so no system fallback is needed; if a future face lacks them the figure role falls back to SF Pro tabular.
+Font roles map onto `mangoFont`: **display** = largeTitle, title2, title3, headline and the sidebar brand; **body** = body, subheadline, footnote, caption, buttons, pills; **figure** = everything with the `.figure` modifier (figureXL, figureL, table cells, pills carrying amounts). `PhoneFont` stays as the file/registration catalogue but the 13-face picker, its Settings section and the per-user font key go; only the faces used here are registered (SF Pro, SF Pro Rounded and New York are system; Atkinson Hyperlegible, IBM Plex Sans, IBM Plex Mono, Manrope, Source Sans 3 and Source Serif 4 are already bundled; Inter, Public Sans, DM Sans and Lexend can be dropped from the bundle and the licences list). All seven figure faces have tabular digits (`hasTabularDigits` is true for each), so no system fallback is needed; if a future face lacks them the figure role falls back to SF Pro tabular.
 
 **Mango**
 
@@ -317,9 +318,33 @@ Font roles map onto `mangoFont`: **display** = largeTitle, title2, title3, headl
 | pending | #80560A | #E8BF63 |
 | done / waiting / problem pills (text on tint) | #25793F on #E5EFE8 / #80560A on #F0EBE2 / #A32B21 on #F4E6E4 | #72D894 on #2C4333 / #E8BF63 on #423E2A / #F59388 on #443631 |
 
+**Library**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F3EBDA | #1A1510 |
+| surface | #FBF6EA | #231D17 |
+| surface-2 | #EBE2CE | #2E261E |
+| separator | #D6CAB0 | #433A2E |
+| text | #231C14 (15.6:1) | #EFE6D2 (13.4:1) |
+| text-secondary | #4F4538 (8.7:1) | #BFB39C (8.1:1) |
+| text-tertiary | #62574A (6.5:1) | #A09580 (5.6:1) |
+| accent | #1F4D36 (9.0:1) | #8FC7A0 (8.6:1) |
+| on-accent (button label) | #FFFFFF | #1A1510 |
+| accent-tint | #DCE8DA | #25382B |
+| accent-tint text | #173B29 | #BFE3C9 |
+| income | #2C7140 | #86D69A |
+| expense | #A8321E | #FF9A82 |
+| transfer | #3A5A94 | #9DB4E8 |
+| pending | #85540A | #E5BC5C |
+| done / waiting / problem pills (text on tint) | #2C7140 on #E6EEE8 / #85540A on #F0EAE2 / #A8321E on #F5E6E4 | #86D69A on #353E2F / #E5BC5C on #463A23 / #FF9A82 on #4B342A |
+
+Library notes: ratios are on `surface` (on `bg` the accent is 8.2:1 light and 9.4:1 dark; on `surface-2` 7.5:1 and 7.7:1). Lowest text pair: text-tertiary 5.0:1 on dark `surface-2`, 5.5:1 on light `surface-2`; lowest status colour: income 4.6:1 on light `surface-2`. On-accent label 9.7:1 light, 9.4:1 dark; accent-tint text 9.8:1 / 9.0:1. The dark accent (#8FC7A0) and dark income (#86D69A) are close in hue, so income is never shown by colour alone (sign or word), as in the other sets; in light the accent (luminance 0.06) is far darker than income (0.13). Font pairing: Source Serif 4 (bundled since step 16, variable optical size 8..60, weights 400 and 600) for display, body and figures; figures turn on `tnum` and `lnum` (`font-feature-settings`, in SwiftUI `.monospacedDigit()` plus the lining-figures feature) so digits are tabular and lining; Source Serif 4's tabular digit is about 0.55 em, narrower than Plex Mono's 0.6 em, so Studio stays the layout worst case.
+
+
 Tints for the status pills are derived, not hand-picked: tint = the status colour mixed 12% (light) or 18% (dark) into the surface, and the pill text is the status colour nudged toward black/white until it reaches 4.5:1 on that tint. The roles `done`/`waiting`/`problem`/`sent` come from income/pending/expense/transfer.
 
-**Contrast rules and checks (all six sets, light and dark; computed, not eyeballed):**
+**Contrast rules and checks (all seven sets, light and dark; computed, not eyeballed):**
 
 - text, text-secondary, text-tertiary reach 4.5:1 on `bg`, `surface` and `surface-2`. Lowest: text-tertiary 4.5:1 (Mango light, the 3.1 value kept), text-secondary 5.9:1 (Calm light), text 11.7:1. Calm's and Studio's tertiaries were nudged to clear `surface-2`, not just `surface`.
 - accent used as text or link is >= 4.5:1 on all three grounds (lowest 4.6:1, Mango light). **Refinement to 3.1:** Mango's light accent moves from #B4530A to #B2520A, because #B4530A is 4.49:1 on `bg`. On-accent button labels are >= 5.1:1 in every set.
@@ -328,7 +353,7 @@ Tints for the status pills are derived, not hand-picked: tint = the status colou
 - Editorial keeps accent (#8E1B22) darker than expense (#B03618) so a red button never reads as an expense amount. Studio's lime accent (dark) and income green (#5FE0A8) are distinct in lightness (0.76 vs 0.59 relative luminance) and income always carries a sign.
 - Clear uses visible borders instead of tint steps: separator #737E92 light (3.7:1 on `bg`) and #7C879B dark (>= 3:1 on surfaces), 1 pt on every control and card.
 
-**Layout across all six sets.** The widest face is IBM Plex Mono for figures (digit advance 0.6 em; SF tabular is about 0.6 em as well, Atkinson and Manrope narrower), so Studio is the worst case and drives the rules:
+**Layout across all seven sets.** The widest face is IBM Plex Mono for figures (digit advance 0.6 em; SF tabular is about 0.6 em as well, Atkinson and Manrope narrower), so Studio is the worst case and drives the rules:
 
 - Figure columns size from the data, not a constant: min width = `chars x 0.6 x size + 2 x padding`. Bills grid cell at 14 pt: `€48.91` = 6 chars = 50 pt + 16 pt padding = 66 pt, cell with the side panel open is about 84 pt, so it fits; a four-digit amount (`€1,234.56`, 76 pt + 16) does not, so the Bills grid shows 3 month columns instead of 4 when the widest figure in view needs more (ViewThatFits on column count, not shrinking text).
 - Hero figures (`figureXL` 34 pt) in Plex Mono: `£12,345.67` = 10 chars = 204 pt, fits the 358 pt phone tile and the 3-up iPad tile (about 250 pt inner).
@@ -336,7 +361,7 @@ Tints for the status pills are derived, not hand-picked: tint = the status colou
 - Rounded and serif display faces change only weight/width of headings; line heights come from the text style, not the face, so row heights (56 pt) and touch targets (44 pt) are unchanged.
 - Result: the one layout rule above (Bills grid columns follow the widest figure) is the only adjustment; it applies to Studio with large amounts and is harmless in the others.
 
-**Settings.** One section, "Theme", under the Appearance control (System / Light / Dark). It shows six preview cards (2 x 3 on iPhone, 3 x 2 on iPad): each card is rendered in its own palette and fonts, in the current appearance, with the name set in its display face, a figure in its figure face, an accent button chip and the font names in a 12 pt line; the selected card has a 2 pt accent ring and a check. The font section, "All 13 fonts" list and swatch row are removed. Cards are radio buttons (VoiceOver: "Editorial, serif headings, selected"), 88 pt tall, so touch targets are met. Widgets read the set from the shared app-group key.
+**Settings.** One section, "Theme", under the Appearance control (System / Light / Dark). It shows seven preview cards (2 columns on iPhone with Library full-width on the last row, 4 x 2 on iPad with the eighth cell left empty): each card is rendered in its own palette and fonts, in the current appearance, with the name set in its display face, a figure in its figure face, an accent button chip and the font names in a 12 pt line; the selected card has a 2 pt accent ring and a check. The font section, "All 13 fonts" list and swatch row are removed. Cards are radio buttons (VoiceOver: "Editorial, serif headings, selected"), 88 pt tall, so touch targets are met. Widgets read the set from the shared app-group key.
 
 **Migration (one time at first launch of the new build; old keys are left in place so a rollback works).** Map by colour theme; the chosen font only decides when the colour theme is Classic (the neutral set):
 
@@ -344,17 +369,17 @@ Tints for the status pills are derived, not hand-picked: tint = the status colou
 |---|---|---|
 | Classic | Classic | same look |
 | Ocean | Classic | blue accent, cool greys |
-| Ledger | Editorial | cream paper, ink, red/green ruling |
+| Ledger | Library | cream paper in light and warm brown-black in dark, the same ground family as the old Ledger palette (#FBF6E8 / #1F1B15), and the serif suits an accounts book; Editorial's ground is similar but its red accent and sans body fit Ledger less |
 | Sunset, Solarized, Sakura, Desert | Mango | warm grounds and warm accents |
 | Forest, Nord, Lavender, Mint | Calm | soft, cool or muted accents on quiet greys |
 | Dracula, Graphite, Midnight | Studio | dark graphite grounds; if the old theme was dark-only, Appearance is set to Dark once |
 | High Contrast | Clear | contrast is the point |
 
-Font tie-break when the colour theme was Classic: New York or Source Serif 4 -> Editorial; IBM Plex Sans or Plex Mono -> Studio; Atkinson Hyperlegible or Lexend -> Clear; Manrope, Source Sans 3 or Public Sans -> Calm; SF Pro Rounded -> Mango; SF Pro, Inter, DM Sans -> Classic. A fresh install gets Mango. The user keeps their System/Light/Dark choice.
+Font tie-break when the colour theme was Classic: New York -> Editorial; Source Serif 4 -> Library; IBM Plex Sans or Plex Mono -> Studio; Atkinson Hyperlegible or Lexend -> Clear; Manrope, Source Sans 3 or Public Sans -> Calm; SF Pro Rounded -> Mango; SF Pro, Inter, DM Sans -> Classic. A fresh install gets Mango. The user keeps their System/Light/Dark choice.
 
-**Tests.** (1) Contrast test per set and mode over every pair above (extends the step 2 token test; 6 x 2 palettes). (2) Snapshot matrix: Home, Bills & recharges, Month and Settings on iPhone and iPad in all six sets, three in dark. (3) Wrap probe in all six sets at default and one larger Dynamic Type size. (4) Migration test: 15 colour themes x 13 fonts maps to exactly one set each. (5) Grayscale snapshot for status legibility.
+**Tests.** (1) Contrast test per set and mode over every pair above (extends the step 2 token test; 7 x 2 palettes). (2) Snapshot matrix: Home, Bills & recharges, Month and Settings on iPhone and iPad in all seven sets, three in dark. (3) Wrap probe in all seven sets at default and one larger Dynamic Type size. (4) Migration test: 15 colour themes x 13 fonts maps to exactly one set each. (5) Grayscale snapshot for status legibility.
 
-The canvas boards `Themes` (six sets side by side) and `Themes - Screens` (iPad Bills & recharges in all six, three in dark) show the result; `iPhone - Settings` shows the picker.
+The canvas boards `Themes` (seven sets side by side) and `Themes - Screens` (iPad Bills & recharges in all seven, three in dark) show the result; `iPhone - Settings` shows the picker.
 
 ## 4. Information architecture
 
@@ -400,10 +425,10 @@ Each step keeps logic in BudgetCore, renders with the snapshot script, and check
    two-column salary form (I11).
 7. **Journeys polish** (S): Patricia's recharge flow end to end on iPad at all four sizes; Pablo's quick check on
    iPhone; evidence flow — each as a snapshot route sequence.
-8. **Theme sets** (L): replace the 15 colour themes and the 13-font picker with the six sets in 3.5 (`ThemeSet` = light and dark
+8. **Theme sets** (L): replace the 15 colour themes and the 13-font picker with the seven sets in 3.5 (`ThemeSet` = light and dark
    `ThemeTokens` + a display/body/figure font pairing, resolved by `mangoFont`); one "Theme" picker with preview cards
    in Settings (iPhone and iPad) next to the unchanged System/Light/Dark control; one-time migration from the old
-   colour theme and font keys; drop unused bundled faces and licences; contrast test over 6 x 2 palettes, snapshot
+   colour theme and font keys; drop unused bundled faces and licences; contrast test over 7 x 2 palettes, snapshot
    matrix in all sets, wrap probe per set, Bills grid columns sized from the widest figure. Large because it touches
    every screen's look, widgets and the persisted settings; do it after step 2 (roles) and 3 (components) so it is
    one palette swap, not a rewrite.
