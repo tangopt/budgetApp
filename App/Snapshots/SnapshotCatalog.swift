@@ -722,6 +722,17 @@ enum SnapshotCatalog {
     static let dashboardMoneyTiles = [DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
                                       DashboardTile.topCategories, DashboardTile.upcomingBills, DashboardTile.accounts]
 
+    /// The demo property's tile ids in the Dashboard's Property section, in natural order.
+    static let demoPropertyTiles = [DashboardTile.propertyMonth, DashboardTile.tenancyCashFlow("Property A"), DashboardTile.propertyReturn("Property A"),
+                                    DashboardTile.mortgage("Property A")]
+
+    /// Hides every Dashboard widget outside `section` (this device's setting, in the snapshot's own defaults).
+    static func hideDashboardCards(except section: DashboardLayout.Section) {
+        var visibility = DashboardCardVisibility(stored: nil)
+        visibility.hidden = Set(DashboardCardVisibility.Card.allCases.filter { $0.section != section })
+        SnapshotMode.defaults.set(visibility.storedString, forKey: DashboardCardVisibility.storageKey)
+    }
+
     static var screens: [SnapshotRoute] {
         [
             screen("dashboard", "main", "Dashboard", .dashboard, settle: 1.5),
@@ -757,6 +768,27 @@ enum SnapshotCatalog {
             // The toolbar's Widgets popover (a popover can't open in the off-screen window, so its content on its own).
             SnapshotRoute(name: "dashboard-widgets_popover", title: "Dashboard: the Widgets popover (two hidden, property widgets without a property)") { _ in
                 AnyView(WidgetsPopoverPreview())
+            },
+            // The Property section on its own (the Money and Tax widgets hidden): month, cash flow, return and mortgage tiles.
+            screen("dashboard", "property", "Dashboard: the Property section with the cash flow and return widgets", .dashboard, settle: 1.5) { _, _ in
+                Self.hideDashboardCards(except: .property)
+            },
+            // The same two widgets squeezed small (figure only, then figure + chart) and stretched tall (figure, chart and list).
+            screen("dashboard", "property_small", "Dashboard: Property widgets squeezed small", .dashboard, settle: 1.5) { _, _ in
+                Self.hideDashboardCards(except: .property)
+                let names = Self.demoPropertyTiles
+                var layout = DashboardLayout()
+                layout.setHeight(110, row: 0, in: .property, natural: names)
+                layout.setHeight(150, row: 1, in: .property, natural: names)
+                SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
+            },
+            screen("dashboard", "property_large", "Dashboard: Property widgets stretched tall", .dashboard, settle: 1.5) { _, _ in
+                Self.hideDashboardCards(except: .property)
+                let names = Self.demoPropertyTiles
+                var layout = DashboardLayout()
+                layout.setHeight(360, row: 0, in: .property, natural: names)
+                layout.setHeight(300, row: 1, in: .property, natural: names)
+                SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
             },
             screen("search", "main", "Search", .search),
             screen("search", "query", "Search: “greenleaf”", .search) { models, _ in models.search.queryText = "greenleaf" },

@@ -145,7 +145,7 @@ public struct DashboardLayout: Codable, Equatable, Sendable {
 
     /// A tile's share of the default row: wide tiles count double.
     public static func defaultWeight(for tile: String) -> Double {
-        tile == DashboardTile.netWorth || tile == DashboardTile.year || tile == DashboardTile.tenancyCashFlow ? 2 : 1
+        tile == DashboardTile.netWorth || tile == DashboardTile.year || tile.hasPrefix("tenancyCashFlow:") ? 2 : 1
     }
 
     /// The height a tile needs to show its usual content (figure, chart or its first lines).
@@ -154,9 +154,7 @@ public struct DashboardLayout: Codable, Equatable, Sendable {
         case DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
              DashboardTile.taxYear, DashboardTile.evidence, DashboardTile.propertyMonth:
             return 184
-        case DashboardTile.tenancyCashFlow, DashboardTile.propertyReturn:
-            return 230
-        default: return 164
+        default: return tile.hasPrefix("tenancyCashFlow:") || tile.hasPrefix("propertyReturn:") ? 230 : 164
         }
     }
 
@@ -525,8 +523,8 @@ public enum DashboardTile {
     public static let upcomingBills = "upcomingBills"
     public static let accounts = "accounts"
     public static let propertyMonth = "propertyMonth"
-    public static let tenancyCashFlow = "tenancyCashFlow"
-    public static let propertyReturn = "propertyReturn"
+    public static func tenancyCashFlow(_ propertyName: String) -> String { "tenancyCashFlow:" + propertyName }
+    public static func propertyReturn(_ propertyName: String) -> String { "propertyReturn:" + propertyName }
     public static func mortgage(_ propertyName: String) -> String { "mortgage:" + propertyName }
     public static let taxYear = "taxYear"
     public static let evidence = "evidence"
@@ -544,13 +542,15 @@ public enum DashboardTile {
         case upcomingBills: return "Bills"
         case accounts: return "Accounts"
         case propertyMonth: return "Property month"
-        case tenancyCashFlow: return "Tenancy cash flow by month"
-        case propertyReturn: return "Property return for the year"
         case taxYear: return "Tax year"
         case evidence: return "Evidence and documents"
         case importsWaiting: return "Imports waiting"
         case attention: return "Needs attention"
-        default: return id.hasPrefix("mortgage:") ? "Mortgage · " + id.dropFirst("mortgage:".count) : id
+        default:
+            for (prefix, name) in [("mortgage:", "Mortgage"), ("tenancyCashFlow:", "Tenancy cash flow"), ("propertyReturn:", "Property return")] where id.hasPrefix(prefix) {
+                return name + " · " + id.dropFirst(prefix.count)
+            }
+            return id
         }
     }
 }

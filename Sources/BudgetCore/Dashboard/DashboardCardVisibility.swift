@@ -13,12 +13,14 @@ public struct DashboardCardVisibility: Equatable, Sendable {
             switch self {
             case .taxYear: return "Tax year position"
             case .mortgage: return "Mortgage"
+            case .tenancyCashFlow: return "Tenancy cash flow by month"
+            case .propertyReturn: return "Property return for the year"
             default: return DashboardTile.title(tileID)
             }
         }
 
-        /// The tile's id in a saved layout (a mortgage's tile is `mortgage:<property>`; this is the prefix).
-        public var tileID: String { self == .mortgage ? "mortgage" : rawValue }
+        /// The tile's id in a saved layout (a property's tiles are `mortgage:<property>` and so on; this is the prefix).
+        public var tileID: String { rawValue }
 
         /// The Dashboard section the widget is in.
         public var section: DashboardLayout.Section {
@@ -31,7 +33,15 @@ public struct DashboardCardVisibility: Equatable, Sendable {
 
         /// The widget a tile id (`DashboardTile`) belongs to.
         public init?(tileID: String) {
-            if tileID.hasPrefix("mortgage:") { self = .mortgage; return }
+            if let prefix = tileID.firstIndex(of: ":") {
+                switch tileID[..<prefix] {
+                case "mortgage": self = .mortgage
+                case "tenancyCashFlow": self = .tenancyCashFlow
+                case "propertyReturn": self = .propertyReturn
+                default: return nil
+                }
+                return
+            }
             self.init(rawValue: tileID)
         }
 

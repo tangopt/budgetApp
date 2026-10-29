@@ -34,6 +34,8 @@ struct DashboardView: View {
         if review.tax == nil { cards.remove(.taxYear) }
         if review.evidence == nil { cards.remove(.evidence) }
         if review.importsWaiting == 0 { cards.remove(.importsWaiting) }
+        if viewModel.propertyWidgets.cashFlows.isEmpty { cards.remove(.tenancyCashFlow) }
+        if viewModel.propertyWidgets.returns.isEmpty { cards.remove(.propertyReturn) }
         return cards
     }
 
@@ -78,10 +80,19 @@ struct DashboardView: View {
                     }
                     let propertyRows = review.property.flatMap { visibility.shows(.propertyMonth) ? $0 : nil }
                     let mortgages = review.mortgages.flatMap { visibility.shows(.mortgage) ? $0 : nil } ?? []
-                    if propertyRows != nil || !mortgages.isEmpty {
-                        let ids = (propertyRows != nil ? [DashboardTile.propertyMonth] : []) + mortgages.map { DashboardTile.mortgage($0.propertyName) }
+                    let cashFlows = visibility.shows(.tenancyCashFlow) ? viewModel.propertyWidgets.cashFlows : []
+                    let returns = visibility.shows(.propertyReturn) ? viewModel.propertyWidgets.returns : []
+                    if propertyRows != nil || !mortgages.isEmpty || !cashFlows.isEmpty || !returns.isEmpty {
+                        let ids = (propertyRows != nil ? [DashboardTile.propertyMonth] : []) + cashFlows.map { DashboardTile.tenancyCashFlow($0.propertyName) }
+                            + returns.map { DashboardTile.propertyReturn($0.propertyName) } + mortgages.map { DashboardTile.mortgage($0.propertyName) }
                         DashboardSection(section: .property, tiles: ids) {
                             if let rows = propertyRows { PropertyMonthTile(rows: rows, navigate: navigate).dashSlot(.property, DashboardTile.propertyMonth) }
+                            ForEach(cashFlows) { flow in
+                                TenancyCashFlowTile(flow: flow, navigate: navigate).dashSlot(.property, DashboardTile.tenancyCashFlow(flow.propertyName))
+                            }
+                            ForEach(returns) { result in
+                                PropertyReturnTile(result: result, navigate: navigate).dashSlot(.property, DashboardTile.propertyReturn(result.propertyName))
+                            }
                             ForEach(mortgages, id: \.propertyName) { mortgage in
                                 MortgageTile(mortgage: mortgage, today: content.today, navigate: navigate)
                                     .dashSlot(.property, DashboardTile.mortgage(mortgage.propertyName))

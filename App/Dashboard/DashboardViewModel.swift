@@ -38,6 +38,8 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var selectedYear: Int
     /// Unreviewed transactions in the selected year (left out of its totals).
     @Published private(set) var unreviewed = UnreviewedSummary(count: 0, outflowMinorUnits: 0)
+    /// The Property section's cash flow and return widgets for the selected year (empty without a property or View on it).
+    @Published private(set) var propertyWidgets = DashboardPropertyWidgets()
     @Published private(set) var errorMessage: String?
     /// Shown inline in the Close month sheet.
     @Published private(set) var closeErrorMessage: String?
@@ -60,11 +62,13 @@ final class DashboardViewModel: ObservableObject {
             // As the person signed in sees it (`SharedActualsSource`): the other person's accounts below Everything as
             // their summaries, their Hidden ones not at all.
             let lastVisit = Self.lastVisit
-            let (loaded, partial, review) = try dbQueue.read { db in
+            let year = selectedYear
+            let (loaded, partial, review, widgets) = try dbQueue.read { db in
                 let actuals = try SignedInActor.actuals(db: db, today: today)
                 return (try DashboardInput.load(db: db, today: today, actuals: actuals), actuals.viewer.seesOnlyPart(of: try Account.fetchAll(db)),
-                        try Self.review(db: db, today: today, lastVisit: lastVisit))
+                        try Self.review(db: db, today: today, lastVisit: lastVisit), try Self.propertyWidgets(db: db, today: today, year: year))
             }
+            propertyWidgets = widgets
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
             let thisYear = MonthRange.components(of: today).year
             let firstYear = netWorth.actual.first?.year ?? thisYear
@@ -109,6 +113,17 @@ final class DashboardViewModel: ObservableObject {
         return try DashboardReview.load(db: db, today: today, lastVisit: lastVisit, viewer: viewer)
     }
 
+    /// The Property widgets for `year`, as the signed-in user sees them (nothing while signed out).
+    static func propertyWidgets(db: Database, today: Date, year: Int) throws -> DashboardPropertyWidgets {
+        let viewer: AccessActor?
+        switch SignedInActor.state {
+        case .signedIn(let id): viewer = try AccessActor.load(appUserId: id, db: db)
+        case .notSetUp: viewer = nil
+        case .signedOut: return DashboardPropertyWidgets()
+        }
+        return try DashboardPropertyWidgets.load(db: db, today: today, year: year, viewer: viewer)
+    }
+
     static let lastVisitKey = "dashboardLastVisit"
     static var lastVisit: Date? {
         let seconds = UserDefaults.standard.double(forKey: lastVisitKey)
@@ -149,5 +164,7 @@ final class DashboardViewModel: ObservableObject {
         selectedYear = year
         flows = DashboardCalculator.monthlyFlows(input, year: year)
         unreviewed = DashboardCalculator.unreviewed(input, year: year)
+        let today = todayProvider()
+        if let widgets = try? dbQueue.read({ db in try Self.propertyWidgets(db: db, today: today, year: year) }) { propertyWidgets = widgets }
     }
 }
