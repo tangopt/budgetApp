@@ -22,6 +22,20 @@ struct SnapshotMissing: Error, CustomStringConvertible {
     init(_ what: String) { description = "\(what) not in the database" }
 }
 
+/// The Dashboard's Widgets popover content, on its own, with some widgets hidden and some without data.
+private struct WidgetsPopoverPreview: View {
+    @State private var hidden = "topCategories,evidence"
+    @State private var layout = "{\"sections\":{},\"v\":2}"
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        DashboardWidgetsList(available: Set(DashboardCardVisibility.Card.allCases).subtracting([.propertyMonth, .tenancyCashFlow, .propertyReturn, .mortgage]),
+                             hiddenCards: $hidden, storedLayout: $layout)
+            .background(theme.surface)
+            .padding(20)
+    }
+}
+
 /// Every route the harness renders: each sidebar screen, each tab of Forecast, Property and
 /// Tax years, the main sheets of the new screens, a few polished sheets to compare with, and
 /// the shared components' gallery (`ComponentGallery`, `gallery-*`).
@@ -739,6 +753,10 @@ enum SnapshotCatalog {
                 layout.setHeight(300, row: 1, in: .money, natural: money)
                 layout.setHeight(330, row: 2, in: .money, natural: money)
                 SnapshotMode.defaults.set(layout.storedString, forKey: DashboardLayout.storageKey)
+            },
+            // The toolbar's Widgets popover (a popover can't open in the off-screen window, so its content on its own).
+            SnapshotRoute(name: "dashboard-widgets_popover", title: "Dashboard: the Widgets popover (two hidden, property widgets without a property)") { _ in
+                AnyView(WidgetsPopoverPreview())
             },
             screen("search", "main", "Search", .search),
             screen("search", "query", "Search: “greenleaf”", .search) { models, _ in models.search.queryText = "greenleaf" },

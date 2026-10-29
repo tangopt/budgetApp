@@ -27,6 +27,18 @@ struct DashboardView: View {
         })
     }
 
+    /// The widgets that have something to show now.
+    private var availableWidgets: Set<DashboardCardVisibility.Card> {
+        var cards = Set(DashboardCardVisibility.Card.allCases)
+        guard let review = viewModel.content?.review else { return cards }
+        if review.property == nil { cards.remove(.propertyMonth) }
+        if review.mortgages == nil { cards.remove(.mortgage) }
+        if review.tax == nil { cards.remove(.taxYear) }
+        if review.evidence == nil { cards.remove(.evidence) }
+        if review.importsWaiting == 0 { cards.remove(.importsWaiting) }
+        return cards
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -103,14 +115,9 @@ struct DashboardView: View {
         .environment(\.dashboardLayoutContext, layoutContext)
         .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Reset layout") { storedLayout = "" }
-                        .disabled(DashboardLayout(storedString: storedLayout).isDefault)
-                } label: {
-                    Label("Layout", systemImage: "rectangle.3.group")
-                }
-                .help("Drag the gaps between tiles to resize them. Reset layout puts every tile back")
+                DashboardWidgetsButton(available: availableWidgets, hiddenCards: $hiddenCards, storedLayout: $storedLayout)
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .onDisappear { viewModel.markVisited() }
         .sheet(item: $closeTarget, onDismiss: { viewModel.clearCloseError() }) { target in
