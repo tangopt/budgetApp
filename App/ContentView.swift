@@ -264,7 +264,6 @@ struct ContentView: View {
                 case .dashboard:
                     DashboardView(
                         viewModel: dashboardViewModel, importCenter: environment.importCenter,
-                        accounts: accounts, selectedImportAccountId: $selectedImportAccountId,
                         navigate: { selection = $0 }
                     )
                     .onAppear { dashboardViewModel.load() }

@@ -145,7 +145,7 @@ public struct DashboardLayout: Codable, Equatable, Sendable {
 
     /// A tile's share of the default row: wide tiles count double.
     public static func defaultWeight(for tile: String) -> Double {
-        tile == DashboardTile.netWorth || tile == DashboardTile.year ? 2 : 1
+        tile == DashboardTile.netWorth || tile == DashboardTile.year || tile.hasPrefix("tenancyCashFlow:") ? 2 : 1
     }
 
     /// The height a tile needs to show its usual content (figure, chart or its first lines).
@@ -154,7 +154,7 @@ public struct DashboardLayout: Codable, Equatable, Sendable {
         case DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
              DashboardTile.taxYear, DashboardTile.evidence, DashboardTile.propertyMonth:
             return 184
-        default: return 164
+        default: return tile.hasPrefix("tenancyCashFlow:") || tile.hasPrefix("propertyReturn:") ? 230 : 164
         }
     }
 
@@ -341,6 +341,99 @@ public struct DashboardLayout: Codable, Equatable, Sendable {
         store(shown, section)
     }
 
+    // MARK: Dragging a tile
+
+    /// Where a dragged tile lands. Indices refer to the rows as shown before the move: `row(r, at: i)` puts the
+    /// tile into row `r` before that row's tile `i` (`i` = the row's tile count puts it last); `newRow(at: k)` makes
+    /// a row of its own before row `k` (`k` = the row count puts it at the bottom).
+    public enum Drop: Equatable, Sendable {
+        case row(Int, at: Int)
+        case newRow(at: Int)
+    }
+
+    /// How far into a row (from its top and bottom edges) the "new row" zone around the gap between rows reaches.
+    public static let newRowZone = 8.0
+
+    /// Where a tile dropped with the pointer at (`x`, `y`) in a section `width` wide would land: between two rows
+    /// (or above the first / below the last) it starts a new row, over a row it goes in at the pointer's side of each
+    /// tile's middle. Nil when there are no rows.
+    public static func dropTarget(x: Double, y: Double, rows: [ResolvedRow], width: Double, spacing: Double = spacing) -> Drop? {
+        guard !rows.isEmpty else { return nil }
+        let frames = Self.frames(rows, width: width, spacing: spacing)
+        if y < newRowZone { return .newRow(at: 0) }
+        var top = 0.0
+        for (r, row) in rows.enumerated() {
+            let bottom = top + row.height
+            let isLast = r + 1 == rows.count
+            // Around the gap under this row (or the bottom edge of the last one): a row of its own.
+            if y >= bottom - newRowZone && (isLast || y < bottom + spacing + newRowZone) { return .newRow(at: r + 1) }
+            if y < bottom {
+                let middles = frames.filter { $0.row == r }.map { $0.x + $0.width / 2 }
+                return .row(r, at: middles.filter { $0 < x }.count)
+            }
+            top = bottom + spacing
+        }
+        return .newRow(at: rows.count)
+    }
+
+    /// Whether `drop` would change the arrangement for the tile.
+    public func canMove(_ tile: String, to drop: Drop, in section: Section, natural: [String]) -> Bool {
+        Self.arranged(rows(section, natural: natural), moving: tile, to: drop) != nil
+    }
+
+    /// The rows after the move; nil when it changes nothing (or the tile or target isn't there).
+    private static func arranged(_ shown: [ResolvedRow], moving tile: String, to drop: Drop) -> [ResolvedRow]? {
+        guard let r = shown.firstIndex(where: { $0.tiles.contains(tile) }), let i = shown[r].tiles.firstIndex(of: tile) else { return nil }
+        var rows = shown
+        switch drop {
+        case .row(let target, let at):
+            guard rows.indices.contains(target) else { return nil }
+            if target == r {
+                // Within the row the places keep their widths and the tiles change places.
+                var tiles = rows[r].tiles
+                tiles.remove(at: i)
+                tiles.insert(tile, at: min(max(at > i ? at - 1 : at, 0), tiles.count))
+                guard tiles != rows[r].tiles else { return nil }
+                rows[r].tiles = tiles
+                return rows
+            }
+            var from = rows[r]
+            from.tiles.remove(at: i)
+            let removed = from.fractions.remove(at: i)
+            if !from.tiles.isEmpty { from.fractions = from.fractions.map { $0 / max(1 - removed, 0.0001) } }
+            var into = rows[target]
+            let share = 1.0 / Double(into.tiles.count + 1)
+            let position = min(max(at, 0), into.tiles.count)
+            into.fractions = into.fractions.map { $0 * (1 - share) }
+            into.tiles.insert(tile, at: position)
+            into.fractions.insert(share, at: position)
+            rows[target] = into
+            rows[r] = from
+            if from.tiles.isEmpty { rows.remove(at: r) }
+            return rows
+        case .newRow(let k):
+            guard k >= 0, k <= rows.count else { return nil }
+            // A tile already alone in the row that is (or would stay) where it is changes nothing.
+            if rows[r].tiles.count == 1 && (k == r || k == r + 1) { return nil }
+            var from = rows[r]
+            from.tiles.remove(at: i)
+            let removed = from.fractions.remove(at: i)
+            if !from.tiles.isEmpty { from.fractions = from.fractions.map { $0 / max(1 - removed, 0.0001) } }
+            rows[r] = from
+            rows.insert(ResolvedRow(tiles: [tile], fractions: [1], height: defaultHeight(for: tile)), at: k)
+            // The emptied row is where it was, unless the new one went in above it.
+            if from.tiles.isEmpty { rows.remove(at: k <= r ? r + 1 : r) }
+            return rows
+        }
+    }
+
+    /// Moves the tile to `drop` (see `Drop`) within its section; the first change to a default layout fixes it as
+    /// shown. A drop that changes nothing leaves the layout alone.
+    public mutating func move(tile: String, to drop: Drop, in section: Section, natural: [String]) {
+        guard let rows = Self.arranged(self.rows(section, natural: natural), moving: tile, to: drop) else { return }
+        store(rows, section)
+    }
+
     /// Back to the default layout.
     public mutating func reset() { sections = [:] }
     public mutating func reset(_ section: Section) { sections[section] = nil }
@@ -430,6 +523,8 @@ public enum DashboardTile {
     public static let upcomingBills = "upcomingBills"
     public static let accounts = "accounts"
     public static let propertyMonth = "propertyMonth"
+    public static func tenancyCashFlow(_ propertyName: String) -> String { "tenancyCashFlow:" + propertyName }
+    public static func propertyReturn(_ propertyName: String) -> String { "propertyReturn:" + propertyName }
     public static func mortgage(_ propertyName: String) -> String { "mortgage:" + propertyName }
     public static let taxYear = "taxYear"
     public static let evidence = "evidence"
@@ -451,7 +546,11 @@ public enum DashboardTile {
         case evidence: return "Evidence and documents"
         case importsWaiting: return "Imports waiting"
         case attention: return "Needs attention"
-        default: return id.hasPrefix("mortgage:") ? "Mortgage · " + id.dropFirst("mortgage:".count) : id
+        default:
+            for (prefix, name) in [("mortgage:", "Mortgage"), ("tenancyCashFlow:", "Tenancy cash flow"), ("propertyReturn:", "Property return")] where id.hasPrefix(prefix) {
+                return name + " · " + id.dropFirst(prefix.count)
+            }
+            return id
         }
     }
 }

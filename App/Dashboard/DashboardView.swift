@@ -4,10 +4,8 @@ import BudgetCore
 
 struct DashboardView: View {
     @ObservedObject var viewModel: DashboardViewModel
-    /// The window's importer (the import card shows an import under way).
+    /// The window's importer (the title row shows an import under way).
     let importCenter: ImportCenterModel
-    let accounts: [Account]
-    @Binding var selectedImportAccountId: Int64?
     let navigate: (AppScreen) -> Void
     @State private var closeTarget: CloseMonthTarget?
     @AppStorage(DashboardCardVisibility.storageKey) private var hiddenCards = ""
@@ -19,12 +17,34 @@ struct DashboardView: View {
             var layout = DashboardLayout(storedString: storedLayout)
             mutate(&layout)
             storedLayout = layout.storedString
+        }, hide: { tile in
+            guard let card = DashboardCardVisibility.Card(tileID: tile) else { return }
+            var visibility = DashboardCardVisibility(storedString: hiddenCards)
+            visibility.hidden.insert(card)
+            hiddenCards = visibility.storedString
         })
+    }
+
+    /// The widgets that have something to show now.
+    private var availableWidgets: Set<DashboardCardVisibility.Card> {
+        var cards = Set(DashboardCardVisibility.Card.allCases)
+        guard let review = viewModel.content?.review else { return cards }
+        if review.property == nil { cards.remove(.propertyMonth) }
+        if review.mortgages == nil { cards.remove(.mortgage) }
+        if review.tax == nil { cards.remove(.taxYear) }
+        if review.evidence == nil { cards.remove(.evidence) }
+        if review.importsWaiting == 0 { cards.remove(.importsWaiting) }
+        if viewModel.propertyWidgets.cashFlows.isEmpty { cards.remove(.tenancyCashFlow) }
+        if viewModel.propertyWidgets.returns.isEmpty { cards.remove(.propertyReturn) }
+        return cards
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                DashboardTitleRow(status: viewModel.content.map { DashboardStatus.make(freshness: $0.freshness, importsWaiting: $0.review.importsWaiting,
+                                                                                       staleBalances: $0.attention.staleBalanceCount) },
+                                  importCenter: importCenter, navigate: navigate)
                 if let error = viewModel.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
@@ -33,31 +53,46 @@ struct DashboardView: View {
                 if let content = viewModel.content {
                     let visibility = DashboardCardVisibility(storedString: hiddenCards)
                     let review = content.review
-                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, navigate: navigate)
                     // What the Dashboard showed before the review cards, first.
-                    let moneyIDs = [DashboardTile.netWorth, DashboardTile.currentMonth, DashboardTile.year, DashboardTile.yearChange,
-                                    DashboardTile.topCategories, DashboardTile.upcomingBills, DashboardTile.accounts]
-                    DashboardSection(section: .money, tiles: moneyIDs) {
-                        NetWorthTile(content: content, navigate: navigate).dashSlot(.money, DashboardTile.netWorth)
-                        CurrentMonthTile(month: content.currentMonth, navigate: navigate) {
-                            viewModel.clearCloseError()
-                            closeTarget = CloseMonthTarget(month: PayMonth(year: content.currentMonth.year, month: content.currentMonth.month))
+                    let moneyIDs = DashboardCardVisibility.Card.cards(in: .money).filter(visibility.shows).map(\.tileID)
+                    if !moneyIDs.isEmpty {
+                        DashboardSection(section: .money, tiles: moneyIDs) {
+                            if visibility.shows(.netWorth) { NetWorthTile(content: content, navigate: navigate).dashSlot(.money, DashboardTile.netWorth) }
+                            if visibility.shows(.currentMonth) {
+                                CurrentMonthTile(month: content.currentMonth, navigate: navigate) {
+                                    viewModel.clearCloseError()
+                                    closeTarget = CloseMonthTarget(month: PayMonth(year: content.currentMonth.year, month: content.currentMonth.month))
+                                }
+                                .dashSlot(.money, DashboardTile.currentMonth)
+                            }
+                            if visibility.shows(.year) { YearTile(viewModel: viewModel, content: content, navigate: navigate).dashSlot(.money, DashboardTile.year) }
+                            if visibility.shows(.yearChange) {
+                                YearChangeTile(changes: content.yearChanges, thisYear: MonthRange.components(of: content.today).year, navigate: navigate)
+                                    .dashSlot(.money, DashboardTile.yearChange)
+                            }
+                            if visibility.shows(.topCategories) {
+                                TopCategoriesTile(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
+                                    .dashSlot(.money, DashboardTile.topCategories)
+                            }
+                            if visibility.shows(.upcomingBills) { UpcomingBillsTile(bills: content.bills, navigate: navigate).dashSlot(.money, DashboardTile.upcomingBills) }
+                            if visibility.shows(.accounts) { AccountsTile(accounts: content.accounts, navigate: navigate).dashSlot(.money, DashboardTile.accounts) }
                         }
-                        .dashSlot(.money, DashboardTile.currentMonth)
-                        YearTile(viewModel: viewModel, content: content, navigate: navigate).dashSlot(.money, DashboardTile.year)
-                        YearChangeTile(changes: content.yearChanges, thisYear: MonthRange.components(of: content.today).year, navigate: navigate)
-                            .dashSlot(.money, DashboardTile.yearChange)
-                        TopCategoriesTile(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
-                            .dashSlot(.money, DashboardTile.topCategories)
-                        UpcomingBillsTile(bills: content.bills, navigate: navigate).dashSlot(.money, DashboardTile.upcomingBills)
-                        AccountsTile(accounts: content.accounts, navigate: navigate).dashSlot(.money, DashboardTile.accounts)
                     }
                     let propertyRows = review.property.flatMap { visibility.shows(.propertyMonth) ? $0 : nil }
                     let mortgages = review.mortgages.flatMap { visibility.shows(.mortgage) ? $0 : nil } ?? []
-                    if propertyRows != nil || !mortgages.isEmpty {
-                        let ids = (propertyRows != nil ? [DashboardTile.propertyMonth] : []) + mortgages.map { DashboardTile.mortgage($0.propertyName) }
+                    let cashFlows = visibility.shows(.tenancyCashFlow) ? viewModel.propertyWidgets.cashFlows : []
+                    let returns = visibility.shows(.propertyReturn) ? viewModel.propertyWidgets.returns : []
+                    if propertyRows != nil || !mortgages.isEmpty || !cashFlows.isEmpty || !returns.isEmpty {
+                        let ids = (propertyRows != nil ? [DashboardTile.propertyMonth] : []) + cashFlows.map { DashboardTile.tenancyCashFlow($0.propertyName) }
+                            + returns.map { DashboardTile.propertyReturn($0.propertyName) } + mortgages.map { DashboardTile.mortgage($0.propertyName) }
                         DashboardSection(section: .property, tiles: ids) {
                             if let rows = propertyRows { PropertyMonthTile(rows: rows, navigate: navigate).dashSlot(.property, DashboardTile.propertyMonth) }
+                            ForEach(cashFlows) { flow in
+                                TenancyCashFlowTile(flow: flow, navigate: navigate).dashSlot(.property, DashboardTile.tenancyCashFlow(flow.propertyName))
+                            }
+                            ForEach(returns) { result in
+                                PropertyReturnTile(result: result, navigate: navigate).dashSlot(.property, DashboardTile.propertyReturn(result.propertyName))
+                            }
                             ForEach(mortgages, id: \.propertyName) { mortgage in
                                 MortgageTile(mortgage: mortgage, today: content.today, navigate: navigate)
                                     .dashSlot(.property, DashboardTile.mortgage(mortgage.propertyName))
@@ -66,15 +101,21 @@ struct DashboardView: View {
                     }
                     let taxTax = review.tax.flatMap { visibility.shows(.taxYear) ? $0 : nil }
                     let taxEvidence = review.evidence.flatMap { visibility.shows(.evidence) ? $0 : nil }
+                    let showsImports = review.importsWaiting > 0 && visibility.shows(.importsWaiting)
+                    let showsAttention = visibility.shows(.attention)
                     let taxIDs = (taxTax != nil ? [DashboardTile.taxYear] : []) + (taxEvidence != nil ? [DashboardTile.evidence] : [])
-                        + (review.importsWaiting > 0 ? [DashboardTile.importsWaiting] : []) + [DashboardTile.attention]
+                        + (showsImports ? [DashboardTile.importsWaiting] : []) + (showsAttention ? [DashboardTile.attention] : [])
+                    if !taxIDs.isEmpty {
                     DashboardSection(section: .tax, tiles: taxIDs) {
                         if let tax = taxTax { TaxYearTile(tax: tax, navigate: navigate).dashSlot(.tax, DashboardTile.taxYear) }
                         if let evidence = taxEvidence { EvidenceTile(evidence: evidence, navigate: navigate).dashSlot(.tax, DashboardTile.evidence) }
-                        if review.importsWaiting > 0 {
+                        if showsImports {
                             ImportsWaitingTile(count: review.importsWaiting, navigate: navigate).dashSlot(.tax, DashboardTile.importsWaiting)
                         }
-                        AttentionTile(items: content.attention, extra: review.attention, navigate: navigate).dashSlot(.tax, DashboardTile.attention)
+                        if showsAttention {
+                            AttentionTile(items: content.attention, extra: review.attention, navigate: navigate).dashSlot(.tax, DashboardTile.attention)
+                        }
+                    }
                     }
                 } else if viewModel.errorMessage == nil {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 200)
@@ -85,14 +126,9 @@ struct DashboardView: View {
         .environment(\.dashboardLayoutContext, layoutContext)
         .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Reset layout") { storedLayout = "" }
-                        .disabled(DashboardLayout(storedString: storedLayout).isDefault)
-                } label: {
-                    Label("Layout", systemImage: "rectangle.3.group")
-                }
-                .help("Drag the gaps between tiles to resize them. Reset layout puts every tile back")
+                DashboardWidgetsButton(available: availableWidgets, hiddenCards: $hiddenCards, storedLayout: $storedLayout)
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .onDisappear { viewModel.markVisited() }
         .sheet(item: $closeTarget, onDismiss: { viewModel.clearCloseError() }) { target in

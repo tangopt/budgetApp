@@ -1,20 +1,51 @@
 import Foundation
 
-/// Which of the Mac Dashboard's four review cards (step 12) this device shows. A per-device setting kept in
-/// `UserDefaults` under `storageKey` (never synced); everything shows until a card is hidden. The legacy cards
-/// (net worth, the year, the month, bills, accounts) are not part of it.
+/// Which of the Mac Dashboard's widgets this device shows. A per-device setting kept in `UserDefaults` under
+/// `storageKey` (never synced); everything shows until a widget is hidden (a widget with nothing to show, such as the
+/// property ones without a property, is simply not drawn whatever this says).
 public struct DashboardCardVisibility: Equatable, Sendable {
     public enum Card: String, CaseIterable, Sendable {
-        case taxYear, propertyMonth, evidence, mortgage
+        case netWorth, currentMonth, year, yearChange, topCategories, upcomingBills, accounts
+        case propertyMonth, tenancyCashFlow, propertyReturn, mortgage
+        case taxYear, evidence, importsWaiting, attention
 
         public var title: String {
             switch self {
             case .taxYear: return "Tax year position"
-            case .propertyMonth: return "Property month"
-            case .evidence: return "Evidence and documents"
             case .mortgage: return "Mortgage"
+            case .tenancyCashFlow: return "Tenancy cash flow by month"
+            case .propertyReturn: return "Property return for the year"
+            default: return DashboardTile.title(tileID)
             }
         }
+
+        /// The tile's id in a saved layout (a property's tiles are `mortgage:<property>` and so on; this is the prefix).
+        public var tileID: String { rawValue }
+
+        /// The Dashboard section the widget is in.
+        public var section: DashboardLayout.Section {
+            switch self {
+            case .netWorth, .currentMonth, .year, .yearChange, .topCategories, .upcomingBills, .accounts: return .money
+            case .propertyMonth, .tenancyCashFlow, .propertyReturn, .mortgage: return .property
+            case .taxYear, .evidence, .importsWaiting, .attention: return .tax
+            }
+        }
+
+        /// The widget a tile id (`DashboardTile`) belongs to.
+        public init?(tileID: String) {
+            if let prefix = tileID.firstIndex(of: ":") {
+                switch tileID[..<prefix] {
+                case "mortgage": self = .mortgage
+                case "tenancyCashFlow": self = .tenancyCashFlow
+                case "propertyReturn": self = .propertyReturn
+                default: return nil
+                }
+                return
+            }
+            self.init(rawValue: tileID)
+        }
+
+        public static func cards(in section: DashboardLayout.Section) -> [Card] { allCases.filter { $0.section == section } }
     }
 
     public static let storageKey = "dashboardHiddenCards"

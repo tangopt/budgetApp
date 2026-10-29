@@ -142,18 +142,6 @@ final class SettingsNavigation: ObservableObject {
 /// System / Light / Dark (moved from the sidebar). `ThemedRoot` applies the choice.
 private struct AppearanceSettings: View {
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
-    @AppStorage(DashboardCardVisibility.storageKey) private var hiddenCards = ""
-
-    /// A card's switch: on while the Dashboard shows it; kept on this Mac only.
-    private func shown(_ card: DashboardCardVisibility.Card) -> Binding<Bool> {
-        Binding(
-            get: { DashboardCardVisibility(storedString: hiddenCards).shows(card) },
-            set: { isOn in
-                var visibility = DashboardCardVisibility(storedString: hiddenCards)
-                if isOn { visibility.hidden.remove(card) } else { visibility.hidden.insert(card) }
-                hiddenCards = visibility.storedString
-            })
-    }
 
     var body: some View {
         Form {
@@ -167,19 +155,6 @@ private struct AppearanceSettings: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            GroupBox("Dashboard cards") {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(DashboardCardVisibility.Card.allCases, id: \.self) { card in
-                        Toggle(card.title, isOn: shown(card))
-                    }
-                    Text("Shown on the Dashboard of this Mac only. The net worth, year, month and bills cards always show.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 8)

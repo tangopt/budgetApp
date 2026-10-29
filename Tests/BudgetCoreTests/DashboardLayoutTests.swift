@@ -137,6 +137,72 @@ final class DashboardLayoutTests: XCTestCase {
         XCTAssertEqual(split.rows(.money, natural: money)[1].tiles, [DashboardTile.netWorth])
     }
 
+    func testDroppingATileWithinIntoAndBetweenRows() {
+        // Default Money rows: [netWorth, currentMonth], [year, yearChange], [topCategories, upcomingBills, accounts].
+        var layout = L()
+        // Within the row: before the first tile; the places keep their widths.
+        layout.setFractions([0.7, 0.3], row: 0, in: .money, natural: money)
+        layout.move(tile: DashboardTile.currentMonth, to: .row(0, at: 0), in: .money, natural: money)
+        var rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles, [DashboardTile.currentMonth, DashboardTile.netWorth])
+        XCTAssertEqual(rows[0].fractions[0], 0.7, accuracy: 1e-9)
+        // Dropped where it already is (before itself / after itself): nothing changes.
+        XCTAssertFalse(layout.canMove(DashboardTile.currentMonth, to: .row(0, at: 0), in: .money, natural: money))
+        XCTAssertFalse(layout.canMove(DashboardTile.currentMonth, to: .row(0, at: 1), in: .money, natural: money))
+        XCTAssertTrue(layout.canMove(DashboardTile.currentMonth, to: .row(0, at: 2), in: .money, natural: money))
+        // Into another row: an equal share, the others make room, the row it left closes up when emptied.
+        layout.move(tile: DashboardTile.accounts, to: .row(0, at: 1), in: .money, natural: money)
+        rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles, [DashboardTile.currentMonth, DashboardTile.accounts, DashboardTile.netWorth])
+        XCTAssertEqual(rows[0].fractions.reduce(0, +), 1, accuracy: 1e-9)
+        XCTAssertEqual(rows[0].fractions[1], 1.0 / 3, accuracy: 1e-3)
+        XCTAssertEqual(rows[2].tiles, [DashboardTile.topCategories, DashboardTile.upcomingBills])
+        XCTAssertEqual(rows[2].fractions.reduce(0, +), 1, accuracy: 1e-9)
+        // Into a new row: below the last, above the first, and between.
+        layout.move(tile: DashboardTile.netWorth, to: .newRow(at: 3), in: .money, natural: money)
+        rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows.map(\.tiles), [[DashboardTile.currentMonth, DashboardTile.accounts], [DashboardTile.year, DashboardTile.yearChange],
+                                          [DashboardTile.topCategories, DashboardTile.upcomingBills], [DashboardTile.netWorth]])
+        XCTAssertEqual(rows[3].fractions, [1])
+        XCTAssertEqual(rows[3].height, 184)
+        layout.move(tile: DashboardTile.year, to: .newRow(at: 0), in: .money, natural: money)
+        rows = layout.rows(.money, natural: money)
+        XCTAssertEqual(rows[0].tiles, [DashboardTile.year])
+        XCTAssertEqual(rows[1].tiles, [DashboardTile.currentMonth, DashboardTile.accounts])
+        XCTAssertEqual(rows[2].tiles, [DashboardTile.yearChange])
+        // A lone tile dropped into a new row at its own place changes nothing; to another place it moves its row.
+        XCTAssertFalse(layout.canMove(DashboardTile.year, to: .newRow(at: 0), in: .money, natural: money))
+        XCTAssertFalse(layout.canMove(DashboardTile.year, to: .newRow(at: 1), in: .money, natural: money))
+        layout.move(tile: DashboardTile.year, to: .newRow(at: 3), in: .money, natural: money)
+        XCTAssertEqual(layout.rows(.money, natural: money).map(\.tiles).prefix(3).map { $0 }, [[DashboardTile.currentMonth, DashboardTile.accounts], [DashboardTile.yearChange], [DashboardTile.year]])
+        // Garbage targets and unknown tiles are ignored; a no-op leaves a default layout default.
+        var untouched = L()
+        untouched.move(tile: DashboardTile.accounts, to: .row(9, at: 0), in: .money, natural: money)
+        untouched.move(tile: "nope", to: .newRow(at: 0), in: .money, natural: money)
+        untouched.move(tile: DashboardTile.netWorth, to: .row(0, at: 0), in: .money, natural: money)
+        XCTAssertTrue(untouched.isDefault)
+        // The moved layout survives saving.
+        XCTAssertEqual(L(storedString: layout.storedString).rows(.money, natural: money), layout.rows(.money, natural: money))
+    }
+
+    func testDropTargetFollowsThePointer() {
+        let rows = L().rows(.money, natural: money) // 3 rows: 184, 184, 164 pt, 12 pt apart; width 600
+        let width = 600.0
+        func target(_ x: Double, _ y: Double) -> L.Drop? { L.dropTarget(x: x, y: y, rows: rows, width: width) }
+        XCTAssertNil(L.dropTarget(x: 10, y: 10, rows: [], width: width))
+        XCTAssertEqual(target(100, 2), .newRow(at: 0))
+        XCTAssertEqual(target(100, 90), .row(0, at: 0))      // left of netWorth's middle
+        XCTAssertEqual(target(590, 90), .row(0, at: 2))      // right of both
+        XCTAssertEqual(target(300, 90), .row(0, at: 1))      // between the two middles (netWorth is 2/3 wide: middle 195)
+        XCTAssertEqual(target(100, 190), .newRow(at: 1))     // in the gap under row 0
+        XCTAssertEqual(target(100, 182), .newRow(at: 1))     // its zone reaches into the row
+        XCTAssertEqual(target(100, 202), .newRow(at: 1))     // and into the next
+        XCTAssertEqual(target(100, 260), .row(1, at: 0))
+        XCTAssertEqual(target(100, 4 + 184 + 12 + 184 + 12 + 160), .newRow(at: 3)) // the bottom edge of the last row
+        XCTAssertEqual(target(100, 2000), .newRow(at: 3))
+        XCTAssertEqual(target(590, 2 + 184 + 12 + 184 + 12 + 60), .row(2, at: 3))
+    }
+
     func testResetRestoresDefault() {
         var layout = L()
         layout.setHeight(300, row: 0, in: .money, natural: money)

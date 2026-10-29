@@ -485,6 +485,7 @@ private struct DocumentsOverview: View {
                                 .accessibilityLabel("Undo the link of \(row.documentName) to \(row.paymentText)")
                             Button { viewModel.dismissAutoLinks([row.pair]) } label: { Image(systemName: "xmark") }
                                 .buttonStyle(.borderless)
+                                .help("Dismiss")
                                 .accessibilityLabel("Dismiss \(row.documentName)")
                         }
                         .font(.callout)
