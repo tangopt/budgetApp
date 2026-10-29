@@ -105,7 +105,7 @@ through `mangoFont`, spacing is `PadSpacing` (shared with the iPhone), component
 | text | #1B1A17 | #F3F0EA | primary text, figures |
 | text-secondary | #5E5A52 (6.6:1) | #B9B3A9 | detail lines, labels |
 | text-tertiary | #736E66 (4.9:1) | #9C968C | placeholders, disabled hints |
-| accent | #B4530A (5.0:1) | #FFA45C | primary buttons, selection bar, links |
+| accent | #B2520A (5.1:1) | #FFA45C | primary buttons, selection bar, links |
 | accent-tint | #FCE9D6 (text #8A4006) | #3A2614 (text #FFC58F) | selected rows, pickers, "to do" |
 | income | #1D7A3A | #5BD48A | money in |
 | expense | #B3261E | #FF8A80 | money out, over plan |
@@ -176,6 +176,186 @@ text anywhere, widgets included.
   tab; avatar button top-right on Home opens "Me" (tools and settings). iPad sidebar of 11 in three groups, badges for
   work waiting (This month, Documents), collapsible rail, footer = avatar, name, sync, Settings.
 
+### 3.5 Themes (six theme sets)
+
+A **theme set** replaces today's two separate pickers (15 colour themes in `PhoneTheme`/`ThemePalette`, 13 faces in `FontCatalog`). One choice sets the colour palette (light and dark, filling every role in 3.1) and the font pairing together. Six sets, no more. System / Light / Dark stays a separate Appearance control; every set has both a light and a dark palette.
+
+| Set | Intent | Display (headings) | Body | Figures (tabular) | Accent light / dark |
+|---|---|---|---|---|---|
+| **Mango** (default) | Warm: mango-orange accent on cream, deep warm dark. Default for new installs. | SF Pro Rounded | SF Pro | SF Pro (tabular) | #B2520A / #FFA45C |
+| **Classic** | Today's iOS look: system blue on grouped greys. | SF Pro | SF Pro | SF Pro (tabular) | #0A5FD0 / #4DA3FF |
+| **Editorial** | Paper and ink with a deep red accent; serif headings. | New York | SF Pro | SF Pro (tabular) | #8E1B22 / #F0837C |
+| **Clear** | Maximum legibility: highest contrast, blue-black accent, visible borders. | Atkinson Hyperlegible | Atkinson Hyperlegible | Atkinson Hyperlegible (tabular digits are in the file) | #0A2472 / #9DBBFF |
+| **Studio** | Graphite, dark-first, lime accent in dark and teal in light; mono figures. | IBM Plex Sans | IBM Plex Sans | IBM Plex Mono | #00695C / #C6F24E |
+| **Calm** | Sage green on soft greys; round humanist type. | Manrope | Source Sans 3 | SF Pro (tabular) | #3A6849 / #8CC4A0 |
+
+Font roles map onto `mangoFont`: **display** = largeTitle, title2, title3, headline and the sidebar brand; **body** = body, subheadline, footnote, caption, buttons, pills; **figure** = everything with the `.figure` modifier (figureXL, figureL, table cells, pills carrying amounts). `PhoneFont` stays as the file/registration catalogue but the 13-face picker, its Settings section and the per-user font key go; only the six faces used here are registered (SF Pro, SF Pro Rounded and New York are system; Atkinson Hyperlegible, IBM Plex Sans, IBM Plex Mono, Manrope and Source Sans 3 are already bundled; Inter, Public Sans, DM Sans, Lexend and Source Serif 4 can be dropped from the bundle and the licences list). All six figure faces have tabular digits (`hasTabularDigits` is true for each), so no system fallback is needed; if a future face lacks them the figure role falls back to SF Pro tabular.
+
+**Mango**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F4F2EE | #121110 |
+| surface | #FFFFFF | #1E1C1A |
+| surface-2 | #F8F6F2 | #282522 |
+| separator | #E6E2DA | #3A3632 |
+| text | #1B1A17 (17.4:1) | #F3F0EA (14.9:1) |
+| text-secondary | #5E5A52 (6.9:1) | #B9B3A9 (8.2:1) |
+| text-tertiary | #736E66 (5.1:1) | #9C968C (5.8:1) |
+| accent | #B2520A (5.1:1) | #FFA45C (8.7:1) |
+| on-accent (button label) | #FFFFFF | #121110 |
+| accent-tint | #FCE9D6 | #3A2614 |
+| accent-tint text | #8A4006 | #FFC58F |
+| income | #1D7A3A | #5BD48A |
+| expense | #B3261E | #FF8A80 |
+| transfer | #2F5BC8 | #8EAEFF |
+| pending | #8A5A00 | #F2C14E |
+| done / waiting / problem pills (text on tint) | #1D7A3A on #E4EFE7 / #8A5A00 on #F1EBE0 / #B3261E on #F6E5E4 | #5BD48A on #293D2E / #F2C14E on #443A23 / #FF8A80 on #47302C |
+
+**Classic**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F2F2F7 | #000000 |
+| surface | #FFFFFF | #1C1C1E |
+| surface-2 | #EDEDF2 | #2C2C2E |
+| separator | #D1D1D6 | #38383A |
+| text | #000000 (21.0:1) | #FFFFFF (17.0:1) |
+| text-secondary | #58585D (7.1:1) | #AEAEB2 (7.7:1) |
+| text-tertiary | #6B6B6F (5.3:1) | #939397 (5.6:1) |
+| accent | #0A5FD0 (5.9:1) | #4DA3FF (6.5:1) |
+| on-accent (button label) | #FFFFFF | #000000 |
+| accent-tint | #DCE9FC | #10294D |
+| accent-tint text | #0A4AA0 | #A9CFFF |
+| income | #207A35 | #4CD97B |
+| expense | #AB1F15 | #FF6B63 |
+| transfer | #6B3FC0 | #B49BFF |
+| pending | #8F5600 | #FFC947 |
+| done / waiting / problem pills (text on tint) | #207A35 on #E4EFE7 / #8F5600 on #F2EBE0 / #AB1F15 on #F5E4E3 | #4CD97B on #253E2F / #FFC947 on #453B25 / #FF6B63 on #452A2A |
+
+**Editorial**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F6F1E7 | #15120F |
+| surface | #FFFDF8 | #1F1B17 |
+| surface-2 | #F0EADD | #2A251F |
+| separator | #DDD4C2 | #3D362D |
+| text | #1A1714 (17.6:1) | #F1EBDF (14.4:1) |
+| text-secondary | #57514A (7.7:1) | #BDB4A5 (8.3:1) |
+| text-tertiary | #6B645A (5.7:1) | #9A9283 (5.6:1) |
+| accent | #8E1B22 (8.9:1) | #F0837C (6.7:1) |
+| on-accent (button label) | #FFFFFF | #15120F |
+| accent-tint | #F6DEDC | #3B1B1A |
+| accent-tint text | #721218 | #FFB4AE |
+| income | #247840 | #6FD493 |
+| expense | #B03618 | #FF9A6B |
+| transfer | #2F4F9A | #9DB6F2 |
+| pending | #85540A | #E9BC55 |
+| done / waiting / problem pills (text on tint) | #247840 on #E5EFE8 / #85540A on #F0EAE2 / #B03618 on #F6E7E3 | #6FD493 on #2D3C2D / #E9BC55 on #433822 / #FF9A6B on #473226 |
+
+**Clear**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F3F5F8 | #05070D |
+| surface | #FFFFFF | #0F141F |
+| surface-2 | #E8ECF2 | #1A2130 |
+| separator | #737E92 | #7C879B |
+| text | #0B1020 (18.9:1) | #FFFFFF (18.4:1) |
+| text-secondary | #2F3747 (11.9:1) | #D5DBE6 (13.2:1) |
+| text-tertiary | #4B5565 (7.5:1) | #AEB8C8 (9.2:1) |
+| accent | #0A2472 (13.9:1) | #9DBBFF (9.6:1) |
+| on-accent (button label) | #FFFFFF | #05070D |
+| accent-tint | #D9E3FA | #1B2B58 |
+| accent-tint text | #0A2472 | #D2E0FF |
+| income | #12742F | #6BE59A |
+| expense | #98001B | #FF8080 |
+| transfer | #5B2E9E | #C9ADFF |
+| pending | #7A4A00 | #FFD166 |
+| done / waiting / problem pills (text on tint) | #12742F on #E3EEE6 / #7A4A00 on #EFE9E0 / #98001B on #F3E0E4 | #6BE59A on #203A35 / #FFD166 on #3A362C / #FF8080 on #3A2730 |
+
+**Studio**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #EDF0F1 | #0E1012 |
+| surface | #FFFFFF | #171A1D |
+| surface-2 | #E3E8EA | #20252A |
+| separator | #CBD2D6 | #323941 |
+| text | #14181B (17.9:1) | #ECEFF1 (15.1:1) |
+| text-secondary | #4A545B (7.7:1) | #B0B8BF (8.7:1) |
+| text-tertiary | #5D6971 (5.6:1) | #8C959D (5.7:1) |
+| accent | #00695C (6.6:1) | #C6F24E (13.5:1) |
+| on-accent (button label) | #FFFFFF | #0E1012 |
+| accent-tint | #D3EEE8 | #1F2C10 |
+| accent-tint text | #00473E | #D9F78F |
+| income | #1B773C | #5FE0A8 |
+| expense | #A8231A | #FF8579 |
+| transfer | #3556B8 | #8FB0FF |
+| pending | #855300 | #FFC857 |
+| done / waiting / problem pills (text on tint) | #1B773C on #E4EFE8 / #855300 on #F0EAE0 / #A8231A on #F5E5E4 | #5FE0A8 on #243E36 / #FFC857 on #413927 / #FF8579 on #412D2E |
+
+**Calm**
+
+| Role | Light | Dark |
+|---|---|---|
+| bg | #F1F4F0 | #141815 |
+| surface | #FBFCFA | #1D221E |
+| surface-2 | #E7ECE5 | #272E29 |
+| separator | #D6DDD3 | #38413A |
+| text | #232A25 (14.3:1) | #E8EDE8 (13.6:1) |
+| text-secondary | #505B54 (6.9:1) | #B4BEB6 (8.4:1) |
+| text-tertiary | #606C66 (5.3:1) | #929D94 (5.7:1) |
+| accent | #3A6849 (6.3:1) | #8CC4A0 (8.1:1) |
+| on-accent (button label) | #FFFFFF | #141815 |
+| accent-tint | #DDEBDF | #243428 |
+| accent-tint text | #2A4A37 | #B5E0C3 |
+| income | #25793F | #72D894 |
+| expense | #A32B21 | #F59388 |
+| transfer | #42609C | #9AB4E8 |
+| pending | #80560A | #E8BF63 |
+| done / waiting / problem pills (text on tint) | #25793F on #E5EFE8 / #80560A on #F0EBE2 / #A32B21 on #F4E6E4 | #72D894 on #2C4333 / #E8BF63 on #423E2A / #F59388 on #443631 |
+
+Tints for the status pills are derived, not hand-picked: tint = the status colour mixed 12% (light) or 18% (dark) into the surface, and the pill text is the status colour nudged toward black/white until it reaches 4.5:1 on that tint. The roles `done`/`waiting`/`problem`/`sent` come from income/pending/expense/transfer.
+
+**Contrast rules and checks (all six sets, light and dark; computed, not eyeballed):**
+
+- text, text-secondary, text-tertiary reach 4.5:1 on `bg`, `surface` and `surface-2`. Lowest: text-tertiary 4.5:1 (Mango light, the 3.1 value kept), text-secondary 5.9:1 (Calm light), text 11.7:1. Calm's and Studio's tertiaries were nudged to clear `surface-2`, not just `surface`.
+- accent used as text or link is >= 4.5:1 on all three grounds (lowest 4.6:1, Mango light). **Refinement to 3.1:** Mango's light accent moves from #B4530A to #B2520A, because #B4530A is 4.49:1 on `bg`. On-accent button labels are >= 5.1:1 in every set.
+- income, expense, transfer and pending are >= 4.5:1 on `bg`, `surface` and `surface-2` in both modes (lowest 4.5:1: Calm light income). Accent-tint text is >= 6.3:1 on accent-tint; status pill text is >= 4.5:1 on its tint.
+- **Status never relies on hue alone.** Pills always carry a word and an icon (check, clock, exclamation, arrow); money carries a sign or a word. Lightness helps where contrast allows: in dark, expense is the darkest of income/expense/pending (relative luminance 0.33 to 0.45 against 0.51 to 0.68), so a red amount reads as a different grey from green and amber. In light, the 4.5:1 floor keeps all three between 0.07 and 0.14 luminance (expense darkest in Classic, Clear, Studio, Calm; Mango and Editorial are closer), so there the glyph, word and sign carry the meaning. A grayscale snapshot of Home and Bills & recharges in every set is part of acceptance.
+- Editorial keeps accent (#8E1B22) darker than expense (#B03618) so a red button never reads as an expense amount. Studio's lime accent (dark) and income green (#5FE0A8) are distinct in lightness (0.76 vs 0.59 relative luminance) and income always carries a sign.
+- Clear uses visible borders instead of tint steps: separator #737E92 light (3.7:1 on `bg`) and #7C879B dark (>= 3:1 on surfaces), 1 pt on every control and card.
+
+**Layout across all six sets.** The widest face is IBM Plex Mono for figures (digit advance 0.6 em; SF tabular is about 0.6 em as well, Atkinson and Manrope narrower), so Studio is the worst case and drives the rules:
+
+- Figure columns size from the data, not a constant: min width = `chars x 0.6 x size + 2 x padding`. Bills grid cell at 14 pt: `€48.91` = 6 chars = 50 pt + 16 pt padding = 66 pt, cell with the side panel open is about 84 pt, so it fits; a four-digit amount (`€1,234.56`, 76 pt + 16) does not, so the Bills grid shows 3 month columns instead of 4 when the widest figure in view needs more (ViewThatFits on column count, not shrinking text).
+- Hero figures (`figureXL` 34 pt) in Plex Mono: `£12,345.67` = 10 chars = 204 pt, fits the 358 pt phone tile and the 3-up iPad tile (about 250 pt inner).
+- Headings in New York, Manrope and Atkinson are up to 6% wider than SF: sidebar labels (248 pt column, 190 pt text area), page titles (one line at 34 pt up to 22 characters) and picker chips were checked; none needs a different layout. The wrap probe runs per set.
+- Rounded and serif display faces change only weight/width of headings; line heights come from the text style, not the face, so row heights (56 pt) and touch targets (44 pt) are unchanged.
+- Result: the one layout rule above (Bills grid columns follow the widest figure) is the only adjustment; it applies to Studio with large amounts and is harmless in the others.
+
+**Settings.** One section, "Theme", under the Appearance control (System / Light / Dark). It shows six preview cards (2 x 3 on iPhone, 3 x 2 on iPad): each card is rendered in its own palette and fonts, in the current appearance, with the name set in its display face, a figure in its figure face, an accent button chip and the font names in a 12 pt line; the selected card has a 2 pt accent ring and a check. The font section, "All 13 fonts" list and swatch row are removed. Cards are radio buttons (VoiceOver: "Editorial, serif headings, selected"), 88 pt tall, so touch targets are met. Widgets read the set from the shared app-group key.
+
+**Migration (one time at first launch of the new build; old keys are left in place so a rollback works).** Map by colour theme; the chosen font only decides when the colour theme is Classic (the neutral set):
+
+| Old colour theme | New set | Why |
+|---|---|---|
+| Classic | Classic | same look |
+| Ocean | Classic | blue accent, cool greys |
+| Ledger | Editorial | cream paper, ink, red/green ruling |
+| Sunset, Solarized, Sakura, Desert | Mango | warm grounds and warm accents |
+| Forest, Nord, Lavender, Mint | Calm | soft, cool or muted accents on quiet greys |
+| Dracula, Graphite, Midnight | Studio | dark graphite grounds; if the old theme was dark-only, Appearance is set to Dark once |
+| High Contrast | Clear | contrast is the point |
+
+Font tie-break when the colour theme was Classic: New York or Source Serif 4 -> Editorial; IBM Plex Sans or Plex Mono -> Studio; Atkinson Hyperlegible or Lexend -> Clear; Manrope, Source Sans 3 or Public Sans -> Calm; SF Pro Rounded -> Mango; SF Pro, Inter, DM Sans -> Classic. A fresh install gets Mango. The user keeps their System/Light/Dark choice.
+
+**Tests.** (1) Contrast test per set and mode over every pair above (extends the step 2 token test; 6 x 2 palettes). (2) Snapshot matrix: Home, Bills & recharges, Month and Settings on iPhone and iPad in all six sets, three in dark. (3) Wrap probe in all six sets at default and one larger Dynamic Type size. (4) Migration test: 15 colour themes x 13 fonts maps to exactly one set each. (5) Grayscale snapshot for status legibility.
+
+The canvas boards `Themes` (six sets side by side) and `Themes - Screens` (iPad Bills & recharges in all six, three in dark) show the result; `iPhone - Settings` shows the picker.
+
 ## 4. Information architecture
 
 | Job | iPhone | iPad | Removed / merged |
@@ -207,7 +387,7 @@ Each step keeps logic in BudgetCore, renders with the snapshot script, and check
 2. **Tokens and type** (M): add the roles to `PhoneTheme` (surface-2, separator, text tiers, accent-tint, status tints)
    with contrast tests per theme; add `.figure` to `mangoFont`; move `PadSpacing`/radii to the shared design system;
    neutral category discs (I2); widgets on `mangoFont` without scale factors (I13); lint for `.font(.system` on Text
-   and hard-coded `.red` (I14). Optional: a "Mango" theme.
+   and hard-coded `.red` (I14). The Mango theme arrives with the theme sets (step 8).
 3. **Shared components** (M): `PageHeader` + `ContextPicker` for iPhone and iPad (I4, I5); `ListRow` with selection
    state (I6); `Tile`; `StatusPill`; `StepCard`; `UpcomingList` (D1).
 4. **iPad sidebar and IA** (L): 14 → 11 items; Flat details with Money · Costs · Profile segments (D5, fix the
@@ -220,9 +400,16 @@ Each step keeps logic in BudgetCore, renders with the snapshot script, and check
    two-column salary form (I11).
 7. **Journeys polish** (S): Patricia's recharge flow end to end on iPad at all four sizes; Pablo's quick check on
    iPhone; evidence flow — each as a snapshot route sequence.
+8. **Theme sets** (L): replace the 15 colour themes and the 13-font picker with the six sets in 3.5 (`ThemeSet` = light and dark
+   `ThemeTokens` + a display/body/figure font pairing, resolved by `mangoFont`); one "Theme" picker with preview cards
+   in Settings (iPhone and iPad) next to the unchanged System/Light/Dark control; one-time migration from the old
+   colour theme and font keys; drop unused bundled faces and licences; contrast test over 6 x 2 palettes, snapshot
+   matrix in all sets, wrap probe per set, Bills grid columns sized from the widest figure. Large because it touches
+   every screen's look, widgets and the persisted settings; do it after step 2 (roles) and 3 (components) so it is
+   one palette swap, not a rewrite.
 
 ## 6. Canvas
 
-Pages: Design system (Main, Tokens, Components), iPhone (Home, Month, Accounts + transaction sheet, Search, Salary,
-Me/Settings, Widgets), iPad (Home, This month, Bills & recharges + panel, Tenancies, Documents + panel, Accounts +
+Pages: Design system (Main, Tokens, Components, Themes, Themes - Screens), iPhone (Home, Month, Accounts + transaction sheet, Search, Salary,
+Me/Settings with the Theme picker, Widgets), iPad (Home, This month, Bills & recharges + panel, Tenancies, Documents + panel, Accounts +
 panel, Calendar, Salary), Journeys (Patricia's monthly recharge, Pablo's quick check, tax-year evidence).
