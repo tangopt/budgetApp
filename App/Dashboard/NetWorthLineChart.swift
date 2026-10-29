@@ -53,11 +53,6 @@ struct NetWorthLineChart: View {
             RuleMark(x: .value("Today", today))
                 .foregroundStyle(Color.secondary)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                // At the rule's foot, inside the plot and left of it: above the plot it overran the tile header (and
-                // its link), and beside the line's last point it sat on the data.
-                .annotation(position: .overlay, alignment: .bottomTrailing, spacing: 2) {
-                    Text("Today").font(.caption2).foregroundStyle(.secondary).padding(.trailing, 3).padding(.bottom, 2)
-                }
             if let selected {
                 RuleMark(x: .value("Selected", selected.date))
                     .foregroundStyle(Color.secondary.opacity(0.5))
@@ -74,6 +69,18 @@ struct NetWorthLineChart: View {
         // Charts lay their labels out apart from the scroll view: no clip check on them.
         .wrapProbeInChart()
         .chartXSelection(value: $selectedDate)
+        // "Today" at the rule's foot, inside the plot and just left of the rule: above the plot it overran the tile
+        // header (and its link), and beside the line's last point it sat on the data.
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                if let x = proxy.position(forX: today), let frame = proxy.plotFrame {
+                    let plot = geometry[frame]
+                    Text("Today").font(.caption2).foregroundStyle(.secondary)
+                        .position(x: min(max(x - 20, plot.minX + 20), plot.maxX - 20), y: plot.maxY - 5)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
         // Room above the plot for the hover read-out, so it stays inside the chart instead of covering the tile header.
         .chartPlotStyle { $0.padding(.top, 30) }
         .chartXAxis {
