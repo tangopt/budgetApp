@@ -61,9 +61,8 @@ struct DashboardWidgetsList: View {
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
-                                    .disabled(!has)
                             }
-                            .help(has ? "Show or hide \(card.title)" : "\(card.title) has nothing to show yet")
+                            .help(has ? "Show or hide \(card.title)" : "\(card.title) has nothing to show yet; you can still show or hide it")
                         }
                     }
                 }

@@ -71,6 +71,8 @@ struct YearOverYearChart: View {
         // Charts lay their labels out apart from the scroll view: no clip check on them.
         .wrapProbeInChart()
         .chartXSelection(value: $selectedYear)
+        // Room above the plot for the bar labels / hover read-out, so they stay inside the chart, clear of the tile header.
+        .chartPlotStyle { $0.padding(.top, 16) }
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()

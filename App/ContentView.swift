@@ -404,7 +404,10 @@ struct ContentView: View {
         }
         // Someone else signed in: the screens show what they can see (`SharedActualsSource`), so the one on show
         // reads again; the others read on appearing.
-        .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in
+        // `$state` publishes before the new value is set (and before `SignedInActor.state` follows it), so a
+        // handler run at once would read the Dashboard as still signed out and leave its review cards empty:
+        // hop to the next main-queue turn.
+        .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates().receive(on: DispatchQueue.main)) { id in
             // Unlocked as the same person: the Dashboard read while locked (its review cards empty) reads again.
             guard id != shownForUserId else {
                 if selection == .dashboard { dashboardViewModel.load() }

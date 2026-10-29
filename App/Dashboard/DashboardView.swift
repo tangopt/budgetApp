@@ -78,15 +78,30 @@ struct DashboardView: View {
                             if visibility.shows(.accounts) { AccountsTile(accounts: content.accounts, navigate: navigate).dashSlot(.money, DashboardTile.accounts) }
                         }
                     }
-                    let propertyRows = review.property.flatMap { visibility.shows(.propertyMonth) ? $0 : nil }
-                    let mortgages = review.mortgages.flatMap { visibility.shows(.mortgage) ? $0 : nil } ?? []
-                    let cashFlows = visibility.shows(.tenancyCashFlow) ? viewModel.propertyWidgets.cashFlows : []
-                    let returns = visibility.shows(.propertyReturn) ? viewModel.propertyWidgets.returns : []
-                    if propertyRows != nil || !mortgages.isEmpty || !cashFlows.isEmpty || !returns.isEmpty {
-                        let ids = (propertyRows != nil ? [DashboardTile.propertyMonth] : []) + cashFlows.map { DashboardTile.tenancyCashFlow($0.propertyName) }
-                            + returns.map { DashboardTile.propertyReturn($0.propertyName) } + mortgages.map { DashboardTile.mortgage($0.propertyName) }
+                    // A widget that is switched on but has no data still shows, as a tile saying so.
+                    let showsPropertyMonth = visibility.shows(.propertyMonth)
+                    let showsMortgage = visibility.shows(.mortgage)
+                    let mortgages = showsMortgage ? (review.mortgages ?? []) : []
+                    let showsCashFlow = visibility.shows(.tenancyCashFlow)
+                    let cashFlows = showsCashFlow ? viewModel.propertyWidgets.cashFlows : []
+                    let showsReturn = visibility.shows(.propertyReturn)
+                    let returns = showsReturn ? viewModel.propertyWidgets.returns : []
+                    let emptyMortgage = showsMortgage && mortgages.isEmpty
+                    let emptyCashFlow = showsCashFlow && cashFlows.isEmpty
+                    let emptyReturn = showsReturn && returns.isEmpty
+                    if showsPropertyMonth || showsMortgage || showsCashFlow || showsReturn {
+                        let ids = (showsPropertyMonth ? [DashboardTile.propertyMonth] : [])
+                            + (emptyCashFlow ? [DashboardTile.tenancyCashFlow("")] : cashFlows.map { DashboardTile.tenancyCashFlow($0.propertyName) })
+                            + (emptyReturn ? [DashboardTile.propertyReturn("")] : returns.map { DashboardTile.propertyReturn($0.propertyName) })
+                            + (emptyMortgage ? [DashboardTile.mortgage("")] : mortgages.map { DashboardTile.mortgage($0.propertyName) })
                         DashboardSection(section: .property, tiles: ids) {
-                            if let rows = propertyRows { PropertyMonthTile(rows: rows, navigate: navigate).dashSlot(.property, DashboardTile.propertyMonth) }
+                            if showsPropertyMonth {
+                                if let rows = review.property { PropertyMonthTile(rows: rows, navigate: navigate).dashSlot(.property, DashboardTile.propertyMonth) }
+                                else { EmptyWidgetTile(title: "Property month").dashSlot(.property, DashboardTile.propertyMonth) }
+                            }
+                            if emptyCashFlow { EmptyWidgetTile(title: "Tenancy cash flow").dashSlot(.property, DashboardTile.tenancyCashFlow("")) }
+                            if emptyReturn { EmptyWidgetTile(title: "Property return").dashSlot(.property, DashboardTile.propertyReturn("")) }
+                            if emptyMortgage { EmptyWidgetTile(title: "Mortgage").dashSlot(.property, DashboardTile.mortgage("")) }
                             ForEach(cashFlows) { flow in
                                 TenancyCashFlowTile(flow: flow, navigate: navigate).dashSlot(.property, DashboardTile.tenancyCashFlow(flow.propertyName))
                             }
@@ -99,18 +114,25 @@ struct DashboardView: View {
                             }
                         }
                     }
-                    let taxTax = review.tax.flatMap { visibility.shows(.taxYear) ? $0 : nil }
-                    let taxEvidence = review.evidence.flatMap { visibility.shows(.evidence) ? $0 : nil }
-                    let showsImports = review.importsWaiting > 0 && visibility.shows(.importsWaiting)
+                    let showsTax = visibility.shows(.taxYear)
+                    let showsEvidence = visibility.shows(.evidence)
+                    let showsImports = visibility.shows(.importsWaiting)
                     let showsAttention = visibility.shows(.attention)
-                    let taxIDs = (taxTax != nil ? [DashboardTile.taxYear] : []) + (taxEvidence != nil ? [DashboardTile.evidence] : [])
+                    let taxIDs = (showsTax ? [DashboardTile.taxYear] : []) + (showsEvidence ? [DashboardTile.evidence] : [])
                         + (showsImports ? [DashboardTile.importsWaiting] : []) + (showsAttention ? [DashboardTile.attention] : [])
                     if !taxIDs.isEmpty {
                     DashboardSection(section: .tax, tiles: taxIDs) {
-                        if let tax = taxTax { TaxYearTile(tax: tax, navigate: navigate).dashSlot(.tax, DashboardTile.taxYear) }
-                        if let evidence = taxEvidence { EvidenceTile(evidence: evidence, navigate: navigate).dashSlot(.tax, DashboardTile.evidence) }
+                        if showsTax {
+                            if let tax = review.tax { TaxYearTile(tax: tax, navigate: navigate).dashSlot(.tax, DashboardTile.taxYear) }
+                            else { EmptyWidgetTile(title: "Tax year").dashSlot(.tax, DashboardTile.taxYear) }
+                        }
+                        if showsEvidence {
+                            if let evidence = review.evidence { EvidenceTile(evidence: evidence, navigate: navigate).dashSlot(.tax, DashboardTile.evidence) }
+                            else { EmptyWidgetTile(title: "Evidence and documents").dashSlot(.tax, DashboardTile.evidence) }
+                        }
                         if showsImports {
-                            ImportsWaitingTile(count: review.importsWaiting, navigate: navigate).dashSlot(.tax, DashboardTile.importsWaiting)
+                            if review.importsWaiting > 0 { ImportsWaitingTile(count: review.importsWaiting, navigate: navigate).dashSlot(.tax, DashboardTile.importsWaiting) }
+                            else { EmptyWidgetTile(title: "Imports waiting").dashSlot(.tax, DashboardTile.importsWaiting) }
                         }
                         if showsAttention {
                             AttentionTile(items: content.attention, extra: review.attention, navigate: navigate).dashSlot(.tax, DashboardTile.attention)

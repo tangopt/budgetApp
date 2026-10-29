@@ -53,8 +53,10 @@ struct NetWorthLineChart: View {
             RuleMark(x: .value("Today", today))
                 .foregroundStyle(Color.secondary)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .annotation(position: .top, alignment: .leading, spacing: 2) {
-                    Text("Today").font(.caption2).foregroundStyle(.secondary)
+                // At the rule's foot, inside the plot and left of it: above the plot it overran the tile header (and
+                // its link), and beside the line's last point it sat on the data.
+                .annotation(position: .overlay, alignment: .bottomTrailing, spacing: 2) {
+                    Text("Today").font(.caption2).foregroundStyle(.secondary).padding(.trailing, 3).padding(.bottom, 2)
                 }
             if let selected {
                 RuleMark(x: .value("Selected", selected.date))
@@ -72,6 +74,8 @@ struct NetWorthLineChart: View {
         // Charts lay their labels out apart from the scroll view: no clip check on them.
         .wrapProbeInChart()
         .chartXSelection(value: $selectedDate)
+        // Room above the plot for the hover read-out, so it stays inside the chart instead of covering the tile header.
+        .chartPlotStyle { $0.padding(.top, 30) }
         .chartXAxis {
             AxisMarks(values: .stride(by: .year)) { _ in
                 AxisGridLine()
