@@ -77,12 +77,15 @@ public enum TaxReturnComparison {
         }
 
         // Income, by source.
-        func employmentKeys(_ r: SelfAssessment.Result) -> [String] { r.inputs.employments.map(\.employerName) }
-        for name in union(employmentKeys(previous), employmentKeys(current)) {
-            let pe = previous.inputs.employments.first { $0.employerName == name }
-            let ce = current.inputs.employments.first { $0.employerName == name }
-            add("employment|\(name)", .income, name, previous: pe?.total ?? 0, current: ce?.total ?? 0, inPrevious: pe != nil, inCurrent: ce != nil,
-                why: sourceWhy(pe != nil, ce != nil, noun: "employment"))
+        // An employer is matched across the years by its name with the legal suffix and punctuation
+        // set aside ("Example Ltd" and "Example Limited" are one employer); it shows under this year's name.
+        func employmentKeys(_ r: SelfAssessment.Result) -> [String] { r.inputs.employments.map { employerKey($0.employerName) } }
+        for key in union(employmentKeys(previous), employmentKeys(current)) {
+            let pe = previous.inputs.employments.filter { employerKey($0.employerName) == key }
+            let ce = current.inputs.employments.filter { employerKey($0.employerName) == key }
+            let name = (ce.first ?? pe.first)?.employerName ?? key
+            add("employment|\(key)", .income, name, previous: pe.reduce(0) { $0 + $1.total }, current: ce.reduce(0) { $0 + $1.total },
+                inPrevious: !pe.isEmpty, inCurrent: !ce.isEmpty, why: sourceWhy(!pe.isEmpty, !ce.isEmpty, noun: "employment"))
         }
         func propertyKeys(_ r: SelfAssessment.Result) -> [String] { r.inputs.properties.map(\.name) }
         for name in union(propertyKeys(previous), propertyKeys(current)) {
@@ -197,6 +200,18 @@ public enum TaxReturnComparison {
             return sectionLines.isEmpty ? nil : Group(section: section, lines: sectionLines)
         }
         return Result(previousLabel: p, currentLabel: c, groups: groups)
+    }
+
+    /// An employer's name for matching: lower case, punctuation dropped, "limited" read as "ltd" and
+    /// "public limited company" as "plc", spaces collapsed.
+    static func employerKey(_ name: String) -> String {
+        var words = name.lowercased()
+            .map { $0.isLetter || $0.isNumber ? $0 : " " }
+            .reduce(into: "") { $0.append($1) }
+            .split(separator: " ").map(String.init)
+        if words.suffix(3) == ["public", "limited", "company"] { words.removeLast(3); words.append("plc") }
+        words = words.map { $0 == "limited" ? "ltd" : $0 }
+        return words.joined(separator: " ")
     }
 
     private static func union(_ a: [String], _ b: [String]) -> [String] {

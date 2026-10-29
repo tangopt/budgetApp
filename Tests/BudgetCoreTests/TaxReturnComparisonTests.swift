@@ -50,6 +50,24 @@ final class TaxReturnComparisonTests: XCTestCase {
         XCTAssertEqual(comparison.groups.map(\.section), TaxReturnComparison.Section.allCases)
     }
 
+    func testTheSameEmployerUnderLtdAndLimitedIsOneLine() throws {
+        let previous = result(2024, .init(
+            startYear: 2024,
+            employments: [.init(employerName: "Example Production Ltd", pay: pounds(40_000), taxDeducted: pounds(5_000))]))
+        let current = result(2025, .init(
+            startYear: 2025,
+            employments: [.init(employerName: "Example Production Limited", pay: pounds(42_000), taxDeducted: pounds(5_400))]))
+        let comparison = try XCTUnwrap(TaxReturnComparison.compare(previous: previous, current: current))
+        let employments = comparison.groups.flatMap(\.lines).filter { $0.id.contains("employment|") }
+        XCTAssertEqual(employments.count, 1)
+        let line = try XCTUnwrap(employments.first)
+        XCTAssertEqual(line.label, "Example Production Limited")
+        XCTAssertTrue(line.inPrevious && line.inCurrent)
+        XCTAssertNil(line.why)
+        XCTAssertEqual(line.difference, pounds(2_000))
+        XCTAssertEqual(TaxReturnComparison.employerKey("Example, Co. Public Limited Company"), TaxReturnComparison.employerKey("Example Co PLC"))
+    }
+
     func testMissingSourceAndTaxFigures() throws {
         let previous = result(2024, .init(
             startYear: 2024,
