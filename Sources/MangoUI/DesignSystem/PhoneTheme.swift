@@ -6,43 +6,102 @@ import UIKit
 import AppKit
 #endif
 
-/// A `ThemeCatalog` theme as the phone draws it: the tokens the phone uses, each a `Color` that resolves to the
-/// theme's light or dark value by the trait collection (iPhone spec §4: the same 15 themes as the Mac). Classic's
-/// tokens are system colours and are drawn as the iOS system colours (`Color.green`, the grouped backgrounds), so
-/// Classic looks like a stock iOS app. Read it with `@Environment(\.phoneTheme)`.
+/// A `ThemeCatalog` theme as the phone draws it: its colour roles (`ThemeRoles`, design review 2026-10-28 §3.1), each
+/// a `Color` that resolves to the theme's light or dark value by the trait collection (iPhone spec §4: the same 15
+/// themes as the Mac). Classic's grounds and text are system colours and are drawn as the iOS system colours (the
+/// grouped backgrounds, the label colour), so Classic looks like a stock iOS app; its accent and money colours are
+/// darkened in light mode, where the system's are under 4.5:1. Read it with `@Environment(\.phoneTheme)`.
 public struct PhoneTheme: Identifiable, Sendable {
     public let palette: ThemePalette
     public var id: String { palette.id }
     public var name: String { palette.name }
+    /// The roles' values, light and dark, for the contrast maths.
+    public let lightRoles: ThemeRoles
+    public let darkRoles: ThemeRoles
 
-    public let accent: Color
+    // Grounds.
     /// Behind a screen's cards.
     public let background: Color
-    /// A card's fill.
+    /// A card's fill: cards, panels, rows.
     public let surface: Color
+    /// Inside a card: tiles, category discs, thumbnails.
+    public let surface2: Color
+    /// Hairlines.
+    public let separator: Color
+
+    // Text.
+    /// Primary text and figures.
+    public let text: Color
+    /// Detail lines and labels (≥ 4.5:1, unlike the system's `.secondary`).
+    public let textSecondary: Color
+    /// Placeholders and disabled hints.
+    public let textTertiary: Color
+
+    // Accent.
+    /// Primary buttons, the selection bar, links, the controls' tint.
+    public let accent: Color
+    /// A label on an accent fill.
+    public let onAccent: Color
+    /// Selected rows, pickers, "to do".
+    public let accentTint: Color
+    /// Text on `accentTint`.
+    public let accentTintText: Color
+
+    // Status.
     public let income: Color
     public let expense: Color
     public let transfer: Color
     /// Amber: offline, pending, what limits the data.
     public let pending: Color
+    /// Needs attention but isn't wrong: over pace, a missing document, a notice.
+    public let warning: Color
+    public let incomeTint: Color
+    public let expenseTint: Color
+    public let transferTint: Color
+    public let pendingTint: Color
+    public let warningTint: Color
     public let neutralMoney: Color
 
+    /// The palette's theme with the roles derived from it.
     public init(_ palette: ThemePalette) {
+        self.init(palette, light: palette.roles(.light), dark: palette.roles(.dark))
+    }
+
+    /// A theme from explicit roles (the theme sets, step 8, fill them directly).
+    public init(_ palette: ThemePalette, light: ThemeRoles, dark: ThemeRoles) {
         self.palette = palette
-        let light = palette.light, dark = palette.dark
-        func color(_ token: KeyPath<ThemeTokens, ThemeColor>) -> Color {
-            Self.color(light: light[keyPath: token], dark: dark[keyPath: token])
+        lightRoles = light
+        darkRoles = dark
+        func color(_ role: KeyPath<ThemeRoles, ThemeColor>) -> Color {
+            Self.color(light: light[keyPath: role], dark: dark[keyPath: role])
         }
-        accent = color(\.accent)
-        // Classic has no background of its own (clear): the system's grouped background.
-        let clearBackground = light.windowBackground.alpha == 0 && dark.windowBackground.alpha == 0
-        background = clearBackground ? Self.systemBackground(.windowBackground) : color(\.windowBackground)
+        background = color(\.background)
         surface = color(\.surface)
-        income = Self.color(light: Self.incomeToken(palette, .light), dark: Self.incomeToken(palette, .dark))
-        expense = Self.color(light: Self.expenseToken(palette, .light), dark: Self.expenseToken(palette, .dark))
+        surface2 = color(\.surface2)
+        separator = color(\.separator)
+        text = color(\.text)
+        textSecondary = color(\.textSecondary)
+        textTertiary = color(\.textTertiary)
+        accent = color(\.accent)
+        onAccent = color(\.onAccent)
+        accentTint = color(\.accentTint)
+        accentTintText = color(\.accentTintText)
+        income = color(\.income)
+        expense = color(\.expense)
         transfer = color(\.transfer)
         pending = color(\.pending)
-        neutralMoney = color(\.neutralMoney)
+        warning = color(\.warning)
+        incomeTint = color(\.incomeTint)
+        expenseTint = color(\.expenseTint)
+        transferTint = color(\.transferTint)
+        pendingTint = color(\.pendingTint)
+        warningTint = color(\.warningTint)
+        neutralMoney = Self.color(light: palette.light.neutralMoney, dark: palette.dark.neutralMoney)
+    }
+
+    /// The roles for a variant.
+    public func roles(_ variant: ThemeVariant) -> ThemeRoles {
+        variant == .light ? lightRoles : darkRoles
     }
 
     /// The colour an amount of this tone is drawn in.
@@ -53,43 +112,6 @@ public struct PhoneTheme: Identifiable, Sendable {
         case .transfer: transfer
         case .neutral: neutralMoney
         }
-    }
-
-    // MARK: Legible money colours
-
-    /// The smallest contrast an income or expense figure keeps against a card in light mode (rulings: income, Task 6
-    /// fix round 1; expense, Task 7).
-    public static let minimumLightMoneyContrast = 4.5
-
-    /// A card's colour, opaque: the surface over the screen background over white (light) or black (dark).
-    public static func opaqueSurface(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
-        let tokens = palette.tokens(variant)
-        let base = ThemeColor.hex(variant == .light ? 0xFFFFFF : 0x000000)
-        let screen = ColorMath.composite(tokens.windowBackground, over: base)
-        return ColorMath.composite(tokens.surface, over: screen)
-    }
-
-    /// The income colour the phone draws: in light, the theme's income where it reaches 4.5:1 on a card, else a
-    /// darker shade of it that does (Classic's system green is about 2.2:1 on white); in dark, the theme's own.
-    public static func incomeToken(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
-        legibleOnCard(palette.tokens(variant).income, palette, variant)
-    }
-
-    /// The expense colour the phone draws, by the same rule as income: Classic's system red (about 3.6:1 on white)
-    /// is darkened in light mode; dark keeps the theme's own.
-    public static func expenseToken(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
-        legibleOnCard(palette.tokens(variant).expense, palette, variant)
-    }
-
-    /// `color` as drawn on a light card, darkened if it is under 4.5:1 there; unchanged in dark.
-    private static func legibleOnCard(_ color: ThemeColor, _ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
-        guard variant == .light else { return color }
-        let card = opaqueSurface(palette, .light)
-        let drawn = ColorMath.composite(color, over: card)
-        guard ColorMath.contrastRatio(drawn, card) < minimumLightMoneyContrast else { return color }
-        // A little past the minimum, so rounding to 8-bit channels can't land under it.
-        let target = (ColorMath.relativeLuminance(card) + 0.05) / (minimumLightMoneyContrast + 0.1) - 0.05
-        return ColorMath.shaded(drawn, toLuminance: target)
     }
 
     public static let all: [PhoneTheme] = ThemePalette.all.map(PhoneTheme.init)
