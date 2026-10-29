@@ -27,7 +27,7 @@ struct PadProfileView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     if let property = model.snapshot.property {
                         // Cards two (or more) to a row, each row's cards as tall as its tallest.

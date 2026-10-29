@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A titled group on a screen (Home's cards, a month's sections): an optional headline title over its content on
-/// the theme's surface, 16 pt padding, continuous corners.
+/// the theme's surface, `MangoSpacing.cardPadding`, `MangoRadius.card` continuous corners.
 public struct Card<Content: View>: View {
     public let title: String?
     public let content: Content
@@ -20,13 +20,13 @@ public struct Card<Content: View>: View {
         ProposedWidth {
             stack
         }
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(theme.surface))
+        .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
         // A figure must stay on the card, not just in the window.
         .wrapProbeClips()
     }
 
     private var stack: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: MangoSpacing.s) {
             if let title {
                 Text(title)
                     .mangoFont(.headline)
@@ -35,7 +35,7 @@ public struct Card<Content: View>: View {
             content
                 .environment(\.cardFillsHeight, false)
         }
-        .padding(16)
+        .padding(MangoSpacing.cardPadding)
         .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: fillsHeight ? .topLeading : .leading)
     }
 }

@@ -147,7 +147,7 @@ struct SalaryRow<Cell: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: PadSpacing.s) {
+        HStack(alignment: .center, spacing: MangoSpacing.s) {
             Text(label).mangoFont(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 .frame(width: SalaryMetrics.labelWidth, alignment: .leading)
             ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
@@ -171,7 +171,7 @@ struct SalarySideHeader: View {
 
     var body: some View {
         if sides.count > 1 {
-            HStack(spacing: PadSpacing.s) {
+            HStack(spacing: MangoSpacing.s) {
                 Color.clear.frame(width: SalaryMetrics.labelWidth, height: 1)
                 ForEach(sides) { side in
                     Text(side.rawValue).mangoFont(.subheadline, weight: .semibold).frame(maxWidth: .infinity, alignment: .trailing)

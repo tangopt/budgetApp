@@ -180,7 +180,7 @@ struct PadFlatSearchField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: PadSpacing.xs) {
+            HStack(spacing: MangoSpacing.xs) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
                 ForEach(model.tokens) { token in
                     Button { model.tokens.removeAll { $0 == token } } label: {

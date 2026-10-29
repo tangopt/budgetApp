@@ -20,7 +20,7 @@ struct PadBillsAndRechargesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     if property.tenancies.isEmpty {
                         EmptyState(symbol: "doc.text", title: "No tenancy yet", message: "Bills and statements appear here once the Mac has shared a tenancy.")

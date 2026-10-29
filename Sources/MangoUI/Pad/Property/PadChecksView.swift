@@ -23,7 +23,7 @@ struct PadChecksView: View {
                 let sideCard = geometry.size.width >= 860 && model.selected != nil
                 HStack(alignment: .top, spacing: 0) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: PadSpacing.section) {
+                        VStack(alignment: .leading, spacing: MangoSpacing.section) {
                             PadWriteNotices(write: write)
                             if model.snapshot.property == nil, model.property.property == nil {
                                 EmptyState(symbol: "checkmark.seal", title: "No property",

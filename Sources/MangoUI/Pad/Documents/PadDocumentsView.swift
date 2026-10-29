@@ -46,7 +46,7 @@ struct PadDocumentsView: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 520, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, inset).padding(.top, PadSpacing.xs)
+            .padding(.horizontal, inset).padding(.top, MangoSpacing.xs)
             let groups = model.groups
             if groups.isEmpty {
                 EmptyState(symbol: "folder", title: model.all.isEmpty ? "No documents" : "Nothing matches",
@@ -68,7 +68,7 @@ struct PadDocumentsView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .contentMargins(.horizontal, inset - PadSpacing.m, for: .scrollContent)
+                .contentMargins(.horizontal, inset - MangoSpacing.m, for: .scrollContent)
             }
         }
     }

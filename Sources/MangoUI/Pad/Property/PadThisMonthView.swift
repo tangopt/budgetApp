@@ -24,7 +24,7 @@ struct PadThisMonthView: View {
         NavigationStack {
             GeometryReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: PadSpacing.section) {
+                    VStack(alignment: .leading, spacing: MangoSpacing.section) {
                         content(wide: proxy.size.width >= Self.sideBySideWidth)
                     }
                     .padPageContent()

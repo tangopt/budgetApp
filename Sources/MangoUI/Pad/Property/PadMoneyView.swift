@@ -22,7 +22,7 @@ struct PadMoneyView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     if model.snapshot.property == nil, model.property.property == nil {
                         EmptyState(symbol: "sterlingsign.circle", title: "No property", message: "The property's money appears here once the Mac has shared it.")
@@ -342,8 +342,8 @@ struct PadMoneyLineRow: View {
             .padding(.vertical, card ? 14 : 8).padding(.horizontal, card ? 14 : 10)
             // As a card in a grid row, as tall as the row.
             .frame(maxWidth: .infinity, maxHeight: card ? .infinity : nil, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: card ? PadMetrics.cardRadius : 12, style: .continuous).fill(card ? theme.surface : theme.background))
-            .overlay(RoundedRectangle(cornerRadius: card ? PadMetrics.cardRadius : 12, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: card ? MangoRadius.card : 12, style: .continuous).fill(card ? theme.surface : theme.background))
+            .overlay(RoundedRectangle(cornerRadius: card ? MangoRadius.card : 12, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

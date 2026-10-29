@@ -21,7 +21,7 @@ struct PadEvidenceView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     header
                     if model.areas.isEmpty {
@@ -139,8 +139,8 @@ struct PadEvidenceView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-evidence-\(item.id)")
@@ -172,7 +172,7 @@ struct PadEvidenceView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
+                    .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
                     .accessibilityElement(children: .combine)
                 }
             }
