@@ -16,7 +16,31 @@ private struct TileIDKey: LayoutValueKey {
 struct DashboardLayoutContext {
     var layout = DashboardLayout()
     var change: (@MainActor ((inout DashboardLayout) -> Void) -> Void)?
+    /// Hides a tile's widget (by tile id) on this Mac.
+    var hide: (@MainActor (String) -> Void)?
 }
+
+/// Which tile of which section a view is (set by `dashSlot`).
+struct DashSlot: Equatable {
+    let section: DashboardLayout.Section
+    let id: String
+}
+
+/// What a tile's handle needs from its section to drag the tile around and arrange it.
+struct TileArrangeContext {
+    var section: DashboardLayout.Section
+    /// The ids of the section's tiles, in natural order.
+    var natural: [String]
+    /// The named coordinate space of the section's tiles, in which the drag reports the pointer.
+    var space: String
+    /// The tile being dragged, if any.
+    var active: String?
+    var update: @MainActor (String, CGPoint) -> Void
+    var end: @MainActor (String, CGPoint) -> Void
+}
+
+private struct DashSlotKey: EnvironmentKey { static let defaultValue: DashSlot? = nil }
+private struct TileArrangeKey: EnvironmentKey { static let defaultValue: TileArrangeContext? = nil }
 
 private struct DashboardLayoutContextKey: EnvironmentKey {
     static let defaultValue = DashboardLayoutContext()
@@ -37,12 +61,23 @@ extension EnvironmentValues {
         get { self[TileSizeKey.self] }
         set { self[TileSizeKey.self] = newValue }
     }
+
+    var dashSlot: DashSlot? {
+        get { self[DashSlotKey.self] }
+        set { self[DashSlotKey.self] = newValue }
+    }
+
+    fileprivate var tileArrange: TileArrangeContext? {
+        get { self[TileArrangeKey.self] }
+        set { self[TileArrangeKey.self] = newValue }
+    }
 }
 
 extension View {
     /// Makes this view the tile `id` of its section: sized and placed by the saved layout.
     func dashSlot(_ section: DashboardLayout.Section, _ id: String) -> some View {
         layoutValue(key: TileIDKey.self, value: id)
+            .environment(\.dashSlot, DashSlot(section: section, id: id))
     }
 }
 
@@ -100,7 +135,8 @@ private struct DividerHandle: View {
     }
 }
 
-/// A titled section: its name, a rule and a small menu to arrange its tiles, then its rows of tiles with dividers.
+/// A titled section: its name and a rule, then its rows of tiles with dividers. Tiles are dragged by their handle
+/// (`TileGrip`) to a place in a row or to a row of their own, with an insertion line showing where.
 struct DashboardSection<Content: View>: View {
     let section: DashboardLayout.Section
     /// The ids of the tiles shown, in their natural order.
@@ -110,8 +146,11 @@ struct DashboardSection<Content: View>: View {
     @State private var width: CGFloat = 0
     /// A divider drag under way: the row, and the fractions or height it would have.
     @State private var drag: (row: Int, fractions: [Double]?, height: Double?)?
+    /// A tile drag under way: the tile and where the pointer is, in the section's space.
+    @State private var tileDrag: (tile: String, point: CGPoint)?
 
     private var savedRows: [DashboardLayout.ResolvedRow] { context.layout.rows(section, natural: tiles) }
+    private var space: String { "dashboardSection-\(section.rawValue)" }
 
     private var shownRows: [DashboardLayout.ResolvedRow] {
         var rows = savedRows
@@ -122,40 +161,69 @@ struct DashboardSection<Content: View>: View {
         return rows
     }
 
+    /// Where the tile being dragged would land, when that changes anything.
+    private func drop(for dragged: (tile: String, point: CGPoint)) -> DashboardLayout.Drop? {
+        guard let target = DashboardLayout.dropTarget(x: Double(dragged.point.x), y: Double(dragged.point.y), rows: savedRows, width: Double(width)),
+              context.layout.canMove(dragged.tile, to: target, in: section, natural: tiles) else { return nil }
+        return target
+    }
+
+    private var arrange: TileArrangeContext {
+        TileArrangeContext(section: section, natural: tiles, space: space, active: tileDrag?.tile,
+                           update: { tile, point in tileDrag = (tile, point) },
+                           end: { tile, point in
+                               tileDrag = nil
+                               guard let target = DashboardLayout.dropTarget(x: Double(point.x), y: Double(point.y), rows: savedRows, width: Double(width)) else { return }
+                               context.change?({ $0.move(tile: tile, to: target, in: section, natural: tiles) })
+                           })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text(section.title).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Rectangle().fill(Color(nsColor: .separatorColor)).frame(height: 1)
-                arrangeMenu
             }
             let rows = shownRows
             FluidTiles(rows: rows) { content }
+                .environment(\.tileArrange, arrange)
+                .coordinateSpace(name: space)
                 .overlay(alignment: .topLeading) { dividers(rows) }
+                .overlay(alignment: .topLeading) { dropIndicator(rows) }
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         }
     }
 
-    /// Move tiles between and within rows; reset this section.
-    private var arrangeMenu: some View {
-        Menu {
-            ForEach(tiles, id: \.self) { tile in
-                Menu(DashboardTile.title(tile)) {
-                    ForEach([("Move left", DashboardLayout.Direction.left), ("Move right", .right), ("Move to the row above", .up), ("Move to the row below", .down)], id: \.0) { label, direction in
-                        Button(label) { context.change?({ $0.move(tile, direction, in: section, natural: tiles) }) }
-                            .disabled(!context.layout.canMove(tile, direction, in: section, natural: tiles))
+    /// The line showing where the dragged tile would land, and the tile's name following the pointer.
+    @ViewBuilder
+    private func dropIndicator(_ rows: [DashboardLayout.ResolvedRow]) -> some View {
+        if let dragged = tileDrag {
+            let frames = DashboardLayout.frames(rows, width: Double(width))
+            let spacing = DashboardLayout.spacing
+            ZStack(alignment: .topLeading) {
+                switch drop(for: dragged) {
+                case .row(let r, let at):
+                    let inRow = frames.filter { $0.row == r }
+                    if let first = inRow.first {
+                        let x = at < inRow.count ? inRow[at].x - spacing / 2 : (inRow.last.map { $0.x + $0.width } ?? 0) + spacing / 2
+                        Capsule().fill(Color.accentColor).frame(width: 4, height: rows[r].height)
+                            .offset(x: x - 2, y: first.y)
                     }
+                case .newRow(let k):
+                    let y = k < rows.count ? (frames.first { $0.row == k }?.y ?? 0) - spacing / 2 : DashboardLayout.totalHeight(rows) + spacing / 2
+                    Capsule().fill(Color.accentColor).frame(width: width, height: 4).offset(y: max(y - 2, 0))
+                case nil:
+                    EmptyView()
                 }
+                Text(DashboardTile.title(dragged.tile)).font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(.regularMaterial)).overlay(Capsule().strokeBorder(Color.accentColor))
+                    .offset(x: dragged.point.x + 10, y: dragged.point.y + 10)
             }
-            Divider()
-            Button("Reset \(section.title) layout") { context.change?({ $0.reset(section) }) }
-                .disabled(context.layout.layout(section).isEmpty)
-        } label: {
-            Image(systemName: "ellipsis").foregroundStyle(.secondary)
+            .frame(width: width, height: DashboardLayout.totalHeight(rows), alignment: .topLeading)
+            .allowsHitTesting(false)
+            .animation(.easeOut(duration: 0.1), value: drop(for: dragged))
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Arrange the \(section.title) tiles. Drag the gaps between tiles to resize them.")
-        .accessibilityLabel("Arrange \(section.title) tiles")
     }
 
     private func dividers(_ rows: [DashboardLayout.ResolvedRow]) -> some View {
@@ -200,6 +268,9 @@ struct DashTile<Accessory: View, Content: View>: View {
     @ViewBuilder var accessory: Accessory
     @ViewBuilder let content: (CGSize) -> Content
     @Environment(\.theme) private var theme
+    @Environment(\.dashSlot) private var slot
+    @Environment(\.tileArrange) private var arrange
+    @State private var hovering = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Panel<EmptyView, EmptyView>.cornerRadius)
@@ -211,6 +282,7 @@ struct DashTile<Accessory: View, Content: View>: View {
                     Spacer(minLength: 4)
                     accessory
                     if let linkTitle, let onLink { PanelLink(title: linkTitle, action: onLink).lineLimit(1).fixedSize() }
+                    if slot != nil { TileGrip(hovering: hovering) }
                 }
                 content(CGSize(width: proxy.size.width, height: proxy.size.height))
             }
@@ -221,6 +293,60 @@ struct DashTile<Accessory: View, Content: View>: View {
         .background(shape.fill(theme.surface))
         .overlay(shape.strokeBorder(Color(nsColor: .separatorColor)))
         .clipShape(shape)
+        .opacity(slot.map { arrange?.active == $0.id } == true ? 0.4 : 1)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The small grip in a tile's header (shown while the pointer is over the tile): drag it to move the tile, click it
+/// for a menu with Hide and the moves as a keyboard-friendly alternative.
+private struct TileGrip: View {
+    let hovering: Bool
+    @Environment(\.dashSlot) private var slot
+    @Environment(\.tileArrange) private var arrange
+    @Environment(\.dashboardLayoutContext) private var context
+    @State private var menuShown = false
+    @State private var dragging = false
+
+    var body: some View {
+        if let slot, let arrange {
+            Image(systemName: "circle.grid.2x2.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 16)
+                .contentShape(Rectangle())
+                .opacity(hovering || menuShown || dragging ? 1 : 0)
+                .pointerStyle(dragging ? .grabActive : .grabIdle)
+                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named(arrange.space))
+                    .onChanged { dragging = true; arrange.update(slot.id, $0.location) }
+                    .onEnded { dragging = false; arrange.end(slot.id, $0.location) })
+                .onTapGesture { menuShown = true }
+                .popover(isPresented: $menuShown, arrowEdge: .bottom) { menu(slot, arrange) }
+                .help("Drag to move this tile. Click for more")
+                .accessibilityElement()
+                .accessibilityLabel("Arrange \(DashboardTile.title(slot.id))")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { menuShown = true }
+        }
+    }
+
+    private func menu(_ slot: DashSlot, _ arrange: TileArrangeContext) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { menuShown = false; context.hide?(slot.id) } label: { Label("Hide", systemImage: "eye.slash").frame(maxWidth: .infinity, alignment: .leading) }
+                .disabled(context.hide == nil)
+            Divider()
+            ForEach([("Move left", "arrow.left", DashboardLayout.Direction.left), ("Move right", "arrow.right", .right),
+                     ("Move up", "arrow.up", .up), ("Move down", "arrow.down", .down)], id: \.0) { label, symbol, direction in
+                Button {
+                    menuShown = false
+                    context.change?({ $0.move(slot.id, direction, in: slot.section, natural: arrange.natural) })
+                } label: { Label(label, systemImage: symbol).frame(maxWidth: .infinity, alignment: .leading) }
+                    .disabled(!context.layout.canMove(slot.id, direction, in: slot.section, natural: arrange.natural))
+            }
+        }
+        .buttonStyle(.borderless)
+        .padding(8)
+        .frame(width: 160)
     }
 }
 

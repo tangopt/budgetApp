@@ -14,7 +14,7 @@ final class DashboardCardVisibilityTests: XCTestCase {
         visibility.hidden = [.mortgage, .taxYear]
         XCTAssertFalse(visibility.shows(.taxYear))
         XCTAssertTrue(visibility.shows(.evidence))
-        XCTAssertEqual(visibility.stored, ["taxYear", "mortgage"])
+        XCTAssertEqual(visibility.stored, ["mortgage", "taxYear"])
         XCTAssertEqual(DashboardCardVisibility(stored: visibility.stored), visibility)
         XCTAssertEqual(DashboardCardVisibility(storedString: visibility.storedString), visibility)
     }
@@ -25,10 +25,14 @@ final class DashboardCardVisibilityTests: XCTestCase {
         XCTAssertEqual(visibility.stored, ["evidence"])
     }
 
-    func testAllHiddenLeavesLegacyCards() {
+    func testEveryWidgetCanBeHidden() {
         let visibility = DashboardCardVisibility(stored: DashboardCardVisibility.Card.allCases.map(\.rawValue))
         XCTAssertTrue(DashboardCardVisibility.Card.allCases.allSatisfy { !visibility.shows($0) })
-        XCTAssertEqual(visibility.stored.count, 4)
+        XCTAssertEqual(visibility.stored.count, DashboardCardVisibility.Card.allCases.count)
+        XCTAssertEqual(DashboardCardVisibility.Card(tileID: DashboardTile.mortgage("Flat")), .mortgage)
+        XCTAssertEqual(DashboardCardVisibility.Card(tileID: DashboardTile.netWorth), .netWorth)
+        XCTAssertNil(DashboardCardVisibility.Card(tileID: "bogus"))
+        XCTAssertEqual(DashboardCardVisibility.Card.cards(in: .property), [.propertyMonth, .tenancyCashFlow, .propertyReturn, .mortgage])
         XCTAssertEqual(DashboardCardVisibility.Card.mortgage.title, "Mortgage")
     }
 }

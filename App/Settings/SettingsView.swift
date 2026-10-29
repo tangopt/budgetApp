@@ -172,7 +172,7 @@ private struct AppearanceSettings: View {
                     ForEach(DashboardCardVisibility.Card.allCases, id: \.self) { card in
                         Toggle(card.title, isOn: shown(card))
                     }
-                    Text("Shown on the Dashboard of this Mac only. The net worth, year, month and bills cards always show.")
+                    Text("Shown on the Dashboard of this Mac only. Hide one from its tile's handle, or here.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
