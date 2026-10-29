@@ -174,8 +174,9 @@ text anywhere, widgets included.
   downloaded, not checked yet"). Only the current step's action is the filled prominent button; later actionable
   steps use the plain secondary style.
 - **Salary form: bonus and pension always offer £/%.** Every Bonus and Pension field (Current and New) shows a £/%
-  segmented toggle beside the input, always visible, not only once a value is entered. When % is selected the
-  computed amount appears as a secondary line ("= £5,200").
+  segmented toggle beside the input, always visible, not only once a value is entered. The other unit always shows
+  as a secondary line, so Current and New stay aligned row by row: % selected → "= £5,200"; £ selected → "= 12.5%"
+  of the salary.
 - **Charts**: accent line, dashed forecast, a dot for today, two gridlines, footnote labels; bars in money colours;
   ≤ 4 series; heights capped (iPad 180 pt, iPhone 120 pt) so a chart never pushes content below the fold.
 - **Empty / loading / error**: empty says what is fine and the next action ("Nothing missing for 2025/26");
