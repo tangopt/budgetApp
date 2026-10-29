@@ -29,6 +29,7 @@ struct ImportTransactionPeekRow<Accessory: View>: View {
                         .frame(width: 10)
                 }
                 .buttonStyle(.plain)
+                .help(isExpanded ? "Hide the transaction's details" : "Show the transaction's details")
                 .accessibilityLabel(isExpanded ? "Hide the transaction's details" : "Show the transaction's details")
                 Text((candidate?.description ?? fallbackLabel).figuresUnbroken)
                     .font(.callout).lineLimit(1).truncationMode(.tail)

@@ -132,10 +132,12 @@ struct YearTile: View {
             HStack(spacing: 2) {
                 Button { viewModel.selectYear(viewModel.selectedYear - 1) } label: { Image(systemName: "chevron.left") }
                     .disabled(viewModel.selectedYear <= content.yearRange.lowerBound)
+                    .help("Show the previous year")
                     .accessibilityLabel("Previous year")
                 Text(String(viewModel.selectedYear)).font(.subheadline.weight(.medium)).figureText().frame(minWidth: 40)
                 Button { viewModel.selectYear(viewModel.selectedYear + 1) } label: { Image(systemName: "chevron.right") }
                     .disabled(viewModel.selectedYear >= content.yearRange.upperBound)
+                    .help("Show the next year")
                     .accessibilityLabel("Next year")
             }
             .buttonStyle(.borderless)

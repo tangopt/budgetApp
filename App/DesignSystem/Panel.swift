@@ -81,5 +81,6 @@ struct PanelLink: View {
         Button("\(title) ›", action: action)
             .buttonStyle(.link)
             .font(.caption)
+            .help("Open \(title)")
     }
 }
