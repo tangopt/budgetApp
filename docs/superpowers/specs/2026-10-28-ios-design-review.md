@@ -448,3 +448,5 @@ Each step keeps logic in BudgetCore, renders with the snapshot script, and check
 Pages: Design system (Main, Tokens, Components, Themes, Themes - Screens), iPhone (Home, Month, Accounts + transaction sheet, Search, Salary,
 Me/Settings with the Theme picker, Widgets), iPad (Home, This month, Bills & recharges + panel, Tenancies, Documents + panel, Accounts +
 panel, Calendar, Salary), Journeys (Patricia's monthly recharge, Pablo's quick check, tax-year evidence).
+
+- iPhone salary calculator: Inputs and Results tabs (segmented control), with a pinned 'New keeps +£X a year' strip on Inputs; iPad keeps inputs and results side by side.
