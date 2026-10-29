@@ -168,6 +168,14 @@ text anywhere, widgets included.
   Cancel/Save in the same place every time (sheet nav bar on iPhone, panel footer on iPad).
 - **Step card** (This month): number disc (done = green tick, now = accent, later = outline), title, one status
   line, expanded body only for the current step, one action.
+- **Step card / list row rule: pill or action, never both.** A row shows either a status pill (when nothing is needed
+  from the user: Done, Waiting for tenant, Not due yet) or a single button naming the action (when the user must act:
+  "Check & link", "Prepare statement", "Send email"). The secondary line says the state in words ("2 invoices
+  downloaded, not checked yet"). Only the current step's action is the filled prominent button; later actionable
+  steps use the plain secondary style.
+- **Salary form: bonus and pension always offer £/%.** Every Bonus and Pension field (Current and New) shows a £/%
+  segmented toggle beside the input, always visible, not only once a value is entered. When % is selected the
+  computed amount appears as a secondary line ("= £5,200").
 - **Charts**: accent line, dashed forecast, a dot for today, two gridlines, footnote labels; bars in money colours;
   ≤ 4 series; heights capped (iPad 180 pt, iPhone 120 pt) so a chart never pushes content below the fold.
 - **Empty / loading / error**: empty says what is fine and the next action ("Nothing missing for 2025/26");
