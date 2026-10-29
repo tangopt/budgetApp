@@ -4,10 +4,8 @@ import BudgetCore
 
 struct DashboardView: View {
     @ObservedObject var viewModel: DashboardViewModel
-    /// The window's importer (the import card shows an import under way).
+    /// The window's importer (the title row shows an import under way).
     let importCenter: ImportCenterModel
-    let accounts: [Account]
-    @Binding var selectedImportAccountId: Int64?
     let navigate: (AppScreen) -> Void
     @State private var closeTarget: CloseMonthTarget?
     @AppStorage(DashboardCardVisibility.storageKey) private var hiddenCards = ""
@@ -42,6 +40,9 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                DashboardTitleRow(status: viewModel.content.map { DashboardStatus.make(freshness: $0.freshness, importsWaiting: $0.review.importsWaiting,
+                                                                                       staleBalances: $0.attention.staleBalanceCount) },
+                                  importCenter: importCenter, navigate: navigate)
                 if let error = viewModel.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
@@ -50,7 +51,6 @@ struct DashboardView: View {
                 if let content = viewModel.content {
                     let visibility = DashboardCardVisibility(storedString: hiddenCards)
                     let review = content.review
-                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, navigate: navigate)
                     // What the Dashboard showed before the review cards, first.
                     let moneyIDs = DashboardCardVisibility.Card.cards(in: .money).filter(visibility.shows).map(\.tileID)
                     if !moneyIDs.isEmpty {
