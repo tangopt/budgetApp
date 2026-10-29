@@ -321,6 +321,7 @@ struct SalaryFormCard: View {
     let sides: [SalarySimulatorScreen.Side]
     @Binding var current: SalaryInputs
     @Binding var offer: SalaryInputs
+    @Environment(\.phoneTheme) private var theme
 
     private func inputs(_ side: SalarySimulatorScreen.Side) -> Binding<SalaryInputs> { side == .current ? $current : $offer }
 
@@ -339,7 +340,7 @@ struct SalaryFormCard: View {
                     .frame(minWidth: 70)
             }
             SalaryRow(label: "", minimumHeight: 0, cells: sides.map { side in
-                Text(TaxCode.parse(inputs(side).wrappedValue.taxCode).notice ?? " ").mangoFont(.caption).foregroundStyle(.orange)
+                Text(TaxCode.parse(inputs(side).wrappedValue.taxCode).notice ?? " ").mangoFont(.caption).foregroundStyle(theme.warning)
                     .lineLimit(1, reservesSpace: true).multilineTextAlignment(.trailing)
             })
             Divider()

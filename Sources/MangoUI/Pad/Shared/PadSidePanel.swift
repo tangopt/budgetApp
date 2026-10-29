@@ -106,7 +106,7 @@ struct PadIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .mangoFont(.body, weight: .semibold)
-                .foregroundStyle(destructive ? Color.red : (prominent ? theme.accent : Color.secondary))
+                .foregroundStyle(destructive ? theme.expense : (prominent ? theme.accent : Color.secondary))
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .opacity(isEnabled ? 1 : 0.4)

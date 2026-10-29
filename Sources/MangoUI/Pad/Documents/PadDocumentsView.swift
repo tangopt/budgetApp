@@ -133,12 +133,13 @@ struct PadKindSheet: View {
     let save: (DocumentKindRef) async -> Bool
     @State private var kind: DocumentKindRef?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         NavigationStack {
             Form {
                 if let warning {
-                    Section { Label(warning, systemImage: "link").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                    Section { Label(warning, systemImage: "link").foregroundStyle(theme.warning).fixedSize(horizontal: false, vertical: true) }
                 }
                 Section {
                     Picker("Kind", selection: Binding(get: { kind ?? editor.kind }, set: { kind = $0 })) {

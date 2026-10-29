@@ -62,7 +62,7 @@ struct PadTenancyFormSheet: View {
                                 .multilineTextAlignment(.trailing)
                                 .frame(minWidth: 90, maxWidth: 130, minHeight: 44)
                             Button { draft.rents.removeAll { $0.id == rent.id } } label: {
-                                Image(systemName: "minus.circle").foregroundStyle(.red).frame(width: 44, height: 44)
+                                Image(systemName: "minus.circle").foregroundStyle(theme.expense).frame(width: 44, height: 44)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Remove the rent from \(PhoneDateFormat.day(rent.from))")

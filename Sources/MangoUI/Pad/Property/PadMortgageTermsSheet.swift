@@ -264,7 +264,7 @@ struct PadMortgageTermsSheet: View {
                     Spacer(minLength: 8)
                     Text(MortgageRate.percent(given.ratePercent)).monospacedDigit().lineLimit(1).fixedSize()
                     Button { form.removeOverride(start: given.periodStart) } label: {
-                        Image(systemName: "minus.circle").foregroundStyle(.red).frame(width: 44, height: 44)
+                        Image(systemName: "minus.circle").foregroundStyle(theme.expense).frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Remove the rate given from \(MortgageTerms.dayText(given.periodStart))")

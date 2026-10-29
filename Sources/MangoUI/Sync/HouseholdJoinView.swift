@@ -30,8 +30,7 @@ public struct HouseholdJoinView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     if case .showCode(let code) = state {
                         Text(code)
-                            .font(.system(size: 56, weight: .semibold, design: .rounded))
-                            .figureText(.shrink(minimumScale: 0.5))
+                            .mangoFont(.figureXL)
                             .accessibilityLabel(code.map(String.init).joined(separator: " "))
                     }
                     if let detail {

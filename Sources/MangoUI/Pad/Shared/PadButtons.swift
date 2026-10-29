@@ -38,9 +38,9 @@ struct PadButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch role {
-        case .primary: .white
+        case .primary: theme.onAccent
         case .secondary, .textLink: theme.accent
-        case .destructive: .red
+        case .destructive: theme.expense
         }
     }
 
@@ -49,7 +49,7 @@ struct PadButtonStyle: ButtonStyle {
         case .primary: theme.accent
         case .secondary: Color.secondary.opacity(0.08)
         case .textLink: .clear
-        case .destructive: Color.red.opacity(0.1)
+        case .destructive: theme.expenseTint
         }
     }
 }
