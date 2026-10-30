@@ -129,7 +129,7 @@ final class OfferSheetModelTests: XCTestCase {
         let net = result.payslipsTakeHome! - 12 * result.takeHomeMonthly
         let m = model(candidates: [entry(id: 1, amount: 200_000, start: utc(2026, 1, 1))], offer: withBonus)
         XCTAssertEqual(m.preview, "From Apr 2026: \(Money.format(result.takeHomeMonthly, currency: .gbp)) a month net, was £2,000.00; "
-                       + "plus \(Money.format(net, currency: .gbp)) net a year in Mar")
+                       + "plus \(Money.format(net, currency: .gbp)) net a year in Jun")
         withBonus.bonusPayment = .monthly
         XCTAssertFalse(model(candidates: [], offer: withBonus).preview.contains("plus"))
     }

@@ -7,7 +7,7 @@ import XCTest
 /// above £29,385 a year (£2,448.75 a month). Income tax is cumulative (month k: k/12 of the allowance and bands, less
 /// the tax already taken); NI and loans are per month. Amounts pence.
 final class SalaryBonusMonthTests: XCTestCase {
-    private func calc(_ gross: Int, bonus: Int, paid: BonusPayment = .standard,
+    private func calc(_ gross: Int, bonus: Int, paid: BonusPayment = .yearly(month: 3),
                       _ configure: (inout SalaryInputs) -> Void = { _ in }) -> SalaryResult {
         var inputs = SalaryInputs(grossAnnual: gross, bonusAnnual: bonus, taxYearStart: 2026, bonusPayment: paid)
         configure(&inputs)
@@ -101,13 +101,13 @@ final class SalaryBonusMonthTests: XCTestCase {
         XCTAssertEqual(SalaryCalculator.taxYearMonth(3), 12)
     }
 
-    func testSavedInputsWithoutBonusPaymentDecodeAsYearlyInMarch() throws {
+    func testSavedInputsWithoutBonusPaymentDecodeAsYearlyInJune() throws {
         let saved = SalaryInputs(grossAnnual: 3_000_000, bonusAnnual: 200_000, taxYearStart: 2026, bonusPayment: .monthly)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as? [String: Any])
         XCTAssertNotNil(object["bonusPayment"])
         object.removeValue(forKey: "bonusPayment")
         let decoded = try JSONDecoder().decode(SalaryInputs.self, from: JSONSerialization.data(withJSONObject: object))
-        XCTAssertEqual(decoded.bonusPayment, .yearly(month: 3))
+        XCTAssertEqual(decoded.bonusPayment, .yearly(month: 6))
         let roundTrip = try JSONDecoder().decode(SalaryInputs.self, from: JSONEncoder().encode(saved))
         XCTAssertEqual(roundTrip, saved)
     }

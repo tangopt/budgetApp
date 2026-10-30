@@ -44,8 +44,8 @@ public enum BonusPayment: Codable, Equatable, Hashable, Sendable {
     /// A twelfth in every payslip.
     case monthly
 
-    /// What saved inputs from before this existed mean, and a new salary's default: once a year in March.
-    public static let standard = BonusPayment.yearly(month: 3)
+    /// What saved inputs from before this existed mean, and a new salary's default: once a year in June.
+    public static let standard = BonusPayment.yearly(month: 6)
 
     /// The calendar month of a yearly bonus (clamped to 1–12); nil when it is spread monthly.
     public var month: Int? {
@@ -116,7 +116,7 @@ extension SalaryInputs {
              employerPension, studentLoan, postgraduateLoan, benefitsInKindAnnual
     }
 
-    /// Inputs saved before `bonusPayment` existed decode as a bonus paid once a year in March.
+    /// Inputs saved before `bonusPayment` existed decode as a bonus paid once a year in June.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(grossAnnual: try c.decode(Int.self, forKey: .grossAnnual),
