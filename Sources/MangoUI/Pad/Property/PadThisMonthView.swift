@@ -16,6 +16,8 @@ struct PadThisMonthView: View {
     @Environment(\.phoneTheme) private var theme
     @Environment(\.padBrowser) private var browser
     @State private var checking: TrayItem?
+    /// Completed steps the person opened (they show as one line otherwise).
+    @State private var opened: Set<ThisMonthChecklist.StepID> = []
 
     /// The side column sits beside the steps from this width.
     static let sideBySideWidth: CGFloat = 700
@@ -97,14 +99,19 @@ struct PadThisMonthView: View {
                               choose: { tenancy in Task { await model.select(tenancy.id ?? 0) } })]
     }
 
+    /// The progress bar on top: one segment per step (filled when done), the count beside it.
     private func header(_ checklist: ThisMonthChecklist) -> some View {
         let done = Self.doneCount(checklist)
-        return VStack(alignment: .leading, spacing: MangoSpacing.xs) {
+        return HStack(spacing: MangoSpacing.s) {
             if !checklist.isHidden {
-                ProgressView(value: Double(done), total: Double(max(checklist.steps.count, 1)))
-                    .tint(theme.accent)
-                    .accessibilityHidden(true)
+                HStack(spacing: MangoSpacing.xxs) {
+                    ForEach(Array(checklist.steps.enumerated()), id: \.offset) { index, _ in
+                        Capsule().fill(index < done ? theme.income : theme.textTertiary.opacity(0.3)).frame(height: 8)
+                    }
+                }
+                .accessibilityHidden(true)
                 Text(Self.progressText(checklist)).figureText().mangoFont(.subheadline).foregroundStyle(.secondary)
+                    .fixedSize()
             }
         }
     }
@@ -143,8 +150,13 @@ struct PadThisMonthView: View {
         // A pill when nothing is needed from the person, one button when they must act; never both.
         let accessory = StepCardRule.accessory(needsAction: step.state == .needsYou, action: primaryAction(step, isCurrent: isCurrent),
                                                pillText: Self.pillText(step), status: Self.pillStatus(step))
+        // A completed step is one line until the person opens it; the current step is expanded and outlined.
+        let collapse = step.state == .done
+            ? StepCollapse(isCollapsed: !opened.contains(step.id)) {
+                if opened.contains(step.id) { opened.remove(step.id) } else { opened.insert(step.id) }
+            } : nil
         return StepCard(number: number, marker: marker, title: step.headline, statusLine: statusLine(step, snapshot: snapshot),
-                        accessory: accessory) {
+                        accessory: accessory, collapse: collapse) {
             stepBody(step, snapshot: snapshot, accessory: accessory)
         }
     }

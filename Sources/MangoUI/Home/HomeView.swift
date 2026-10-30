@@ -85,11 +85,25 @@ public struct HomeView: View {
                 InlineBanner(tone: .amber, text: error)
             }
             FreshnessLine(summary: summary)
-            NetWorthCard(netWorth: summary.netWorth)
-            PayMonthCard(summary: summary)
-            if recharges.contains(where: { $0.count > 0 }) { RechargesStatusCard(counts: recharges) }
-            AttentionCard(lines: AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now()))
-            UpcomingCard(items: summary.upcoming)
+            let attention = AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now())
+            let showsRecharges = recharges.contains { $0.count > 0 }
+            if usesPadPage {
+                // The iPad's tile grid (design review §2.3): this pay month spans two columns beside Net worth, then
+                // Recharges, Needs attention and Upcoming share the next row; equal heights, so the page fits one screen.
+                PadGrid(minimumColumnWidth: 260, maximumColumns: 3, balanced: false) {
+                    PayMonthCard(summary: summary).padGridSpan(2)
+                    NetWorthCard(netWorth: summary.netWorth)
+                    if showsRecharges { RechargesStatusCard(counts: recharges) }
+                    AttentionCard(lines: attention)
+                    UpcomingCard(items: summary.upcoming).padGridSpan(showsRecharges ? 1 : 2)
+                }
+                .padEqualHeightCards()
+            } else {
+                NetWorthCard(netWorth: summary.netWorth)
+                PayMonthCard(summary: summary)
+                AttentionCard(lines: attention)
+                UpcomingCard(items: summary.upcoming)
+            }
         }
     }
 }

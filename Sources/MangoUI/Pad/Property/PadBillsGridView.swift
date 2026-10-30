@@ -27,8 +27,24 @@ extension UtilityBillStage {
     }
 }
 
-/// The year's bills as a provider × month grid, each cell coloured by the stage of its bill(s) with their amount; a tap
-/// selects the cell's first bill (the document panel opens on it). Providers stay on the left while the months scroll.
+extension UtilityBillStage {
+    /// The word inside a grid cell (the cell names its stage, so the grid needs no legend).
+    var padCellName: String {
+        switch self {
+        case .missingInvoice: "Expected"
+        case .invoiceIn: "Invoice in"
+        case .linkedToPayment: "Linked"
+        case .inRecharge: "In statement"
+        case .sentToTenant: "Sent"
+        case .paidByTenant: "Paid"
+        }
+    }
+}
+
+/// The year's bills as a provider × month grid. Each cell is coloured by the stage of its bill(s) and names it ("Paid",
+/// "Sent"...) over the amount; a tap selects the cell's first bill (the document panel opens on it). Providers stay on the
+/// left. The columns are as wide as the widest figure or stage word in view needs (so a wider typeface, or larger text,
+/// shows fewer months, never a squeezed figure), and the months in view move with Earlier / Later.
 struct PadBillsGridView: View {
     @ObservedObject var model: PadBillsAndRechargesModel
     @ObservedObject var property: PadPropertyModel
@@ -36,24 +52,41 @@ struct PadBillsGridView: View {
     /// How many months back from the latest the shown window sits, and the width the table has.
     @State private var back = 0
     @State private var width: CGFloat = 0
+    /// The widest amount and the widest stage word (icon included) in view, measured in the page's font.
+    @State private var widestFigure: CGFloat = 0
+    @State private var widestLabel: CGFloat = 0
+    @ScaledMetric(relativeTo: .subheadline) private var providerWidth: CGFloat = 120
+    @ScaledMetric(relativeTo: .subheadline) private var cellHeight: CGFloat = 60
+    @ScaledMetric(relativeTo: .subheadline) private var headerHeight: CGFloat = 24
 
-    static let providerWidth: CGFloat = 120
-    static let cellWidth: CGFloat = 92
-    static let cellHeight: CGFloat = 56
-    static let headerHeight: CGFloat = 24
+    static let minimumCellWidth: CGFloat = 92
+    static let cellPadding: CGFloat = 8
     static let spacing: CGFloat = 8
+
+    /// A cell's width: the widest content plus its padding (and a little air), never below the minimum.
+    static func cellWidth(widestFigure: CGFloat, widestLabel: CGFloat) -> CGFloat {
+        max(minimumCellWidth, ceil(max(widestFigure, widestLabel)) + 2 * cellPadding + 4)
+    }
+
+    /// How many month columns fit in `width` beside `providerWidth`, at least one.
+    static func columnsFit(width: CGFloat, providerWidth: CGFloat, cellWidth: CGFloat) -> Int {
+        guard width.isFinite else { return 1 }
+        return max(1, Int((width - providerWidth - spacing) / (cellWidth + spacing)))
+    }
+
+    private var cellWidth: CGFloat { Self.cellWidth(widestFigure: widestFigure, widestLabel: widestLabel) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            legend
             if let grid = property.bills {
                 let months = model.months(year: model.year)
-                let shown = window(months)
                 let rows = grid.rows.filter { row in months.contains { grid.cell(row: row, month: $0) != nil } }
                 if rows.isEmpty {
                     Text("No bills in \(String(model.year)).").foregroundStyle(.secondary)
                 } else {
+                    let shown = window(months)
                     table(grid, rows: rows, months: shown, all: months)
+                        .background(measuring(grid, rows: rows, months: months))
                     Text(grid.summaryText).mangoFont(.subheadline).foregroundStyle(.secondary)
                 }
             }
@@ -61,22 +94,39 @@ struct PadBillsGridView: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 
-    private var legend: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .leading)], alignment: .leading, spacing: 8) {
-            ForEach(UtilityBillStage.padLegend, id: \.self) { stage in
-                HStack(spacing: 6) {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous).fill(stage.padColor(theme).opacity(0.25))
-                        .overlay(Image(systemName: stage.padSymbol).mangoFont(.caption2, weight: .bold).foregroundStyle(stage.padColor(theme)))
-                        .frame(width: 22, height: 22)
-                        .accessibilityHidden(true)
-                    Text(stage.padName).mangoFont(.footnote).lineLimit(1)
+    /// Invisible copies of the longest amounts and the stage words, in the cell's fonts, to read the widest of each.
+    private func measuring(_ grid: UtilityBillsGrid, rows: [UtilityBillRow], months: [Date]) -> some View {
+        let totals = rows.flatMap { row in months.compactMap { grid.cell(row: row, month: $0) } }
+            .map { cell in cell.bills.reduce(0) { $0 + $1.amountMinorUnits } }
+        // The longest few by characters: the widest rendering is among them (digits share a width in the figure face; a
+        // minus sign or a wider digit set can still reorder neighbours).
+        let candidates = Array(Set(totals.map { Money.format($0, currency: model.currency) })
+            .sorted { $0.count > $1.count }.prefix(4))
+        return ZStack {
+            VStack(alignment: .leading) {
+                ForEach(candidates, id: \.self) { Text($0).mangoFont(.subheadline, figures: true) }
+            }
+            .fixedSize()
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { widestFigure = $0 }
+            VStack(alignment: .leading) {
+                ForEach(UtilityBillStage.padLegend, id: \.self) { stage in
+                    HStack(spacing: 4) {
+                        Image(systemName: stage.padSymbol).mangoFont(.caption2, weight: .bold)
+                        Text(stage.padCellName).mangoFont(.caption, weight: .semibold)
+                        Text("×2").mangoFont(.caption2)
+                    }
                 }
             }
+            .fixedSize()
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { widestLabel = $0 }
         }
+        .hidden()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 
     /// How many month columns fit beside the provider names.
-    private var fit: Int { max(1, Int((width - Self.providerWidth - Self.spacing) / (Self.cellWidth + Self.spacing))) }
+    private var fit: Int { Self.columnsFit(width: width, providerWidth: providerWidth, cellWidth: cellWidth) }
 
     /// The months shown: as many as fit, ending `back` months before the latest.
     private func window(_ all: [Date]) -> [Date] {
@@ -88,29 +138,30 @@ struct PadBillsGridView: View {
     private func table(_ grid: UtilityBillsGrid, rows: [UtilityBillRow], months: [Date], all: [Date]) -> some View {
         VStack(alignment: .leading, spacing: Self.spacing) {
             if all.count > months.count {
-                HStack(spacing: 8) {
+                HStack(spacing: MangoSpacing.xxs) {
                     let earliest = all.firstIndex(of: months.first ?? Date()) ?? 0
-                    Button { back = min(back + months.count, all.count - months.count) } label: { Label("Earlier", systemImage: "chevron.left") }
+                    PadIconButton(systemImage: "chevron.left", label: "Earlier months") { back = min(back + months.count, all.count - months.count) }
                         .disabled(earliest <= 0)
-                    Button { back = max(back - months.count, 0) } label: { Label("Later", systemImage: "chevron.right") }
+                    Text("\(Self.monthTitle(months.first ?? Date())) – \(Self.monthTitle(months.last ?? Date()))")
+                        .mangoFont(.subheadline, weight: .semibold).foregroundStyle(.secondary)
+                    PadIconButton(systemImage: "chevron.right", label: "Later months") { back = max(back - months.count, 0) }
                         .disabled(back == 0)
                 }
-                .buttonStyle(.pad(.textLink, size: .small))
             }
             HStack(alignment: .top, spacing: Self.spacing) {
                 VStack(alignment: .leading, spacing: Self.spacing) {
-                    Color.clear.frame(width: Self.providerWidth, height: Self.headerHeight)
+                    Color.clear.frame(width: providerWidth, height: headerHeight)
                     ForEach(rows) { row in
                         Text(row.name).mangoFont(.subheadline, weight: .medium)
                             .lineLimit(1).truncationMode(.middle)
-                            .frame(width: Self.providerWidth, height: Self.cellHeight, alignment: .leading)
+                            .frame(width: providerWidth, height: cellHeight, alignment: .leading)
                     }
                 }
                 VStack(alignment: .leading, spacing: Self.spacing) {
                     HStack(spacing: Self.spacing) {
                         ForEach(months, id: \.self) { month in
                             Text(Self.monthTitle(month)).mangoFont(.subheadline, weight: .semibold)
-                                .frame(width: Self.cellWidth, height: Self.headerHeight, alignment: .leading)
+                                .frame(width: cellWidth, height: headerHeight, alignment: .leading)
                         }
                     }
                     ForEach(rows) { row in
@@ -135,23 +186,24 @@ struct PadBillsGridView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
                         Image(systemName: stage.padSymbol).mangoFont(.caption2, weight: .bold).foregroundStyle(color)
+                        Text(stage.padCellName).mangoFont(.caption, weight: .semibold).foregroundStyle(color).lineLimit(1).fixedSize()
                         Spacer(minLength: 0)
-                        if cell.bills.count > 1 { Text("×\(cell.bills.count)").mangoFont(.caption2).foregroundStyle(.secondary) }
+                        if cell.bills.count > 1 { Text("×\(cell.bills.count)").mangoFont(.caption2).foregroundStyle(.secondary).fixedSize() }
                     }
                     MoneyText(minorUnits: total, currency: model.currency, role: .neutral, fit: .shrink(), font: .subheadline)
                 }
-                .padding(8)
-                .frame(width: Self.cellWidth, height: Self.cellHeight, alignment: .leading)
+                .padding(Self.cellPadding)
+                .frame(width: cellWidth, height: cellHeight, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(color.opacity(0.18)))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(selected ? theme.accent : .clear, lineWidth: 2))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("\(row.name), \(Self.monthTitle(month)): \(stage.padName)")
+            .accessibilityLabel("\(row.name), \(Self.monthTitle(month)), \(stage.padName), \(Money.format(total, currency: model.currency))")
             .accessibilityIdentifier("pad-bill-cell-\(cell.id)")
             .accessibilityAddTraits(selected ? .isSelected : [])
         } else {
-            Color.clear.frame(width: Self.cellWidth, height: Self.cellHeight)
+            Color.clear.frame(width: cellWidth, height: cellHeight)
         }
     }
 

@@ -176,6 +176,13 @@ public enum PadRoutes {
             model.preload(PadDocumentsModel.readNow(context.dbQueue))
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .documents, columns: .doubleColumn))
         },
+        // Step 5: Month in two columns (summary, categories), then with a category's transactions in the side panel.
+        DemoRoute(name: "pad-month", sizes: DemoRoute.padSizes, minimumFigures: 20, pad: true) { context in
+            AnyView(PadRootView(tabs: monthTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .month, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-month-panel", sizes: DemoRoute.padSizes, minimumFigures: 20, pad: true) { context in
+            AnyView(PadRootView(tabs: monthTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .month, columns: .doubleColumn))
+        },
         // Search under the iPad sidebar: the flat field under the title with its suggested chips, with the newest transactions
         // (minimumFigures: day totals and amounts), and with a query and a token applied.
         DemoRoute(name: "pad-search", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
@@ -418,6 +425,30 @@ public enum PadRoutes {
         let search = SearchViewModel(dbQueue: context.dbQueue, today: { today }, query: query, tokens: tokens,
                                      preloaded: SearchViewModel.readNow(context.dbQueue))
         return PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, search: search)
+    }
+
+    /// Tabs with the demo's current pay month read; with `selecting`, its busiest spending row open in the side panel.
+    @MainActor
+    static func monthTabs(_ context: PhoneDemoContext, selecting: Bool) -> PhoneTabsModel {
+        let today = context.today
+        let month = MonthViewModel(dbQueue: context.dbQueue, today: { today }, viewer: .demoAdmin,
+                                   preloaded: MonthViewModel.readNow(context.dbQueue, today: today))
+        let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true, viewer: .demoAdmin, month: month)
+        if selecting, case let .loaded(page) = month.state {
+            let lists = page.rows(.spending).map { row in
+                (row: row, state: MonthTransactionsModel.readNow(context.dbQueue, row: row, range: page.review.range, today: today))
+            }
+            func count(_ state: MonthTransactionsModel.State) -> Int {
+                if case let .loaded(days) = state { days.reduce(0) { $0 + $1.rows.count } } else { 0 }
+            }
+            if let busiest = lists.max(by: { count($0.state) < count($1.state) }) {
+                let destination = MonthRowDestination(row: busiest.row, range: page.review.range)
+                // The panel's list is read before the first frame, as the iPhone's `month-transactions` route's is.
+                _ = month.transactionsModel(for: destination)
+                month.panelDestination = destination
+            }
+        }
+        return tabs
     }
 
     @MainActor

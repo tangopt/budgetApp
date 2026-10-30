@@ -15,6 +15,8 @@ public struct SearchView: View {
     let onRefresh: () async -> Void
     @Environment(\.phoneTheme) private var theme
     @Environment(\.usesPadPage) private var usesPadPage
+    /// The widest the results list grows on the iPad (design review §2.3: about 500 pt), the transaction in the side panel.
+    static let padListWidth: CGFloat = 560
 
     public init(model: SearchViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void = {}) {
         self.model = model
@@ -31,6 +33,7 @@ public struct SearchView: View {
                     if usesPadPage { PadFlatSearchField(model: model) }
                     content
                 }
+                .frame(maxWidth: usesPadPage ? Self.padListWidth : .infinity, alignment: .leading)
                 .phonePageContent()
             }
             .background(theme.background)
@@ -42,8 +45,11 @@ public struct SearchView: View {
             .phonePageTitle("Search", keepsSearchBar: !usesPadPage)
             .modifier(SearchFieldIfNeeded(model: model, usesPadPage: usesPadPage))
         }
-        .sheet(item: $model.detail) { row in
+        .sheet(item: Binding(get: { usesPadPage ? nil : model.detail }, set: { model.detail = $0 })) { row in
             TransactionDetailSheet(row: row)
+        }
+        .padSidePanel(isPresented: usesPadPage && model.detail != nil, onClose: { model.detail = nil }) {
+            if let row = model.detail { SearchTransactionPanel(row: row, onClose: { model.detail = nil }).id(row.id) }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: SearchViewModel.reloadKey(syncStatus))
@@ -108,6 +114,8 @@ public struct SearchView: View {
                             model.detail = row
                         } label: {
                             TransactionRow(row: row)
+                                .padding(.horizontal, usesPadPage ? MangoSpacing.xs : 0)
+                                .mangoRowSelection(usesPadPage && model.detail?.id == row.id)
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Shows the transaction")
@@ -217,6 +225,27 @@ struct PadFlatSearchField: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The iPad's side panel for the selected search result: the transaction, and an edit button where editing is on.
+struct SearchTransactionPanel: View {
+    let row: TransactionSearch.Row
+    let onClose: () -> Void
+    @Environment(\.quickEdit) private var quickEdit
+    @State private var canEdit = false
+    @State private var editing = false
+
+    var body: some View {
+        PadSidePanel(title: "Transaction", subtitle: PhoneDateFormat.day(row.date), onClose: onClose, actions: {
+            if canEdit { PadIconButton(systemImage: "pencil", label: "Edit transaction") { editing = true } }
+        }) {
+            TransactionDetailBody(row: row, showsFooter: false)
+        }
+        .task(id: row.id) { canEdit = await quickEdit?.canEdit(transactionId: row.id) ?? false }
+        .sheet(isPresented: $editing) {
+            if let quickEdit { TransactionEditSheet(row: row, model: quickEdit) }
         }
     }
 }

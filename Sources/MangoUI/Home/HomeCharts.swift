@@ -9,6 +9,8 @@ struct NetWorthInteractiveChart: View {
     let netWorth: NetWorthSeries
     @Environment(\.phoneTheme) private var theme
     @State private var selected: Date?
+    /// iPad charts stay at or under 180 pt so a tile never pushes the page below the fold (design review §3.4).
+    static let chartHeight: CGFloat = 180
 
     struct Point: Identifiable {
         let series: String
@@ -68,7 +70,7 @@ struct NetWorthInteractiveChart: View {
             .chartYAxis {
                 AxisMarks(position: .trailing) { _ in AxisGridLine(); AxisValueLabel().font(.caption2) }
             }
-            .frame(height: 200)
+            .frame(height: Self.chartHeight)
             .accessibilityLabel("Net worth over the last year, with the forecast dashed")
             .accessibilityValue(HomeCopy.sparklineValue(netWorth))
         }

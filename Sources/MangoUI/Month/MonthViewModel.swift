@@ -28,6 +28,8 @@ public final class MonthViewModel: ObservableObject {
     @Published public var segment: MonthSegment
     /// The transactions pushed from a row (kept here, above the lock cover, so a relock keeps them).
     @Published public var path: [MonthRowDestination] = []
+    /// The iPad: the category whose transactions the side panel shows (the iPhone pushes them on `path`).
+    @Published public var panelDestination: MonthRowDestination?
 
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
@@ -125,12 +127,14 @@ public final class MonthViewModel: ObservableObject {
     public func showPrevious() async {
         guard canShowPrevious, let page else { return }
         requested = page.review.month.previous
+        panelDestination = nil
         await load()
     }
 
     public func showNext() async {
         guard canShowNext, let page else { return }
         requested = page.review.month.next
+        panelDestination = nil
         await load()
     }
 
