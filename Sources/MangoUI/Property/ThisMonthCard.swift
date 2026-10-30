@@ -20,11 +20,11 @@ struct ThisMonthCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let receipt = PropertyCopy.receipt(glance.receipt) {
-                Divider()
+                MangoDivider()
                 statusRow(label: "Receipt", status: receipt)
             }
             if let caption = PropertyCopy.rechargeCaption(glance) {
-                Divider()
+                MangoDivider()
                 FigureRow(label: "Last recharge", secondary: caption) {
                     if let total = glance.lastRechargeTotalMinorUnits {
                         MoneyText(minorUnits: total, currency: currency, role: .neutral)

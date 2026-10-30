@@ -57,7 +57,7 @@ struct PadTenancyDetailView: View {
                         Button(action.title + (action == .contractDocuments || action == .addContract ? "…" : "")) { run(action) }
                     }
                     if actions.contains(.deleteTenancy) {
-                        Divider()
+                        MangoDivider()
                         Button("Delete tenancy…", role: .destructive) { run(.deleteTenancy) }
                     }
                 } label: {

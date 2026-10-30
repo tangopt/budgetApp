@@ -48,7 +48,7 @@ public struct TransactionDetailSheet: View {
         NavigationStack {
             TransactionDetailContent(row: row, showsFooter: !canEdit)
                 .background(theme.background)
-                .navigationTitle("Transaction")
+                .mangoNavigationTitle("Transaction")
                 .navigationBarTitleDisplayModeInline()
                 .toolbar {
                     if canEdit {

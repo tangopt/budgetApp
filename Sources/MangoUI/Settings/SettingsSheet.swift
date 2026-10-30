@@ -215,7 +215,7 @@ public struct SettingsSheet: View {
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .demoBannerSlot()
-            .navigationTitle("Settings")
+            .mangoNavigationTitle("Settings")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

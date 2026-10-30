@@ -118,7 +118,7 @@ struct PadAccountDetailView: View {
         if let sharingLine { rows.append(("Sharing", sharingLine)) }
         return Card(title: "Details") {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                if index > 0 { Divider() }
+                if index > 0 { MangoDivider() }
                 PadAccountDetailLine(label: row.0, value: row.1)
             }
         }

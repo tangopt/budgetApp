@@ -38,7 +38,7 @@ struct PadBillsAndRechargesView: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("Bills & recharges")
+            .padPage("Bills & recharges", contexts: property.tenancies.isEmpty ? [] : contexts, primary: primaryAction) { moreMenu }
         }
         .modifier(PadBillPanelHost(model: model) { bill in panelExtra(bill) })
         .task(id: ReloadKey(trigger: SyncReloadTrigger(syncStatus), tenancy: property.selectedTenancyId)) {
@@ -70,81 +70,46 @@ struct PadBillsAndRechargesView: View {
 
     // MARK: Header
 
+    /// The tenancy first, then its year: both context pickers on the page header (the tenancy by its label).
+    private var contexts: [ContextPicker] {
+        var pickers = [ContextPicker("Tenancy", items: property.tenancies, selected: property.selectedTenancyId.map(String.init),
+                                     fallback: property.selectedTenancy?.referenceLabel ?? "Tenancy",
+                                     id: { String($0.id ?? 0) }, title: { $0.referenceLabel },
+                                     choose: { property.selectedTenancyId = $0.id })]
+        let years = model.years
+        pickers.append(ContextPicker("Year", items: years, selected: String(model.year), fallback: String(model.year),
+                                     id: { String($0) }, title: { String($0) }, choose: { model.chosenYear = $0 }))
+        return pickers
+    }
+
+    /// The page's one primary action: prepare the next month's statement. The others are in the menu.
+    private var primaryAction: PageAction? {
+        guard write.canEdit, !property.tenancies.isEmpty else { return nil }
+        let month = RechargeEmail.monthName(model.nextMonth, language: .english)
+        return PageAction("Prepare \(month)", systemImage: "square.and.pencil") { Task { await model.prepareNext() } }
+    }
+
+    /// Open the utilities' site, Match tenant credits.
+    @ViewBuilder
+    private var moreMenu: some View {
+        if browser != nil || write.canEdit {
+            Menu {
+                if browser != nil { Button(PadBillsAction.utilityInvoices.title) { openUtilitySite() } }
+                if write.canEdit { Button(PadBillsAction.matchCredits.title) { Task { await model.matchCredits() } } }
+            } label: {
+                Image(systemName: "ellipsis.circle").mangoFont(.body, weight: .semibold)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("More")
+        }
+    }
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(property.selectedTenancy?.referenceLabel ?? "")
-                    .mangoFont(.title3, weight: .semibold).lineLimit(1).truncationMode(.middle)
-                    .accessibilityAddTraits(.isHeader)
-                if property.tenancies.count > 1 {
-                    Menu {
-                        ForEach(property.tenancies) { tenancy in
-                            Button { property.selectedTenancyId = tenancy.id } label: {
-                                if tenancy.id == property.selectedTenancyId { Label(tenancy.referenceLabel, systemImage: "checkmark") }
-                                else { Text(tenancy.referenceLabel) }
-                            }
-                        }
-                    } label: {
-                        Label("Tenancy", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("Change tenancy")
-                }
-                Spacer(minLength: 8)
-                yearPicker
-            }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { actionButtons }
-                Menu {
-                    menuItems
-                } label: {
-                    Label("Actions", systemImage: "ellipsis.circle").frame(minHeight: 44)
-                }
-                .buttonStyle(.pad(.textLink))
-            }
+        VStack(alignment: .leading, spacing: MangoSpacing.xs) {
             if let message = model.matchMessage {
                 InlineBanner(tone: .neutral, text: message)
                     .accessibilityIdentifier("match-credits-result")
             }
-        }
-    }
-
-    @ViewBuilder
-    private var yearPicker: some View {
-        let years = model.years
-        if years.count > 1 {
-            Picker("Year", selection: Binding(get: { model.year }, set: { model.chosenYear = $0 })) {
-                ForEach(years, id: \.self) { Text(String($0)).tag($0) }
-            }
-            .labelsHidden()
-            .frame(minHeight: 44)
-            .accessibilityLabel("Year")
-        } else {
-            Text(String(model.year)).mangoFont(.headline, figures: true)
-        }
-    }
-
-    @ViewBuilder
-    private var actionButtons: some View {
-        if browser != nil {
-            Button { openUtilitySite() } label: { Label(PadBillsAction.utilityInvoices.title, systemImage: RowAction.openSite.systemImage) }
-                .buttonStyle(.pad(.textLink))
-        }
-        if write.canEdit {
-            Button { Task { await model.matchCredits() } } label: { Label(PadBillsAction.matchCredits.title, systemImage: "arrow.left.arrow.right") }
-                .buttonStyle(.pad(.textLink))
-            Button { Task { await model.prepareNext() } } label: {
-                Label("Prepare \(RechargeEmail.monthName(model.nextMonth, language: .english))", systemImage: "square.and.pencil")
-            }
-            .buttonStyle(.pad(.textLink))
-        }
-    }
-
-    @ViewBuilder
-    private var menuItems: some View {
-        if browser != nil { Button(PadBillsAction.utilityInvoices.title) { openUtilitySite() } }
-        if write.canEdit {
-            Button(PadBillsAction.matchCredits.title) { Task { await model.matchCredits() } }
-            Button("Prepare \(RechargeEmail.monthName(model.nextMonth, language: .english))") { Task { await model.prepareNext() } }
         }
     }
 
@@ -192,14 +157,12 @@ struct PadBillsAndRechargesView: View {
     }
 
     private func tile<Value: View>(_ title: String, caption: String, pill: String? = nil, @ViewBuilder value: () -> Value) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(2)
-            value()
-            Text(caption.figuresUnbroken).mangoFont(.footnote).foregroundStyle(.secondary)
-            if let pill { PadStatusPill(text: pill, tone: .warning) }
+        Tile(title, value: value) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(caption.figuresUnbroken)
+                if let pill { StatusPill(pill, .waiting) }
+            }
         }
-        .padCardSurface()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: Panel
@@ -345,7 +308,7 @@ struct PadTotalSheet: View {
             }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Correct total")
+            .mangoNavigationTitle("Correct total")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

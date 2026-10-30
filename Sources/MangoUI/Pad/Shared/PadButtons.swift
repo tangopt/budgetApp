@@ -23,7 +23,7 @@ struct PadButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: MangoRadius.control, style: .continuous)
         configuration.label
             .mangoFont(size == .small ? .subheadline : .body, weight: .semibold)
             .lineLimit(1)
@@ -31,7 +31,8 @@ struct PadButtonStyle: ButtonStyle {
             .frame(minWidth: size.minimumTapTarget, minHeight: size.minimumTapTarget)
             .foregroundStyle(foreground)
             .background(background, in: shape)
-            .overlay { if role == .secondary { shape.strokeBorder(Color.secondary.opacity(0.35)) } }
+            // Secondary: surface, accent text, a hairline (none in Flat, where the surface step does it).
+            .overlay { if role == .secondary, MangoEdgeRules.drawsDividers(theme.edges) { shape.strokeBorder(theme.separator) } }
             .contentShape(shape)
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
     }
@@ -47,7 +48,7 @@ struct PadButtonStyle: ButtonStyle {
     private var background: Color {
         switch role {
         case .primary: theme.accent
-        case .secondary: Color.secondary.opacity(0.08)
+        case .secondary: theme.surface
         case .textLink: .clear
         case .destructive: theme.expenseTint
         }

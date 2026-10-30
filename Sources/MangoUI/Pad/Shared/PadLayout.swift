@@ -43,56 +43,27 @@ struct PadPageInsetReading<Content: View>: View {
     var body: some View { content(inset) }
 }
 
-/// A page's title row: the title (large, bold, one line), an optional subtitle, and the page's actions at the trailing
-/// edge, at the page inset from the sidebar.
-struct PadPageHeader<Actions: View>: View {
+private struct PadPageScaffold<Trailing: View>: ViewModifier {
     let title: String
     let subtitle: String?
-    let actions: Actions
-    @Environment(\.phoneTheme) private var theme
-    @Environment(\.padPageInset) private var inset
-
-    var body: some View {
-        HStack(alignment: .center, spacing: MangoSpacing.s) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .mangoFont(.largeTitle, weight: .bold)
-                    .lineLimit(1).truncationMode(.middle)
-                    .accessibilityAddTraits(.isHeader)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle.figuresUnbroken)
-                        .mangoFont(.subheadline).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-            }
-            .layoutPriority(1)
-            Spacer(minLength: MangoSpacing.s)
-            HStack(spacing: MangoSpacing.xs) { actions }
-        }
-        .frame(minHeight: 44)
-        .frame(maxWidth: PadMetrics.contentMaxWidth, alignment: .leading)
-        .padding(.horizontal, inset)
-        .padding(.top, MangoSpacing.l)
-        .padding(.bottom, MangoSpacing.s)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.background)
-    }
-}
-
-private struct PadPageScaffold<Actions: View>: ViewModifier {
-    let title: String
-    let subtitle: String?
+    let contexts: [ContextPicker]
+    let primary: PageAction?
     let keepsSearchBar: Bool
-    let actions: Actions
+    let trailing: Trailing
+    /// The iPhone: the gutter is fixed, not read from the width.
+    let isPhone: Bool
 
     func body(content: Content) -> some View {
         content
-            .safeAreaInset(edge: .top, spacing: 0) { PadPageHeader(title: title, subtitle: subtitle, actions: actions) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                PageHeader(title: title, subtitle: subtitle, contexts: contexts, primary: primary,
+                           topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
+            }
             .navigationTitle(title)
             #if os(iOS)
             .modifier(PadNavigationBar(keepsSearchBar: keepsSearchBar))
             #endif
-            .modifier(PadPageInsetReader())
+            .modifier(PadPageInsetReader(fixed: isPhone ? MangoSpacing.phoneGutter : nil))
     }
 }
 
@@ -112,11 +83,13 @@ private struct PadNavigationBar: ViewModifier {
 
 /// Reads the page's width and sets `padPageInset` for the header and content under it.
 private struct PadPageInsetReader: ViewModifier {
+    /// A fixed inset (the iPhone's gutter) instead of the one read from the width.
+    var fixed: CGFloat?
     @State private var width: CGFloat = 1000
 
     func body(content: Content) -> some View {
         content
-            .environment(\.padPageInset, PadMetrics.inset(forWidth: width))
+            .environment(\.padPageInset, fixed ?? PadMetrics.inset(forWidth: width))
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
 }
@@ -127,9 +100,11 @@ extension View {
     /// bar is hidden on this screen (a pushed screen keeps its own), unless `keepsSearchBar`: a screen with a system
     /// search field keeps the bar for it, without its title. The title stays the screen's navigation title for
     /// VoiceOver and the app switcher.
-    func padPage<Actions: View>(_ title: String, subtitle: String? = nil, keepsSearchBar: Bool = false,
+    func padPage<Actions: View>(_ title: String, subtitle: String? = nil, contexts: [ContextPicker] = [],
+                                primary: PageAction? = nil, keepsSearchBar: Bool = false, isPhone: Bool = false,
                                 @ViewBuilder actions: () -> Actions = { EmptyView() }) -> some View {
-        modifier(PadPageScaffold(title: title, subtitle: subtitle, keepsSearchBar: keepsSearchBar, actions: actions()))
+        modifier(PadPageScaffold(title: title, subtitle: subtitle, contexts: contexts, primary: primary,
+                                 keepsSearchBar: keepsSearchBar, trailing: actions(), isPhone: isPhone))
     }
 
     /// A page's content frame: the page inset on both sides, the standard top and bottom space, at most
@@ -236,33 +211,12 @@ private struct PadCardSurface: ViewModifier {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
+            .mangoSurface()
     }
 }
 
-/// A figure tile: a label, the value and an optional caption, on the card surface. In a `PadTileGrid` every tile of a
-/// row takes the row's tallest height.
-struct PadTile<Value: View, Caption: View>: View {
-    let title: String
-    let value: Value
-    let caption: Caption
-
-    init(_ title: String, @ViewBuilder value: () -> Value, @ViewBuilder caption: () -> Caption = { EmptyView() }) {
-        self.title = title
-        self.value = value()
-        self.caption = caption()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).mangoFont(.footnote).foregroundStyle(.secondary).lineLimit(2)
-            value
-            caption.mangoFont(.footnote).foregroundStyle(.secondary)
-        }
-        .padCardSurface()
-        .accessibilityElement(children: .combine)
-    }
-}
+/// The iPad's figure tile is the shared `Tile`.
+typealias PadTile<Value: View, Caption: View> = Tile<Value, Caption>
 
 /// `PadTileGrid` with its minimum column width scaled with Dynamic Type, so larger text gets fewer, wider columns
 /// rather than truncated names and dates. What the iPad screens use.
@@ -367,11 +321,14 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// A screen shared with the iPhone: its navigation title there, the iPad page scaffold (with `padActions` at the
-    /// trailing edge) under the iPad's sidebar.
-    func phonePageTitle<Actions: View>(_ title: String, keepsSearchBar: Bool = false,
-                                       @ViewBuilder padActions: () -> Actions = { EmptyView() }) -> some View {
-        modifier(PhonePageTitle(title: title, keepsSearchBar: keepsSearchBar, actions: padActions()))
+    /// A screen shared with the iPhone: `PageHeader` (the display-face title, context pickers, the primary action and `actions` at
+    /// the trailing edge) on both devices; the iPad's sidebar screens use the page inset, the iPhone the 16 pt gutter.
+    func phonePageTitle<Actions: View>(_ title: String, subtitle: String? = nil, contexts: [ContextPicker] = [],
+                                       primary: PageAction? = nil, keepsSearchBar: Bool = false,
+                                       keepsNavigationBar: Bool = false,
+                                       @ViewBuilder actions: () -> Actions = { EmptyView() }) -> some View {
+        modifier(PhonePageTitle(title: title, subtitle: subtitle, contexts: contexts, primary: primary,
+                                keepsSearchBar: keepsSearchBar, keepsNavigationBar: keepsNavigationBar, actions: actions()))
     }
 
     /// The content frame of a screen shared with the iPhone: the iPhone's 16 pt padding, the iPad page frame under the
@@ -381,18 +338,31 @@ extension View {
     }
 }
 
+/// The page title of a screen shared by the iPhone and iPad: `PageHeader` on both (the iPad at its page inset, the
+/// iPhone at the 16 pt gutter), so the title is in the set's display face.
 private struct PhonePageTitle<Actions: View>: ViewModifier {
     let title: String
+    let subtitle: String?
+    let contexts: [ContextPicker]
+    let primary: PageAction?
     let keepsSearchBar: Bool
+    /// A sheet's or pushed screen's: the iPhone keeps the system bar (Done, back) with an inline title in the display face.
+    let keepsNavigationBar: Bool
     let actions: Actions
     @Environment(\.usesPadPage) private var usesPadPage
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        if usesPadPage {
-            content.padPage(title, keepsSearchBar: keepsSearchBar) { actions }
+        if keepsNavigationBar, !usesPadPage {
+            content.mangoNavigationTitle(title)
         } else {
-            content.navigationTitle(title)
+            page(content)
         }
+    }
+
+    private func page(_ content: Content) -> some View {
+        content.padPage(title, subtitle: subtitle, contexts: contexts, primary: primary, keepsSearchBar: keepsSearchBar,
+                        isPhone: !usesPadPage) { actions }
     }
 }
 

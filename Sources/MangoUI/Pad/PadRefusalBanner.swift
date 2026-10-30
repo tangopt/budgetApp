@@ -196,7 +196,7 @@ struct PadChoiceSheet: View {
                     }
                 }
             }
-            .navigationTitle(request.title)
+            .mangoNavigationTitle(request.title)
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

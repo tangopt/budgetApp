@@ -139,10 +139,9 @@ struct PadEvidenceView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .mangoSurface()
+        .mangoRowSelection(isSelected, radius: MangoRadius.card)
         .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-evidence-\(item.id)")
     }
 

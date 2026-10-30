@@ -96,7 +96,7 @@ struct PadProfileView: View {
     private func detailsCard(_ property: Property) -> some View {
         ProfileCard(title: "Details", message: model.message(for: .details)) {
             if offers(.editDetails, on: .details) {
-                Button("Edit") { editingDetails = model.detailsDraft() }.buttonStyle(.pad(.secondary, size: .small))
+                RowIconButton(.edit, item: "property details", size: .small) { editingDetails = model.detailsDraft() }
             }
             if offers(.deleteProperty, on: .details) {
                 Menu {
@@ -131,7 +131,7 @@ struct PadProfileView: View {
         let address = property.postalAddress
         return ProfileCard(title: "Address", subtitle: "Found on the map with Apple Maps when you save it", message: model.message(for: .address)) {
             if offers(.editAddress, on: .address) {
-                Button("Edit") { editingAddress = address }.buttonStyle(.pad(.secondary, size: .small))
+                RowIconButton(.edit, item: "address", size: .small) { editingAddress = address }
             }
         } content: {
             if address.isEmpty {
@@ -155,7 +155,7 @@ struct PadProfileView: View {
         ProfileCard(title: "Owners", subtitle: "Shares drive each person's part of the rental income and costs",
                     message: model.message(for: .owners)) {
             if offers(.editOwners, on: .owners) {
-                Button("Edit") { editingOwners = model.ownersDraft() }.buttonStyle(.pad(.secondary, size: .small))
+                RowIconButton(.edit, item: "owners", size: .small) { editingOwners = model.ownersDraft() }
             }
         } content: {
             if model.snapshot.owners.isEmpty {
@@ -430,7 +430,7 @@ struct PadPropertyFormSheet: View {
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Edit property")
+            .mangoNavigationTitle("Edit property")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
@@ -501,7 +501,7 @@ struct PadOwnersSheet: View {
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Owners")
+            .mangoNavigationTitle("Owners")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
@@ -565,7 +565,7 @@ struct PadLinkAccountSheet: View {
             }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Link account")
+            .mangoNavigationTitle("Link account")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
@@ -616,7 +616,7 @@ struct PadAddressSheet: View {
             }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Edit address")
+            .mangoNavigationTitle("Edit address")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

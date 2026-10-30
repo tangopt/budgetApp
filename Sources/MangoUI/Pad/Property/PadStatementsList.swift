@@ -1,33 +1,26 @@
 import SwiftUI
 import BudgetCore
 
-/// A statement's state as a pill (the Mac's `RechargeFormat.statusPill`): Draft; Sent (Overdue past the matching window,
-/// Part paid once a credit pays some of it); Paid.
+/// A pill by tone, as the iPad's screens name them; drawn by the shared `StatusPill` (word on a status-role tint):
+/// neutral = neutral, accent = to do, warning = waiting, positive = done.
 struct PadStatusPill: View {
-    enum Tone { case neutral, accent, warning, positive }
+    enum Tone {
+        case neutral, accent, warning, positive
+
+        var status: StatusPill.Status {
+            switch self {
+            case .neutral: .neutral
+            case .accent: .todo
+            case .warning: .waiting
+            case .positive: .done
+            }
+        }
+    }
 
     let text: String
     let tone: Tone
-    @Environment(\.phoneTheme) private var theme
 
-    var body: some View {
-        Text(text)
-            .mangoFont(.footnote, weight: .semibold)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(Capsule().fill(color.opacity(0.15)))
-            .foregroundStyle(tone == .neutral ? Color.secondary : color)
-    }
-
-    private var color: Color {
-        switch tone {
-        case .neutral: .secondary
-        case .accent: theme.accent
-        case .warning: theme.pending
-        case .positive: theme.income
-        }
-    }
+    var body: some View { StatusPill(text, tone.status) }
 }
 
 extension PadBillsAndRechargesModel {
@@ -66,7 +59,7 @@ struct PadStatementsList: View {
                 Card {
                     VStack(spacing: 0) {
                         ForEach(Array(model.statements.enumerated()), id: \.element.id) { index, statement in
-                            if index > 0 { Divider() }
+                            if index > 0 { MangoDivider() }
                             row(statement)
                         }
                     }
@@ -174,7 +167,7 @@ struct PadStatementSheet: View {
                     }
                 }
                 if statement.statement.status == .sent {
-                    Divider()
+                    MangoDivider()
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("Still owed").mangoFont(.subheadline).foregroundStyle(.secondary)
                         Spacer(minLength: 8)

@@ -72,7 +72,7 @@ public struct BrowserView: View {
         .sheet(item: $previewing) { item in
             NavigationStack {
                 PadDocumentPreview(url: model.fileURL(for: item))
-                    .navigationTitle(item.fileName)
+                    .mangoNavigationTitle(item.fileName)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { previewing = nil } } }
             }
         }

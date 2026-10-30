@@ -46,7 +46,7 @@ struct PadMortgageTermsSheet: View {
             .environment(\.timeZone, calendar.timeZone)
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Mortgage terms")
+            .mangoNavigationTitle("Mortgage terms")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

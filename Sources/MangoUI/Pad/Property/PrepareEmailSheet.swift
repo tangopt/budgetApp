@@ -160,7 +160,7 @@ struct PrepareEmailSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .background(theme.background)
-            .navigationTitle("Email · \(model.monthName)")
+            .mangoNavigationTitle("Email · \(model.monthName)")
             .navigationBarTitleDisplayModeInline()
             .toolbar { ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Close") { dismiss() } }.padFlatToolbarItem() }
         }

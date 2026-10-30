@@ -41,7 +41,7 @@ public struct DocumentFullView: View {
                 }
             }
             .background(theme.background)
-            .navigationTitle(model?.title ?? "")
+            .mangoNavigationTitle(model?.title ?? "")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }

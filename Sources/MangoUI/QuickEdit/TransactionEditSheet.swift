@@ -23,7 +23,7 @@ public struct TransactionEditSheet: View {
     public var body: some View {
         NavigationStack {
             TransactionEditForm(row: row, model: model, categoryId: $categoryId, note: $note)
-                .navigationTitle("Edit transaction")
+                .mangoNavigationTitle("Edit transaction")
                 .navigationBarTitleDisplayModeInline()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {

@@ -54,7 +54,7 @@ struct PadAccountsView: View {
                 }
                 .navigationDestination(for: AccountDestination.self) { destination in
                     PadAccountDetailView(model: model, detail: accounts.detailModel(for: destination), onEdit: onEdit)
-                        .navigationTitle(accounts.row(for: destination)?.name ?? "Account")
+                        .mangoNavigationTitle(accounts.row(for: destination)?.name ?? "Account")
                         .navigationBarTitleDisplayModeInline()
                         .demoBannerSlot()
                 }
@@ -131,18 +131,16 @@ struct PadAccountsView: View {
             .accessibilityValue(section.spokenSubtotal)
             .accessibilityAddTraits(.isHeader)
             ForEach(section.rows) { row in
-                Divider()
+                MangoDivider()
                 if split {
                     Button { model.selectedId = row.id } label: {
                         rowLabel(row)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(model.selectedId == row.id ? theme.accent.opacity(0.14) : .clear))
+                            .mangoRowSelection(model.selectedId == row.id)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityAddTraits(model.selectedId == row.id ? .isSelected : [])
                 } else {
                     NavigationLink(value: AccountDestination(accountId: row.id)) { rowLabel(row) }
                         .buttonStyle(.plain)
@@ -220,14 +218,14 @@ struct PadAccountTransactionPanel: View {
                       fit: .shrink(), font: .title.weight(.semibold))
             Card {
                 PadAccountDetailLine(label: "Account", value: shown.account.isEmpty ? "—" : shown.account)
-                Divider()
+                MangoDivider()
                 PadAccountDetailLine(label: "Date", value: PhoneDateFormat.day(row.date))
-                Divider()
+                MangoDivider()
                 categoryRow
-                Divider()
+                MangoDivider()
                 noteRow
                 if !tags.isEmpty {
-                    Divider()
+                    MangoDivider()
                     HStack(spacing: 6) {
                         ForEach(tags, id: \.self) { PadStatusPill(text: $0, tone: .neutral) }
                         Spacer(minLength: 0)
@@ -302,7 +300,7 @@ struct PadAccountTransactionPanel: View {
             }
             Card {
                 ForEach(Array(open.documents.enumerated()), id: \.element.id) { index, document in
-                    if index > 0 { Divider() }
+                    if index > 0 { MangoDivider() }
                     Button { previewId = document.id } label: {
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {

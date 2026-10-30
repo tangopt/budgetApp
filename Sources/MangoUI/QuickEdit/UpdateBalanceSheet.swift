@@ -59,7 +59,7 @@ public struct UpdateBalanceSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle("Update balance")
+            .mangoNavigationTitle("Update balance")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

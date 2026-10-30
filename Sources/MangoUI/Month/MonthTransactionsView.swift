@@ -164,7 +164,7 @@ public struct MonthTransactionsView: View {
             .padding(16)
         }
         .background(theme.background)
-        .navigationTitle(model.row.category.name)
+        .mangoNavigationTitle(model.row.category.name)
         .navigationBarTitleDisplayModeInline()
         .task {
             if case .idle = model.state { await model.load() }
