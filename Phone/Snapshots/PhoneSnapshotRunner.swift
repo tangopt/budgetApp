@@ -55,10 +55,18 @@ enum PhoneSnapshotRunner {
         return arguments[index + 1] == "ipad"
     }
 
-    /// `--font <id>` (scripts/render-phone-snapshots.sh passes it as MANGO_SNAPSHOT_FONT): the typeface to render in
-    /// (a `FontCatalog` id); SF Pro by default.
-    static var fontId: String {
-        ProcessInfo.processInfo.environment["MANGO_SNAPSHOT_FONT"].flatMap { $0.isEmpty ? nil : $0 } ?? FontCatalog.defaultID
+    /// `--theme <id>` (scripts/render-phone-snapshots.sh passes it as MANGO_SNAPSHOT_THEME): the theme set to render
+    /// in (a `ThemeSet` id; Mango by default), or `all` for every set, each render's name then prefixed with the
+    /// set's id (`flat-home-light-large.png`). An unknown id fails the run.
+    static var themeSets: (sets: [ThemeSet], prefixed: Bool) {
+        let value = ProcessInfo.processInfo.environment["MANGO_SNAPSHOT_THEME"].flatMap { $0.isEmpty ? nil : $0 } ?? ThemeSet.defaultID
+        if value == "all" { return (ThemeSet.all, true) }
+        let ids = value.split(separator: ",").map(String.init)
+        let sets = ids.compactMap { id in ThemeSet.all.first { $0.id == id } }
+        guard sets.count == ids.count else {
+            fail("no theme set named \(value) (sets: \(ThemeSet.all.map(\.id).joined(separator: ", ")), or all)")
+        }
+        return (sets, sets.count > 1)
     }
 
     /// `--only a,b`: just those routes (by name).
@@ -138,20 +146,24 @@ enum PhoneSnapshotRunner {
         // iPad: one pass per window size, no full-height pass (the sidebar's detail scrolls inside its column).
         let passes: [(full: Bool, size: CGSize)] = isPad
             ? PadRoutes.windowSizes.map { (false, $0) } : [(false, windowSize), (true, windowSize)]
+        let (themeSets, prefixed) = themeSets
+        for themeSet in themeSets {
+        let theme = PhoneTheme(themeSet)
         for pass in passes {
             let full = pass.full
             let frameSize = full ? fullSize : pass.size
             for route in routes {
                 for appearance in appearances {
                     for size in route.sizes {
-                        let name = "\(route.name)-" + (isPad ? "\(Int(pass.size.width))x\(Int(pass.size.height))-" : "")
+                        let name = (prefixed ? "\(themeSet.id)-" : "") + "\(route.name)-" + (isPad ? "\(Int(pass.size.width))x\(Int(pass.size.height))-" : "")
                             + "\(appearance.name)-\(String(describing: size))" + (full ? "-full" : "")
                         probe.reset()
                         window.overrideUserInterfaceStyle = appearance.style
                         let root = route.make(context)
                             .environment(\.dynamicTypeSize, size)
-                            .environment(\.phoneTheme, .classic)
-                            .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
+                            .environment(\.phoneTheme, theme)
+                            .environment(\.phoneFonts, theme.fonts)
+                            .tint(theme.accent)
                         window.frame = CGRect(origin: .zero, size: frameSize)
                         window.rootViewController = UIHostingController(rootView: root)
                         window.layoutIfNeeded()
@@ -177,6 +189,7 @@ enum PhoneSnapshotRunner {
                     }
                 }
             }
+        }
         }
         probe.isActive = false
         if renders.reduce(0, { $0 + $1.checked }) == 0 { problems.append("the run measured no figures at all") }

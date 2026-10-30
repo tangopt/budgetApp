@@ -9,6 +9,21 @@ public enum PadRoutes {
                                                CGSize(width: 1032, height: 1376), CGSize(width: 1376, height: 1032)]
 
     static let all: [DemoRoute] = [
+        // Step 8: Settings as the iPad shows it, a form sheet about 600 pt wide over the dimmed root: Appearance and the
+        // eight theme cards, 4 x 2.
+        DemoRoute(name: "pad-settings", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
+            let today = context.today
+            return AnyView(ZStack {
+                Color.black.opacity(0.25).ignoresSafeArea()
+                SettingsSheet(appearance: .constant(.system), themeSetId: .constant(ThemeSet.defaultID), iCloud: .available,
+                              keyHeld: true, status: .idle(lastSync: today.addingTimeInterval(-300)),
+                              version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
+                              onLockNow: {}, onSyncNow: {})
+                    .environment(\.horizontalSizeClass, .regular)
+                    .frame(maxWidth: 600, maxHeight: 900)
+                    .clipShape(RoundedRectangle(cornerRadius: MangoRadius.sheet, style: .continuous))
+            })
+        },
         // The sidebar over Home: Home's 14 figures (the sidebar adds none).
         DemoRoute(name: "pad-root", sizes: DemoRoute.padSizes, minimumFigures: 14, pad: true) { context in
             let today = context.today

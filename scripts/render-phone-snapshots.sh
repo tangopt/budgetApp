@@ -11,9 +11,12 @@
 # This script copies them to <outDir>, prints the report's first two lines and uninstalls the snapshot build.
 # Never the phone's real data, the Keychain or iCloud: the snapshot build is unsigned and has no entitlements.
 #
-#   scripts/render-phone-snapshots.sh <outDir> [--device ipad] [--only gallery,home] [--font <id>]
+#   scripts/render-phone-snapshots.sh <outDir> [--device ipad] [--only gallery,home] [--theme <id>|all]
 #
-# --font <id> (step 16): renders in that FontCatalog typeface (sf-pro by default; lexend, ibm-plex-mono, …).
+# --theme <id> (step 8): renders in that theme set, palette and fonts (mango by default; classic, editorial, clear,
+# studio, calm, library, flat), several as a,b, or all eight with all; with more than one, each PNG's name starts
+# with the set's id (flat-home-light-large.png). --font <id> (step 16) is kept as an alias: the set the one-time
+# migration picks for that font on the Classic colour theme (new-york -> editorial, inter -> flat, ...).
 #
 # --device ipad (step 8): boots IOS_SIM_DEVICE (default "iPad Pro 13-inch (M5)") and renders the iPad routes
 # (DemoRoute.pad) at 834×1194, 1194×834, 1032×1376 and 1376×1032, light and dark, at .large and .xxxLarge, as
@@ -28,16 +31,25 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -* ]]; then
-    echo "usage: $0 <outDir> [--device ipad] [--only a,b] [--font id]" >&2
+    echo "usage: $0 <outDir> [--device ipad] [--only a,b] [--theme id|a,b|all]" >&2
     exit 2
 fi
 OUT_ARG="$1"
 shift
-# --font <id> goes to the runner through an environment variable (SIMCTL_CHILD_ passes it into the app).
-FONT_ID="sf-pro"
+# --theme <id> goes to the runner through an environment variable (SIMCTL_CHILD_ passes it into the app).
+THEME_ID="mango"
 ARGS=()
 while [[ $# -gt 0 ]]; do
-    if [[ "$1" == "--font" && $# -ge 2 ]]; then FONT_ID="$2"; shift 2; else ARGS+=("$1"); shift; fi
+    if [[ "$1" == "--theme" && $# -ge 2 ]]; then THEME_ID="$2"; shift 2
+    elif [[ "$1" == "--font" && $# -ge 2 ]]; then
+        case "$2" in
+            new-york) THEME_ID="editorial" ;; source-serif-4) THEME_ID="library" ;;
+            ibm-plex-sans|ibm-plex-mono) THEME_ID="studio" ;; atkinson-hyperlegible|lexend) THEME_ID="clear" ;;
+            manrope|source-sans-3|public-sans) THEME_ID="calm" ;; sf-rounded) THEME_ID="mango" ;; inter) THEME_ID="flat" ;;
+            *) THEME_ID="classic" ;;
+        esac
+        shift 2
+    else ARGS+=("$1"); shift; fi
 done
 set -- "${ARGS[@]}"
 [[ "$OUT_ARG" == /* ]] || OUT_ARG="$PWD/$OUT_ARG"
@@ -101,7 +113,7 @@ xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 xcrun simctl install "$UDID" "$APP"
 # --console-pty waits for the app to exit.
 RUN_LOG="$SCRATCH/render-run.log"
-SIMCTL_CHILD_MANGO_SNAPSHOT_FONT="$FONT_ID" xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" --render-snapshots "$@" > "$RUN_LOG" 2>&1 || true
+SIMCTL_CHILD_MANGO_SNAPSHOT_THEME="$THEME_ID" xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" --render-snapshots "$@" > "$RUN_LOG" 2>&1 || true
 
 CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)"
 SNAPS="$CONTAINER/Documents/snapshots"
