@@ -60,7 +60,7 @@ public enum SalaryCalculator {
                             netPayPension: netPayPension, reliefAtSourceGross: reliefAtSourceGross)
         if tax.capped { notices.append("K code: tax limited to half of pay") }
         if tax.typedCodeInTaperZone { notices.append(typedCodeTaperNotice) }
-        let incomeTaxTotal = roundHalfUp(tax.numerator, 10_000)
+        var incomeTaxTotal = roundHalfUp(tax.numerator, 10_000)
         var benefitsInKindTax = 0
         if benefits > 0 {
             let without = incomeTax(rules: rules, region: inputs.region, code: code,
@@ -71,11 +71,11 @@ public enum SalaryCalculator {
 
         // NI and loans, on cash pay
         let charges = payrollCharges(cashPay: cashPay, rules: rules, inputs: inputs)
-        let employeeNI = roundHalfUp(charges.ni, 10_000)
-        let studentLoan = roundHalfUp(charges.studentLoan, 10_000)
-        let postgraduateLoan = roundHalfUp(charges.postgraduateLoan, 10_000)
+        var employeeNI = roundHalfUp(charges.ni, 10_000)
+        var studentLoan = roundHalfUp(charges.studentLoan, 10_000)
+        var postgraduateLoan = roundHalfUp(charges.postgraduateLoan, 10_000)
 
-        let employeePension = sacrifice + netPayPension + reliefAtSourcePaid
+        var employeePension = sacrifice + netPayPension + reliefAtSourcePaid
         let employerPension = inputs.employerPension.annual(on: pay)
 
         var takeHome = pay - employeePension - incomeTaxTotal - employeeNI - studentLoan - postgraduateLoan
@@ -83,8 +83,8 @@ public enum SalaryCalculator {
             notices.append("Deductions are more than pay; take-home shown as £0")
             takeHome = 0
         }
-        let deductions = incomeTaxTotal + employeeNI + studentLoan + postgraduateLoan
-        let effectiveRate = pay > 0 ? roundHalfUp(deductions * 10_000, pay) : 0
+        var deductions = incomeTaxTotal + employeeNI + studentLoan + postgraduateLoan
+        var effectiveRate = pay > 0 ? roundHalfUp(deductions * 10_000, pay) : 0
 
         // The months: with a yearly bonus, the payslips; otherwise a twelfth of the year.
         var takeHomeMonthly = roundHalfUp(takeHome, 12)
@@ -109,9 +109,16 @@ public enum SalaryCalculator {
                 notices.append(after > 0 ? "PAYE refunds \(Money.format(after, currency: .gbp)) after the bonus month"
                                          : "PAYE takes \(Money.format(-after, currency: .gbp)) more after the bonus month")
             }
-            if abs(total - takeHome) >= 100 {
-                notices.append("NI is monthly: payslips total \(Money.format(total, currency: .gbp))")
-            }
+            // The year is what the twelve payslips add up to: NI and the loans are worked out on each
+            // payslip, so a bonus month pays less NI (and more loan) than the year's figures would.
+            incomeTaxTotal = slips.reduce(0) { $0 + $1.incomeTax }
+            employeeNI = slips.reduce(0) { $0 + $1.employeeNI }
+            studentLoan = slips.reduce(0) { $0 + $1.studentLoan }
+            postgraduateLoan = slips.reduce(0) { $0 + $1.postgraduateLoan }
+            employeePension = slips.reduce(0) { $0 + $1.employeePension }
+            takeHome = total
+            deductions = incomeTaxTotal + employeeNI + studentLoan + postgraduateLoan
+            effectiveRate = pay > 0 ? roundHalfUp(deductions * 10_000, pay) : 0
         }
 
         return SalaryResult(

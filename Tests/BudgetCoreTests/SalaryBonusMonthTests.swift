@@ -29,13 +29,14 @@ final class SalaryBonusMonthTests: XCTestCase {
         XCTAssertEqual(bonus, SalaryPayslip(pay: 1_375_000, incomeTax: 348_650, employeeNI: 44_255, studentLoan: 0,
                                             postgraduateLoan: 0, employeePension: 0, takeHome: 982_095))
         XCTAssertEqual(r.takeHomeMonthly, 299_330, "the month is the normal month")
-        // The year is unchanged: tax 9,432; NI 37,700 × 8% = 3,016 + 4,730 × 2% = 94.60 → 3,110.60; 42,457.40.
+        // The year is the payslips: tax 9,432 (cumulative, as on the year); NI per payslip 2,820.75, which is
+        // 289.85 less than 3,110.60 on the year (the bonus month's NI above the monthly limit is 2%);
+        // take-home 11 × 2,993.30 + 9,820.95 = 42,747.25.
         XCTAssertEqual(r.incomeTax, 943_200)
-        XCTAssertEqual(r.employeeNI, 311_060)
-        XCTAssertEqual(r.takeHomeAnnual, 4_245_740)
-        // The payslips: 11 × 2,993.30 + 9,820.95 = 42,747.25 (NI per month is 289.85 less than on the year).
+        XCTAssertEqual(r.employeeNI, 282_075)
+        XCTAssertEqual(r.takeHomeAnnual, 4_274_725)
         XCTAssertEqual(r.payslipsTakeHome, 4_274_725)
-        XCTAssertTrue(r.notices.contains("NI is monthly: payslips total £42,747.25"), "\(r.notices)")
+        XCTAssertFalse(r.notices.contains { $0.hasPrefix("NI is monthly") }, "\(r.notices)")
     }
 
     func testStudentLoanInTheBonusMonth() throws {
@@ -50,8 +51,8 @@ final class SalaryBonusMonthTests: XCTestCase {
                                                     postgraduateLoan: 0, employeePension: 0, takeHome: 197_329))
         XCTAssertEqual(r.bonusMonth, SalaryPayslip(pay: 733_333, incomeTax: 125_717, employeeNI: 31_422, studentLoan: 43_961,
                                                    postgraduateLoan: 0, employeePension: 0, takeHome: 532_233))
-        // The year's loan is (33,000 − 29,385) × 9% = 325.35: payroll takes 439.61 in the bonus month.
-        XCTAssertEqual(r.studentLoan, 32_535)
+        // The year's loan is what the payslips take: 439.61, all in the bonus month (on the year it would be 325.35).
+        XCTAssertEqual(r.studentLoan, 43_961)
     }
 
     func testABonusBeforeMarchIsOverTaxedInItsMonthAndGivenBackAfter() throws {
@@ -76,11 +77,10 @@ final class SalaryBonusMonthTests: XCTestCase {
         XCTAssertNil(monthly.normalMonth)
         XCTAssertNil(monthly.payslipsTakeHome)
         XCTAssertEqual(monthly.takeHomeMonthly, SalaryCalculator.roundHalfUp(monthly.takeHomeAnnual, 12))
-        // How it's paid never changes the year.
-        XCTAssertEqual(yearly.takeHomeAnnual, monthly.takeHomeAnnual)
+        // Income tax over the year doesn't depend on how the bonus is paid; NI does, since it's per payslip.
         XCTAssertEqual(yearly.incomeTax, monthly.incomeTax)
-        XCTAssertEqual(yearly.employeeNI, monthly.employeeNI)
-        XCTAssertEqual(yearly.marginalRateBP, monthly.marginalRateBP)
+        XCTAssertLessThan(yearly.employeeNI, monthly.employeeNI)
+        XCTAssertEqual(yearly.takeHomeAnnual, yearly.payslipsTakeHome)
     }
 
     func testAPercentagePensionComesOffTheBonusToo() throws {

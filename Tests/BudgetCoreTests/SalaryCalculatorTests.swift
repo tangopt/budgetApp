@@ -228,7 +228,8 @@ final class SalaryCalculatorTests: XCTestCase {
 
     func testBonusEqualsSalary() {
         // 50,000 + 10,000 bonus is taxed as 60,000 (example 2): tax 11,432.00
-        let withBonus = calc(5_000_000) { $0.bonusAnnual = 1_000_000 }
+        // Spread monthly, so the year is the same pay as a £60,000 salary.
+        let withBonus = calc(5_000_000) { $0.bonusAnnual = 1_000_000; $0.bonusPayment = .monthly }
         let salary = calc(6_000_000)
         XCTAssertEqual(withBonus.incomeTax, 1_143_200)
         XCTAssertEqual(withBonus.incomeTax, salary.incomeTax)
