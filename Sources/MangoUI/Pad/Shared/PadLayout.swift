@@ -261,6 +261,8 @@ struct PadTileGrid: Layout {
     /// As many columns as fit, then balanced: the fewest columns that still need no more rows, so six tiles that fit
     /// five to a row go three and three rather than five and an orphan.
     func columns(for width: CGFloat, count: Int) -> Int {
+        // An unbounded or NaN width (a flex frame measuring its child's maximum) fits every tile in one row.
+        guard width.isFinite else { return max(1, min(maximumColumns, max(count, 1))) }
         let fitting = Int(((width + spacing) / (minimumColumnWidth + spacing)).rounded(.down))
         let columns = max(1, min(fitting, maximumColumns, max(count, 1)))
         guard balanced, count > 0 else { return columns }
@@ -283,7 +285,13 @@ struct PadTileGrid: Layout {
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        let width = proposal.width ?? (minimumColumnWidth * CGFloat(min(subviews.count, 2)) + spacing)
+        // No width, or an unbounded one (`.infinity`, asked by a flex frame to find its maximum), measures at the ideal width:
+        // the tiles side by side at their minimum column width. (`Int(.infinity)` in `columns(for:count:)` crashed Checks.)
+        var width = proposal.width ?? (minimumColumnWidth * CGFloat(min(subviews.count, 2)) + spacing)
+        if !width.isFinite {
+            let ideal = max(1, min(maximumColumns, max(subviews.count, 1)))
+            width = minimumColumnWidth * CGFloat(ideal) + spacing * CGFloat(ideal - 1)
+        }
         measure(width: width, subviews: subviews, cache: &cache)
         let height = cache.rowHeights.reduce(0, +) + spacing * CGFloat(max(cache.rowHeights.count - 1, 0))
         return CGSize(width: width, height: height)
