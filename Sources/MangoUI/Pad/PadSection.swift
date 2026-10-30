@@ -31,7 +31,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .profile: "Profile"
         case .evidence: "Evidence"
         case .documents: "Documents"
-        case .salary: "UK Salary Calculator"
+        case .salary: "Salary calculator"
         }
     }
 
@@ -44,13 +44,13 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .thisMonth: "building.2"
         case .billsAndRecharges: "doc.text"
         case .tenancies: "person.2"
-        case .money: "sterlingsign.circle"
+        case .money: "banknote"
         case .calendar: "calendar.badge.clock"
         case .checks: "checkmark.seal"
         case .profile: "person.text.rectangle"
         case .evidence: "exclamationmark.magnifyingglass"
         case .documents: "folder"
-        case .salary: "sterlingsign.circle"
+        case .salary: "percent"
         }
     }
 
