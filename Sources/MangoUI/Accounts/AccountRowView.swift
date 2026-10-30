@@ -1,8 +1,8 @@
 import SwiftUI
 import BudgetCore
 
-/// An account row's words (iPhone spec §3.6): the name over "Imported · through <day>" or "Checked <n> days ago",
-/// the amber "Needs an update" when the Mac's rule says it's stale (`AccountRow.isStale`, `BalanceStaleness`), and
+/// An account row's words (iPhone spec §3.6): the name; when stale, over "Imported · through <day>" or "Checked <n> days ago"
+/// and the amber "Needs an update" pill when the Mac's rule says it's stale (`AccountRow.isStale`, `BalanceStaleness`), and
 /// the balance in the account's currency with pounds beneath for a non-GBP account. Wording only: the figures are
 /// `AccountsOverview`'s.
 public struct AccountRowPresentation: Equatable, Sendable, Identifiable {
@@ -10,6 +10,9 @@ public struct AccountRowPresentation: Equatable, Sendable, Identifiable {
     public let name: String
     public let caption: String
     public let needsUpdate: Bool
+    /// How fresh the balance is, shown only when it is stale (design review D2: "Imported · through 12 Oct 2026" on
+    /// every row was noise); nil for a current account.
+    public var freshnessNote: String? { needsUpdate ? caption : nil }
     public let nativeMinorUnits: Int
     public let currency: Currency
     /// The pounds equivalent under a non-GBP balance; nil for a GBP account.
@@ -87,13 +90,8 @@ struct AccountRowView: View {
                 }
             }
             if row.needsUpdate {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .accessibilityHidden(true)
-                    Text(AccountsCopy.needsUpdate)
-                }
-                .mangoFont(.subheadline)
-                .foregroundStyle(theme.pending)
+                // An amber pill (a word on a tint), under the stale date.
+                StatusPill(AccountsCopy.needsUpdate, .waiting)
             }
         }
         .padding(.vertical, 6)
@@ -114,10 +112,12 @@ struct AccountRowView: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(row.caption.figuresUnbroken)
-                .mangoFont(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let note = row.freshnessNote {
+                Text(note.figuresUnbroken)
+                    .mangoFont(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !row.isInNetWorth {
                 Text(AccountsCopy.notInNetWorth)
                     .mangoFont(.footnote)

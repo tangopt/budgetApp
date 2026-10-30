@@ -123,6 +123,8 @@ final class AccountsTests: XCTestCase {
         XCTAssertEqual(since.yearEndMinorUnits, try XCTUnwrap(december).valueMinorUnits)
         XCTAssertEqual(since.changeMinorUnits, page.overview.netWorthGBP - since.yearEndMinorUnits)
         XCTAssertEqual(AccountsCopy.sinceLabel(since), "Since December 2025")
+        let change = Money.format(abs(since.changeMinorUnits), currency: .gbp)
+        XCTAssertEqual(AccountsCopy.sinceCaption(since), (since.changeMinorUnits > 0 ? "+" : since.changeMinorUnits < 0 ? "\u{2212}" : "") + change + " since December 2025")
     }
 
     func testAnEmptyDatabaseIsTheEmptyState() async throws {
@@ -183,6 +185,8 @@ final class AccountsTests: XCTestCase {
                                            importedThrough: Self.day(2026, 10, 12), today: Self.day(2026, 10, 15))
         XCTAssertEqual(shown.caption, "Imported · through 12 Oct 2026")
         XCTAssertFalse(shown.needsUpdate)
+        // D2: a current account shows no freshness line at all.
+        XCTAssertNil(shown.freshnessNote)
     }
 
     func testAManualAccountSaysWhenItWasLastChecked() {
@@ -203,6 +207,7 @@ final class AccountsTests: XCTestCase {
                                            importedThrough: nil, today: Self.day(2026, 10, 15))
         XCTAssertTrue(shown.needsUpdate)
         XCTAssertEqual(AccountsCopy.needsUpdate, "Needs an update")
+        XCTAssertEqual(shown.freshnessNote, "Checked 3 months ago")
         XCTAssertTrue(shown.spoken.contains("Needs an update"))
     }
 

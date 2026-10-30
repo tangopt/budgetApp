@@ -269,6 +269,12 @@ public enum AccountsCopy {
         "Since " + monthFormatter.string(from: MonthRange.of(year: since.year, month: 12).start)
     }
 
+    /// The compact header's second line: "+£7,960.00 since December 2025" (the change, then the base month).
+    public static func sinceCaption(_ since: NetWorthSinceYearEnd) -> String {
+        let change = MoneyPresentation(minorUnits: since.changeMinorUnits, currency: .gbp, role: .income).text
+        return "\(since.changeMinorUnits > 0 ? "+" : "")\(change) since" + sinceLabel(since).dropFirst("Since".count)
+    }
+
     /// A stale account's amber line (the Mac's rule, `BalanceStaleness`). Updating it from the phone comes in step 6.
     public static let needsUpdate = "Needs an update"
     /// An account left out of net worth (its balance isn't in the subtotal).
