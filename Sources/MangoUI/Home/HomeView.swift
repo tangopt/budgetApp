@@ -3,7 +3,7 @@ import BudgetCore
 
 /// Home (design review §2.3): on the iPhone Left to spend, two tiles, Needs you and Upcoming, in that order (the
 /// freshness line only on top when the data is stale); the iPad keeps Net worth, This pay month, Needs attention and
-/// Upcoming until its tile grid. Read-only: nothing here edits. The avatar button top right opens Settings (`onSettings`, Task 12);
+/// Upcoming until its tile grid. Read-only: nothing here edits. The avatar button top right opens the Me sheet (`onSettings`);
 /// pull to refresh asks for changes (`onRefresh`) and then reads again; a change of `syncStatus`'s last-sync time
 /// (a scheduled sync, the first download) reads again too.
 ///
@@ -57,7 +57,7 @@ public struct HomeView: View {
                             .mangoFont(.title2)
                             .frame(minWidth: 44, minHeight: 44)
                     }
-                    .accessibilityLabel("Settings")
+                    .accessibilityLabel("Me")
                 }
             }
         }

@@ -54,7 +54,8 @@ public enum SyncRoutes {
                                          iCloud: .available, keyHeld: true,
                                          status: .idle(lastSync: today.addingTimeInterval(-300)),
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
-                                         onLockNow: {}, onSyncNow: {}))
+                                         onLockNow: {}, onSyncNow: {}, salary: SalaryRoutes.demoModel(today: today),
+                                         personName: "A", title: "Me"))
         },
         // Settings with the Widgets section (step 7b): the lock screen toggle, off.
         DemoRoute(name: "settings-widgets", minimumFigures: 0) { context in

@@ -67,9 +67,10 @@ public enum SettingsDemoRow {
     case leave(() -> Void)
 }
 
-/// Settings (plan step 4 Task 12), opened from Home's avatar, presented inside the lock: Lock now; Appearance
-/// (System / Light / Dark) and the theme set (`ThemePickerSection`, the eight `ThemeSet`s, step 8); Sharing (read-only, `SharingSection`); Widgets (`WidgetsSection`); Notifications (`NotificationsSection`); Security (the iCloud account, whether records are sealed with the
-/// household key or it is still awaited); About (version, build, the sync status line, "Sync now" while sync runs).
+/// "Me" on the iPhone (design review I16; plan step 4 Task 12 as Settings), opened from Home's avatar, presented inside the lock: the person and
+/// sync first, the Salary calculator, Appearance
+/// (System / Light / Dark) and the theme set (`ThemePickerSection`, the eight `ThemeSet`s, step 8); Sharing (read-only, `SharingSection`); Widgets (`WidgetsSection`); Notifications (`NotificationsSection`); Security (Lock now, the iCloud account, whether records are sealed with the
+/// household key or it is still awaited); About (version, build, font licences).
 /// Read-only phone: nothing here changes the household's data.
 public struct SettingsSheet: View {
     @Binding var appearance: PhoneAppearance
@@ -93,8 +94,12 @@ public struct SettingsSheet: View {
     /// Settings ▸ Notifications (step 7b): what the system allows, and "Allow notifications" (nil: no such row).
     let notificationAccess: NotificationAuthorization
     let onAllowNotifications: (() -> Void)?
-    /// Opens the salary simulator (nil: no such row).
-    let onOpenSalary: (() -> Void)?
+    /// The salary calculator, pushed inside this sheet (nil: no such row; the iPad has it in its sidebar).
+    let salary: SalaryComparisonViewModel?
+    /// The signed-in person's name, for the profile row (nil: "This iPhone").
+    let personName: String?
+    /// "Me" on the iPhone (design review I16), "Settings" where the iPad opens it.
+    let title: String
     @Environment(\.dismiss) private var dismiss
     @Environment(\.phoneTheme) private var theme
     @State private var syncing = false
@@ -103,8 +108,11 @@ public struct SettingsSheet: View {
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
                 onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil,
                 outputs: Binding<PhoneOutputSettings>? = nil, notificationAccess: NotificationAuthorization = .notDetermined,
-                onAllowNotifications: (() -> Void)? = nil, onOpenSalary: (() -> Void)? = nil) {
-        self.onOpenSalary = onOpenSalary
+                onAllowNotifications: (() -> Void)? = nil, salary: SalaryComparisonViewModel? = nil,
+                personName: String? = nil, title: String = "Settings") {
+        self.salary = salary
+        self.personName = personName
+        self.title = title
         self.notificationAccess = notificationAccess
         self.onAllowNotifications = onAllowNotifications
         self.demo = demo
@@ -124,23 +132,15 @@ public struct SettingsSheet: View {
     public var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Button {
-                        dismiss()
-                        onLockNow()
-                    } label: {
-                        Label("Lock now", systemImage: "lock")
-                            .frame(minHeight: 44)
-                    }
-                }
+                profileSection
                 if let demo {
                     demoSection(demo)
                 }
-                if let onOpenSalary {
-                    Section("Tools") {
-                        Button {
-                            dismiss()
-                            onOpenSalary()
+                if let salary {
+                    Section {
+                        NavigationLink {
+                            SalarySimulatorScreen(viewModel: salary)
+                                .demoBannerSlot()
                         } label: {
                             Label("Salary calculator", systemImage: "percent")
                                 .frame(minHeight: 44)
@@ -164,6 +164,13 @@ public struct SettingsSheet: View {
                                          onAllow: { onAllowNotifications?() })
                 }
                 Section("Security") {
+                    Button {
+                        dismiss()
+                        onLockNow()
+                    } label: {
+                        Label("Lock now", systemImage: "lock")
+                            .frame(minHeight: 44)
+                    }
                     LabeledContent("iCloud", value: SettingsCopy.iCloudAccount(iCloud))
                         .frame(minHeight: 44)
                     Label {
@@ -181,41 +188,12 @@ public struct SettingsSheet: View {
                         .frame(minHeight: 44)
                     NavigationLink("Font licences") { FontLicencesView() }
                         .frame(minHeight: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        SyncStatusLine(status: status, now: now())
-                        if let detail = SyncStatusCopy.detail(status) {
-                            Text(detail)
-                                .mangoFont(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .frame(minHeight: 44)
-                    if let onSyncNow {
-                        Button {
-                            syncing = true
-                            Task {
-                                await onSyncNow()
-                                syncing = false
-                            }
-                        } label: {
-                            HStack {
-                                Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
-                                if syncing {
-                                    Spacer()
-                                    ProgressView()
-                                }
-                            }
-                            .frame(minHeight: 44)
-                        }
-                        .disabled(syncing)
-                    }
                 }
             }
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .demoBannerSlot()
-            .mangoNavigationTitle("Settings")
+            .mangoNavigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -223,6 +201,49 @@ public struct SettingsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+    }
+
+    /// Who is signed in and how sync is doing (design review I16: person and sync first), with "Sync now" while sync runs.
+    private var profileSection: some View {
+        Section {
+            HStack(spacing: MangoSpacing.s) {
+                Image(systemName: "person.crop.circle.fill")
+                    .mangoFont(.largeTitle)
+                    .foregroundStyle(theme.accent)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(personName ?? "This iPhone").mangoFont(.headline).fixedSize(horizontal: false, vertical: true)
+                    SyncStatusLine(status: status, now: now())
+                    if let detail = SyncStatusCopy.detail(status) {
+                        Text(detail)
+                            .mangoFont(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .frame(minHeight: 44)
+            .accessibilityElement(children: .combine)
+            if let onSyncNow {
+                Button {
+                    syncing = true
+                    Task {
+                        await onSyncNow()
+                        syncing = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                        if syncing {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                    .frame(minHeight: 44)
+                }
+                .disabled(syncing)
             }
         }
     }
