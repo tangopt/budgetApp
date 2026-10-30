@@ -23,7 +23,8 @@ public enum SalaryRoutes {
         DemoRoute(name: "salary", minimumFigures: 13) { context in
             AnyView(NavigationStack { SalarySimulatorScreen(viewModel: demoModel(today: context.today), startingOn: .offer) })
         },
-        DemoRoute(name: "salary", sizes: DemoRoute.padSizes, minimumFigures: 11, pad: true) { context in
+        // 10: in 834×1194 portrait the Bonus paid row pushes the take-home card's first figure below the fold.
+        DemoRoute(name: "salary", sizes: DemoRoute.padSizes, minimumFigures: 10, pad: true) { context in
             let tabs = PadRoutes.tabs(context)
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .salary,
                                        salary: demoModel(today: context.today), columns: .doubleColumn))
