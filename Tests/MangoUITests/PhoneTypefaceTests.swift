@@ -61,15 +61,19 @@ final class PhoneTypefaceTests: XCTestCase {
     func testFallbackWhenFontNotRegistered() {
         XCTAssertEqual(choice("inter", .body, weight: .semibold, available: { _ in false }),
                        .system(design: .default, weight: .semibold))
-        XCTAssertEqual(choice("lexend", .headline, available: { _ in false }), .system(design: .default, weight: nil))
+        XCTAssertEqual(choice("manrope", .headline, available: { _ in false }), .system(design: .default, weight: nil))
     }
 
     func testFiguresUseSystemFontWhenFontLacksTabularDigits() {
-        XCTAssertEqual(choice("lexend", .title2, weight: .semibold, isFigure: true),
-                       .system(design: .default, weight: .semibold))
-        XCTAssertEqual(choice("dm-sans", .body, isFigure: true), .system(design: .default, weight: nil))
-        XCTAssertEqual(choice("lexend", .title2, weight: .semibold, isFigure: false),
-                       .custom(postScriptName: "Lexend-SemiBold", size: 22, relativeTo: .title2))
+        // Every catalogue face has tabular digits today; a future one without them falls back for figures only.
+        let proportional = PhoneFont(id: "proportional", name: "Proportional", kind: .bundled, files: ["P/P.ttf"],
+                                     postScriptNames: [.regular: "P-Regular", .semibold: "P-SemiBold"], hasTabularDigits: false)
+        func pick(_ style: Font.TextStyle, _ weight: Font.Weight?, _ isFigure: Bool) -> TypefaceResolver.Choice {
+            TypefaceResolver.choice(proportional, style: style, weight: weight, isFigure: isFigure, available: registered)
+        }
+        XCTAssertEqual(pick(.title2, .semibold, true), .system(design: .default, weight: .semibold))
+        XCTAssertEqual(pick(.body, nil, true), .system(design: .default, weight: nil))
+        XCTAssertEqual(pick(.title2, .semibold, false), .custom(postScriptName: "P-SemiBold", size: 22, relativeTo: .title2))
         XCTAssertEqual(choice("inter", .body, isFigure: true),
                        .custom(postScriptName: "Inter-Regular", size: 17, relativeTo: .body))
         // The system designs keep their own digits.
@@ -107,25 +111,25 @@ final class PhoneTypefaceTests: XCTestCase {
     func testRegisterIsIdempotentAndReportsNames() throws {
         let fonts = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appending(path: "Phone/Fonts")
-        let source = fonts.appending(path: "Lexend/Lexend[wght].ttf")
+        let source = fonts.appending(path: "Manrope/Manrope[wght].ttf")
         let names = (CTFontManagerCreateFontDescriptorsFromURL(source as CFURL) as? [CTFontDescriptor] ?? [])
             .compactMap { CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String }
-        XCTAssertTrue(names.contains("Lexend-Regular"), "\(names)")
-        if BundledFonts.isAvailable("Lexend-Regular") {
-            throw XCTSkip("Lexend is installed on this Mac, so registering it is a no-op")
+        XCTAssertTrue(names.contains("Manrope-Regular"), "\(names)")
+        if BundledFonts.isAvailable("Manrope-Regular") {
+            throw XCTSkip("Manrope is installed on this Mac, so registering it is a no-op")
         }
 
         let root = FileManager.default.temporaryDirectory.appending(path: "PhoneTypefaceTests-\(UUID().uuidString)")
-        let folder = root.appending(path: "Fonts/Lexend")
+        let folder = root.appending(path: "Fonts/Manrope")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.copyItem(at: source, to: folder.appending(path: "Lexend[wght].ttf"))
+        try FileManager.default.copyItem(at: source, to: folder.appending(path: "Manrope[wght].ttf"))
         let bundle = try XCTUnwrap(Bundle(path: root.path))
 
         let first = BundledFonts.register(bundle: bundle)
         XCTAssertEqual(Set(first), Set(names))
-        XCTAssertTrue(BundledFonts.isAvailable("Lexend-Regular"))
-        XCTAssertTrue(BundledFonts.isAvailable("Lexend-SemiBold"))
+        XCTAssertTrue(BundledFonts.isAvailable("Manrope-Regular"))
+        XCTAssertTrue(BundledFonts.isAvailable("Manrope-SemiBold"))
         XCTAssertEqual(BundledFonts.register(bundle: bundle), [])
 
         // The whole folder as the app bundles it: every catalogue name (named instances of the variable files

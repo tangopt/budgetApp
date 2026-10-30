@@ -1,8 +1,9 @@
 // Sources/BudgetCore/Themes/FontCatalog.swift
 import Foundation
 
-/// One typeface the iPhone and iPad can show app text in (step 16). Three are the system's own designs; ten are
-/// bundled under `Phone/Fonts/<Family>/`, each with its SIL Open Font Licence beside it.
+/// One typeface the iPhone and iPad can show app text in (step 16): the faces the theme sets (`ThemeSet`, design
+/// review §3.5) draw in. Three are the system's own designs; seven are bundled under `Phone/Fonts/<Family>/`, each
+/// with its SIL Open Font Licence beside it.
 public struct PhoneFont: Identifiable, Equatable, Sendable {
     public enum SystemDesign: Sendable, Equatable { case `default`, rounded, serif }
     public enum Kind: Sendable, Equatable { case system(design: SystemDesign), bundled }
@@ -18,12 +19,21 @@ public struct PhoneFont: Identifiable, Equatable, Sendable {
     /// Whether the font's digits all share one width (by default or through the `tnum` feature). When false, figures
     /// are drawn in the system font's tabular digits instead.
     public let hasTabularDigits: Bool
+
+    public init(id: String, name: String, kind: Kind, files: [String], postScriptNames: [Weight: String], hasTabularDigits: Bool) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.files = files
+        self.postScriptNames = postScriptNames
+        self.hasTabularDigits = hasTabularDigits
+    }
 }
 
 public enum FontCatalog {
     public static let defaultID = "sf-pro"
 
-    /// The 13 fonts, in the picker's order.
+    /// The ten fonts the theme sets use (step 8 dropped Public Sans, DM Sans and Lexend, which no set draws in).
     public static let all: [PhoneFont] = [
         PhoneFont(id: "sf-pro", name: "SF Pro", kind: .system(design: .default), files: [], postScriptNames: [:], hasTabularDigits: true),
         PhoneFont(id: "sf-rounded", name: "SF Pro Rounded", kind: .system(design: .rounded), files: [], postScriptNames: [:], hasTabularDigits: true),
@@ -41,14 +51,6 @@ public enum FontCatalog {
             postScriptNames: [.regular: "SourceSans3-Roman_Regular", .medium: "SourceSans3-Roman_Medium", .semibold: "SourceSans3-Roman_SemiBold", .bold: "SourceSans3-Roman_Bold"],
             hasTabularDigits: true),
         PhoneFont(
-            id: "public-sans", name: "Public Sans", kind: .bundled, files: ["PublicSans/PublicSans[wght].ttf"],
-            postScriptNames: [.regular: "PublicSansRoman-Regular", .medium: "PublicSansRoman-Medium", .semibold: "PublicSansRoman-SemiBold", .bold: "PublicSansRoman-Bold"],
-            hasTabularDigits: true),
-        PhoneFont(
-            id: "dm-sans", name: "DM Sans", kind: .bundled, files: ["DMSans/DMSans[opsz,wght].ttf"],
-            postScriptNames: [.regular: "DMSans-9ptRegular_Regular", .medium: "DMSans-9ptRegular_Medium", .semibold: "DMSans-9ptRegular_SemiBold", .bold: "DMSans-9ptRegular_Bold"],
-            hasTabularDigits: false),
-        PhoneFont(
             id: "manrope", name: "Manrope", kind: .bundled, files: ["Manrope/Manrope[wght].ttf"],
             postScriptNames: [.regular: "Manrope-Regular", .medium: "Manrope-Medium", .semibold: "Manrope-SemiBold", .bold: "Manrope-Bold"],
             hasTabularDigits: true),
@@ -58,10 +60,6 @@ public enum FontCatalog {
             // Google ships regular and bold only: medium rides on regular, semibold on bold.
             postScriptNames: [.regular: "AtkinsonHyperlegible-Regular", .medium: "AtkinsonHyperlegible-Regular", .semibold: "AtkinsonHyperlegible-Bold", .bold: "AtkinsonHyperlegible-Bold"],
             hasTabularDigits: true),
-        PhoneFont(
-            id: "lexend", name: "Lexend", kind: .bundled, files: ["Lexend/Lexend[wght].ttf"],
-            postScriptNames: [.regular: "Lexend-Regular", .medium: "Lexend-Medium", .semibold: "Lexend-SemiBold", .bold: "Lexend-Bold"],
-            hasTabularDigits: false),
         PhoneFont(
             id: "source-serif-4", name: "Source Serif 4", kind: .bundled, files: ["SourceSerif4/SourceSerif4[opsz,wght].ttf"],
             postScriptNames: [.regular: "SourceSerif4Roman-Regular", .medium: "SourceSerif4Roman-Medium", .semibold: "SourceSerif4Roman-SemiBold", .bold: "SourceSerif4Roman-Bold"],
