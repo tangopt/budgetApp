@@ -5,6 +5,8 @@ enum RowAction: CaseIterable, Sendable {
     case openSite, linkDocument, check, email, notExpected, download, discard
     /// Step 10, Task 11 (controller ruling): the Bills & recharges row actions.
     case linkPayment, addToRecharge, markSent, recordPayment, view, unlink
+    /// A card's or panel's edit (design review I5: card edits are icon buttons, not outlined text buttons).
+    case edit
 
     var systemImage: String {
         switch self {
@@ -22,6 +24,7 @@ enum RowAction: CaseIterable, Sendable {
         case .view: "eye"
         // The Mac's unlink icon ("link.slash" is no SF Symbol: it drew nothing).
         case .unlink: "xmark.circle"
+        case .edit: "pencil"
         }
     }
 
@@ -40,6 +43,7 @@ enum RowAction: CaseIterable, Sendable {
         case .recordPayment: "Record payment"
         case .view: "View"
         case .unlink: "Unlink"
+        case .edit: "Edit"
         }
     }
 

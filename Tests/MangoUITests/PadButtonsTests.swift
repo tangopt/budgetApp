@@ -22,6 +22,7 @@ final class PadButtonsTests: XCTestCase {
             ["checkmark.circle", "Record payment"],
             ["eye", "View"],
             ["xmark.circle", "Unlink"],
+            ["pencil", "Edit"],
         ])
     }
 
