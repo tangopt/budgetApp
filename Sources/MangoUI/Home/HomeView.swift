@@ -2,8 +2,7 @@ import SwiftUI
 import BudgetCore
 
 /// Home (design review §2.3): on the iPhone Left to spend, two tiles, Needs you and Upcoming, in that order (the
-/// freshness line only on top when the data is stale); the iPad keeps Net worth, This pay month, Needs attention and
-/// Upcoming until its tile grid. Read-only: nothing here edits. The avatar button top right opens the Me sheet (`onSettings`);
+/// freshness line only on top when the data is stale); the iPad shows a tile grid (This pay month, Net worth, Recharges, Needs attention, Upcoming). Read-only: nothing here edits. The avatar button top right opens the Me sheet (`onSettings`);
 /// pull to refresh asks for changes (`onRefresh`) and then reads again; a change of `syncStatus`'s last-sync time
 /// (a scheduled sync, the first download) reads again too.
 ///
@@ -97,15 +96,21 @@ public struct HomeView: View {
         }
     }
 
-    /// The iPad's order, until its tile grid (plan step 5).
+    /// The iPad's tile grid (design review §2.3): this pay month spans two columns beside Net worth, then Recharges,
+    /// Needs attention and Upcoming share the next row; equal heights, so the page fits one screen.
     @ViewBuilder
     private func padContent(_ summary: HomeSummary) -> some View {
         FreshnessLine(summary: summary)
-        NetWorthCard(netWorth: summary.netWorth)
-        PayMonthCard(summary: summary)
-        if recharges.contains(where: { $0.count > 0 }) { RechargesStatusCard(counts: recharges) }
-        AttentionCard(lines: AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now()))
-        UpcomingCard(items: summary.upcoming)
+        let attention = AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now())
+        let showsRecharges = recharges.contains { $0.count > 0 }
+        PadGrid(minimumColumnWidth: 260, maximumColumns: 3, balanced: false) {
+            PayMonthCard(summary: summary).padGridSpan(2)
+            NetWorthCard(netWorth: summary.netWorth)
+            if showsRecharges { RechargesStatusCard(counts: recharges) }
+            AttentionCard(lines: attention)
+            UpcomingCard(items: summary.upcoming).padGridSpan(showsRecharges ? 1 : 2)
+        }
+        .padEqualHeightCards()
     }
 
     /// The iPhone's order (`HomeCopy.phoneBlocks`): Left to spend, two tiles, Needs you, Upcoming.

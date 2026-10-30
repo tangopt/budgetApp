@@ -15,6 +15,12 @@ public struct MonthView: View {
     @Environment(\.phoneTheme) private var theme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.quickEdit) private var quickEdit
+    @Environment(\.usesPadPage) private var usesPadPage
+    /// The page's width: the iPad puts the summary beside the categories from `twoColumnWidth`.
+    @State private var pageWidth: CGFloat = 1000
+    /// The page's content width from which the summary sits beside the categories.
+    static let twoColumnWidth: CGFloat = 640
+    static let summaryColumnWidth: CGFloat = 300
 
     public init(model: MonthViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void = {}) {
         self.model = model
@@ -48,6 +54,18 @@ public struct MonthView: View {
             await quickEdit?.load()
         }
         .modifier(QuickSortSheet(model: quickEdit))
+        .padSidePanel(isPresented: usesPadPage && model.panelDestination != nil, onClose: { model.panelDestination = nil }) {
+            if let destination = model.panelDestination {
+                let transactions = model.transactionsModel(for: destination)
+                PadSidePanel(title: destination.row.category.name, subtitle: MonthCopy.range(destination.range),
+                             onClose: { model.panelDestination = nil }) {
+                    MonthTransactionsBody(model: transactions)
+                        .task { if case .idle = transactions.state { await transactions.load() } }
+                        .modifier(MonthDetailSheet(model: quickEdit))
+                }
+                .id(destination)
+            }
+        }
     }
 
     @ViewBuilder
@@ -67,18 +85,54 @@ public struct MonthView: View {
             MonthHeader(page: page, canShowPrevious: model.canShowPrevious, canShowNext: model.canShowNext,
                         onPrevious: { Task { await model.showPrevious() } },
                         onNext: { Task { await model.showNext() } })
-            MonthSummaryGrid(review: page.review)
-            // The queue is the current pay month's.
-            if let quickEdit, !model.canShowNext {
-                QuickSortEntryRow(model: quickEdit)
-            }
-            if page.isEmpty {
-                EmptyState(symbol: "calendar", title: MonthCopy.emptyTitle, message: MonthCopy.emptyMessage)
+            if usesPadPage {
+                padColumns(page)
             } else {
-                segmentPicker
-                rows(page)
+                summary(page)
+                categories(page)
             }
         }
+    }
+
+    /// The summary grid and the quick-sort entry (the current pay month's queue).
+    @ViewBuilder
+    private func summary(_ page: MonthPage, stacked: Bool = false) -> some View {
+        MonthSummaryGrid(review: page.review, stacked: stacked)
+        if let quickEdit, !model.canShowNext {
+            QuickSortEntryRow(model: quickEdit)
+        }
+    }
+
+    @ViewBuilder
+    private func categories(_ page: MonthPage) -> some View {
+        if page.isEmpty {
+            EmptyState(symbol: "calendar", title: MonthCopy.emptyTitle, message: MonthCopy.emptyMessage)
+        } else {
+            segmentPicker
+            rows(page)
+        }
+    }
+
+    /// The iPad (design review §2.3): the summary in a column beside the categories; a category opens its transactions in
+    /// the side panel. Narrower than `twoColumnWidth` the two stack.
+    @ViewBuilder
+    private func padColumns(_ page: MonthPage) -> some View {
+        Group {
+            if pageWidth >= Self.twoColumnWidth {
+                HStack(alignment: .top, spacing: MangoSpacing.l) {
+                    VStack(alignment: .leading, spacing: MangoSpacing.m) { summary(page, stacked: true) }
+                        .frame(width: Self.summaryColumnWidth)
+                    VStack(alignment: .leading, spacing: MangoSpacing.m) { categories(page) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: MangoSpacing.m) {
+                    summary(page)
+                    categories(page)
+                }
+            }
+        }
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { pageWidth = $0 }
     }
 
     @ViewBuilder
@@ -115,17 +169,38 @@ public struct MonthView: View {
             } else {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     if index > 0 { MangoDivider() }
-                    NavigationLink(value: MonthRowDestination(row: row, range: page.review.range)) {
-                        HStack(spacing: 8) {
-                            CategoryRow(row: row)
-                            Image(systemName: "chevron.right")
-                                .mangoFont(.footnote, weight: .semibold)
-                                .foregroundStyle(.tertiary)
-                                .accessibilityHidden(true)
+                    let destination = MonthRowDestination(row: row, range: page.review.range)
+                    if usesPadPage {
+                        let isSelected = model.panelDestination == destination
+                        Button { model.panelDestination = isSelected ? nil : destination } label: {
+                            HStack(spacing: 8) {
+                                CategoryRow(row: row)
+                                Image(systemName: "chevron.right")
+                                    .mangoFont(.footnote, weight: .semibold)
+                                    .foregroundStyle(.tertiary)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(minHeight: 44)
+                            .padding(.horizontal, MangoSpacing.xs)
+                            .mangoRowSelection(isSelected)
+                            .contentShape(Rectangle())
                         }
-                        .frame(minHeight: 44)
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityHint("Shows the transactions in the side panel")
+                    } else {
+                        NavigationLink(value: destination) {
+                            HStack(spacing: 8) {
+                                CategoryRow(row: row)
+                                Image(systemName: "chevron.right")
+                                    .mangoFont(.footnote, weight: .semibold)
+                                    .foregroundStyle(.tertiary)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -192,12 +267,14 @@ struct MonthHeader: View {
 /// accessibility sizes one figure per row, under its label.
 struct MonthSummaryGrid: View {
     let review: PayMonthReview
+    /// One figure per row under its label (the iPad's summary column), as at accessibility sizes.
+    var stacked = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let tiles = MonthSummaryTile.tiles(review)
         Card {
-            if AmountRowLayout.stacks(at: dynamicTypeSize) {
+            if stacked || AmountRowLayout.stacks(at: dynamicTypeSize) {
                 ForEach(tiles) { tile in
                     FigureRow(label: tile.label) {
                         MoneyText(minorUnits: tile.minorUnits, currency: .gbp, role: tile.role, font: .title3.weight(.semibold))

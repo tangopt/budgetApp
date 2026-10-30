@@ -15,6 +15,8 @@ public struct SearchView: View {
     let onRefresh: () async -> Void
     @Environment(\.phoneTheme) private var theme
     @Environment(\.usesPadPage) private var usesPadPage
+    /// The widest the results list grows on the iPad (design review §2.3: about 500 pt), the transaction in the side panel.
+    static let padListWidth: CGFloat = 560
 
     public init(model: SearchViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void = {}) {
         self.model = model
@@ -31,6 +33,7 @@ public struct SearchView: View {
                     if usesPadPage { PadFlatSearchField(model: model) }
                     content
                 }
+                .frame(maxWidth: usesPadPage ? Self.padListWidth : .infinity, alignment: .leading)
                 .phonePageContent()
             }
             .background(theme.background)
@@ -42,8 +45,11 @@ public struct SearchView: View {
             .phonePageTitle("Search", keepsSearchBar: !usesPadPage)
             .modifier(SearchFieldIfNeeded(model: model, usesPadPage: usesPadPage))
         }
-        .sheet(item: $model.detail) { row in
+        .sheet(item: Binding(get: { usesPadPage ? nil : model.detail }, set: { model.detail = $0 })) { row in
             TransactionDetailSheet(row: row)
+        }
+        .padSidePanel(isPresented: usesPadPage && model.detail != nil, onClose: { model.detail = nil }) {
+            if let row = model.detail { SearchTransactionPanel(row: row, onClose: { model.detail = nil }).id(row.id) }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: SearchViewModel.reloadKey(syncStatus))
@@ -108,6 +114,8 @@ public struct SearchView: View {
                             model.detail = row
                         } label: {
                             TransactionRow(row: row)
+                                .padding(.horizontal, usesPadPage ? MangoSpacing.xs : 0)
+                                .mangoRowSelection(usesPadPage && model.detail?.id == row.id)
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Shows the transaction")
@@ -217,6 +225,66 @@ struct PadFlatSearchField: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The iPad's side panel for the selected search result: the same detail as the sheet, and where editing is on a pencil
+/// that turns it into the form in place (Cancel / Save icon buttons; nothing is written until Save).
+struct SearchTransactionPanel: View {
+    @State private var row: TransactionSearch.Row
+    let onClose: () -> Void
+    @Environment(\.quickEdit) private var quickEdit
+    @State private var canEdit = false
+    @State private var editing = false
+    @State private var draft: TransactionDraft
+    @State private var saving = false
+
+    init(row: TransactionSearch.Row, onClose: @escaping () -> Void) {
+        _row = State(initialValue: row)
+        _draft = State(initialValue: TransactionDraft(row: row))
+        self.onClose = onClose
+    }
+
+    var body: some View {
+        PadSidePanel(title: editing ? "Edit transaction" : "Transaction", subtitle: PhoneDateFormat.day(row.date),
+                     onClose: onClose, actions: {
+            if editing {
+                PadIconButton(systemImage: "xmark", label: "Cancel") { cancel() }
+                PadIconButton(systemImage: "checkmark", label: "Save", prominent: true) { save() }
+                    .disabled(saving)
+            } else if canEdit {
+                PadIconButton(systemImage: "pencil", label: "Edit transaction") {
+                    draft = TransactionDraft(row: row)
+                    editing = true
+                }
+            }
+        }) {
+            if editing, let quickEdit {
+                TransactionEditForm(row: row, model: quickEdit, categoryId: $draft.categoryId, note: $draft.note)
+                    .frame(minHeight: 520)
+            } else {
+                TransactionDetailBody(row: row)
+            }
+        }
+        .task(id: row.id) { canEdit = await quickEdit?.canEdit(transactionId: row.id) ?? false }
+        .onDisappear { quickEdit?.refusal = nil }
+    }
+
+    private func cancel() {
+        quickEdit?.refusal = nil
+        editing = false
+    }
+
+    private func save() {
+        guard let quickEdit else { return }
+        saving = true
+        Task {
+            let saved = await quickEdit.save(transactionId: row.id, categoryId: draft.categoryId, note: draft.note)
+            saving = false
+            guard saved else { return }
+            if let fresh = await quickEdit.row(transactionId: row.id) { row = fresh }
+            editing = false
         }
     }
 }

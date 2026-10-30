@@ -135,49 +135,58 @@ struct TransactionDetailContent: View {
     let row: TransactionSearch.Row
 
     var body: some View {
-        let shown = TransactionDetailPresentation(row)
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    MoneyText(minorUnits: shown.amount.minorUnits, currency: shown.currency, role: shown.amount.role,
-                              fit: .shrink(), font: .largeTitle.weight(.semibold))
-                    Text(shown.description)
-                        .mangoFont(.title3, weight: .semibold)
+            TransactionDetailBody(row: row)
+                .padding(16)
+        }
+    }
+}
+
+/// The transaction's amount, description, account, date, category and note (the sheet's and the iPad side panel's content).
+struct TransactionDetailBody: View {
+    let row: TransactionSearch.Row
+
+    var body: some View {
+        let shown = TransactionDetailPresentation(row)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                MoneyText(minorUnits: shown.amount.minorUnits, currency: shown.currency, role: shown.amount.role,
+                          fit: .shrink(), font: .largeTitle.weight(.semibold))
+                Text(shown.description)
+                    .mangoFont(.title3, weight: .semibold)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Card {
+                DetailField(label: "Account") {
+                    Text(shown.account.isEmpty ? "—" : shown.account)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityAddTraits(.isHeader)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Card {
-                    DetailField(label: "Account") {
-                        Text(shown.account.isEmpty ? "—" : shown.account)
+                Divider()
+                DetailField(label: "Date") {
+                    DateText(shown.date)
+                }
+                Divider()
+                DetailField(label: "Category") {
+                    HStack(spacing: 8) {
+                        if let category = row.category {
+                            CategoryBadge(category: category)
+                        } else {
+                            UncategorisedBadge()
+                        }
+                        Text(shown.category)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+                if let note = shown.note {
                     Divider()
-                    DetailField(label: "Date") {
-                        DateText(shown.date)
-                    }
-                    Divider()
-                    DetailField(label: "Category") {
-                        HStack(spacing: 8) {
-                            if let category = row.category {
-                                CategoryBadge(category: category)
-                            } else {
-                                UncategorisedBadge()
-                            }
-                            Text(shown.category)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    if let note = shown.note {
-                        Divider()
-                        DetailField(label: "Note") {
-                            Text(note)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                    DetailField(label: "Note") {
+                        Text(note)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
-            .padding(16)
         }
     }
 }
