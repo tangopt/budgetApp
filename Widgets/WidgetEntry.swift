@@ -66,3 +66,21 @@ struct EmptyWidgetView: View {
             .multilineTextAlignment(.center)
     }
 }
+
+/// The app's theme set (step 8), read from the App Group: the widgets draw in its colours (its roles and its ground
+/// behind the tile) and keep the system font (step 16).
+struct WidgetThemeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        let group = UserDefaults(suiteName: PhoneAppGroup.identifier) ?? .standard
+        let theme = PhoneTheme(ThemeSetPreference.widgetSet(group))
+        content
+            .environment(\.phoneTheme, theme)
+            .containerBackground(theme.background, for: .widget)
+    }
+}
+
+extension View {
+    func mangoWidgetTheme() -> some View {
+        modifier(WidgetThemeModifier())
+    }
+}

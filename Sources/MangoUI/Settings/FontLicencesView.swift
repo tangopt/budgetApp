@@ -4,7 +4,7 @@ import BudgetCore
 import UIKit
 #endif
 
-/// The ten bundled fonts and where each one's SIL Open Font Licence sits under `Phone/Fonts` (and, in the app,
+/// The bundled fonts the theme sets draw in (seven since step 8) and where each one's SIL Open Font Licence sits under `Phone/Fonts` (and, in the app,
 /// under the bundle's `Fonts` folder).
 public enum FontLicences {
     public struct Entry: Identifiable, Equatable {

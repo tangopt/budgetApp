@@ -8,7 +8,7 @@ struct MonthSpendWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "ubberninja.mango.monthspend", provider: SnapshotProvider()) { entry in
             MonthSpendWidgetEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .mangoWidgetTheme()
                 .widgetURL(WidgetLink.url(for: .month))
         }
         .configurationDisplayName("Month spend")

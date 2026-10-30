@@ -67,14 +67,14 @@ public enum SettingsDemoRow {
     case leave(() -> Void)
 }
 
-/// Settings (plan step 4 Task 12), opened from Home's avatar, presented inside the lock: Lock now; Appearance and the
-/// theme (`ThemeCatalog`'s, as `PhoneTheme.all`); Sharing (read-only, `SharingSection`); Widgets (`WidgetsSection`); Notifications (`NotificationsSection`); Security (the iCloud account, whether records are sealed with the
+/// Settings (plan step 4 Task 12), opened from Home's avatar, presented inside the lock: Lock now; Appearance
+/// (System / Light / Dark) and the theme set (`ThemePickerSection`, the eight `ThemeSet`s, step 8); Sharing (read-only, `SharingSection`); Widgets (`WidgetsSection`); Notifications (`NotificationsSection`); Security (the iCloud account, whether records are sealed with the
 /// household key or it is still awaited); About (version, build, the sync status line, "Sync now" while sync runs).
 /// Read-only phone: nothing here changes the household's data.
 public struct SettingsSheet: View {
     @Binding var appearance: PhoneAppearance
-    @Binding var themeId: String
-    @Binding var fontId: String
+    /// The theme set's id (`ThemeSet`): one choice for the palette and the fonts.
+    @Binding var themeSetId: String
     let iCloud: ICloudAccountState
     /// Whether this iPhone holds the household key (nil: sync is off here).
     let keyHeld: Bool?
@@ -96,9 +96,10 @@ public struct SettingsSheet: View {
     /// Opens the salary simulator (nil: no such row).
     let onOpenSalary: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.phoneTheme) private var theme
     @State private var syncing = false
 
-    public init(appearance: Binding<PhoneAppearance>, themeId: Binding<String>, fontId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
+    public init(appearance: Binding<PhoneAppearance>, themeSetId: Binding<String>, iCloud: ICloudAccountState, keyHeld: Bool?,
                 status: SyncStatus, version: String, now: @escaping () -> Date = { Date() }, onLockNow: @escaping () -> Void,
                 onSyncNow: (() async -> Void)?, demo: SettingsDemoRow? = nil, sharing: SharingSectionState? = nil,
                 outputs: Binding<PhoneOutputSettings>? = nil, notificationAccess: NotificationAuthorization = .notDetermined,
@@ -110,8 +111,7 @@ public struct SettingsSheet: View {
         self.sharing = sharing
         self.outputs = outputs
         _appearance = appearance
-        _themeId = themeId
-        _fontId = fontId
+        _themeSetId = themeSetId
         self.iCloud = iCloud
         self.keyHeld = keyHeld
         self.status = status
@@ -153,12 +153,8 @@ public struct SettingsSheet: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(minHeight: 44)
-                    Picker("Theme", selection: $themeId) {
-                        ForEach(PhoneTheme.all) { Text($0.name).tag($0.id) }
-                    }
-                    .frame(minHeight: 44)
-                    FontPickerSection(fontId: $fontId)
                 }
+                ThemePickerSection(themeSetId: $themeSetId)
                 if let sharing {
                     SharingSection(state: sharing)
                 }
@@ -216,6 +212,8 @@ public struct SettingsSheet: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(theme.background)
             .demoBannerSlot()
             .navigationTitle("Settings")
             #if os(iOS)

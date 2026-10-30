@@ -7,8 +7,8 @@ import CoreText
 
 final class FontCatalogTests: XCTestCase {
     private let expectedIDs = [
-        "sf-pro", "sf-rounded", "new-york", "inter", "ibm-plex-sans", "source-sans-3", "public-sans", "dm-sans",
-        "manrope", "atkinson-hyperlegible", "lexend", "source-serif-4", "ibm-plex-mono",
+        "sf-pro", "sf-rounded", "new-york", "inter", "ibm-plex-sans", "source-sans-3", "manrope",
+        "atkinson-hyperlegible", "source-serif-4", "ibm-plex-mono",
     ]
 
     private var fontsDirectory: URL {
@@ -19,7 +19,7 @@ final class FontCatalogTests: XCTestCase {
 
     private var bundled: [PhoneFont] { FontCatalog.all.filter { $0.kind == .bundled } }
 
-    func testThirteenFontsInOrderWithSFProDefault() {
+    func testTenFontsInOrderWithSFProDefault() {
         XCTAssertEqual(FontCatalog.all.map(\.id), expectedIDs)
         XCTAssertEqual(FontCatalog.defaultID, "sf-pro")
     }
@@ -27,15 +27,33 @@ final class FontCatalogTests: XCTestCase {
     func testUnknownIdFallsBackToSFPro() {
         XCTAssertEqual(FontCatalog.font(id: "comic-sans").id, "sf-pro")
         XCTAssertEqual(FontCatalog.font(id: "").id, "sf-pro")
-        XCTAssertEqual(FontCatalog.font(id: "lexend").id, "lexend")
+        XCTAssertEqual(FontCatalog.font(id: "manrope").id, "manrope")
+        // Dropped in step 8: no theme set draws in them.
+        XCTAssertEqual(FontCatalog.font(id: "lexend").id, "sf-pro")
     }
 
     func testSystemFontsHaveNoFiles() {
         let system = FontCatalog.all.filter { if case .system = $0.kind { true } else { false } }
         XCTAssertEqual(system.count, 3)
         for font in system { XCTAssertTrue(font.files.isEmpty, font.id) }
-        XCTAssertEqual(bundled.count, 10)
+        XCTAssertEqual(bundled.count, 7)
         for font in bundled { XCTAssertFalse(font.files.isEmpty, font.id) }
+    }
+
+    /// Step 8: every font a theme set draws in is in the catalogue, and every bundled catalogue font is drawn by some set.
+    func testTheBundleHoldsExactlyTheFacesTheSetsUse() {
+        let used = Set(ThemeSet.all.flatMap { [$0.fonts.display, $0.fonts.body, $0.fonts.figure] })
+        let bundled = Set(FontCatalog.all.filter { $0.kind == .bundled }.map(\.id))
+        XCTAssertTrue(bundled.isSubset(of: used), "bundled but unused: \(bundled.subtracting(used).sorted())")
+    }
+
+    /// The fonts no set uses are gone from the bundle, licences included.
+    func testDroppedFontsAreNotBundled() {
+        for folder in ["DMSans", "Lexend", "PublicSans"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fontsDirectory.appendingPathComponent(folder).path), folder)
+        }
+        let folders = try? FileManager.default.contentsOfDirectory(atPath: fontsDirectory.path).filter { !$0.hasPrefix(".") }
+        XCTAssertEqual(Set(folders ?? []), Set(bundled.compactMap { $0.files.first?.split(separator: "/").first.map(String.init) }))
     }
 
     func testBoldAndRegularExistForEveryBundledFont() {

@@ -82,7 +82,7 @@ public struct MoneyText: View {
     public let fit: FigureFit
     public var font: PhoneTextStyle
     @Environment(\.phoneTheme) private var theme
-    @Environment(\.phoneTypeface) private var face
+    @Environment(\.phoneFonts) private var fonts
 
     public init(minorUnits: Int, currency: Currency, role: MoneyRole, fit: FigureFit = .natural,
                 font: PhoneTextStyle = .body) {
@@ -103,7 +103,7 @@ public struct MoneyText: View {
     public var body: some View {
         let shown = MoneyPresentation(minorUnits: minorUnits, currency: currency, role: role)
         Text(shown.text)
-            .font(TypefaceResolver.font(face, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
+            .font(TypefaceResolver.font(fonts, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
             .foregroundStyle(theme.color(shown.tone))
             .modifier(FigureFitModifier(fit: fit, kind: "MoneyText", text: shown.text, source: nil))
             .accessibilityLabel(shown.spoken)

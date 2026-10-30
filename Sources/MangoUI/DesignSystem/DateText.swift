@@ -30,7 +30,7 @@ public struct DateText: View {
     public let date: Date?
     public var font: PhoneTextStyle
     public var fit: FigureFit
-    @Environment(\.phoneTypeface) private var face
+    @Environment(\.phoneFonts) private var fonts
 
     public init(_ date: Date?, font: PhoneTextStyle = .body, fit: FigureFit = .natural) {
         self.date = date
@@ -41,7 +41,7 @@ public struct DateText: View {
     public var body: some View {
         let text = PhoneDateFormat.day(date)
         Text(text)
-            .font(TypefaceResolver.font(face, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
+            .font(TypefaceResolver.font(fonts, style: font.style, weight: font.weight, isFigure: true).monospacedDigit())
             .foregroundStyle(date == nil ? Color.secondary : Color.primary)
             .modifier(FigureFitModifier(fit: fit, kind: "DateText", text: text, source: nil))
             .accessibilityLabel(PhoneDateFormat.spoken(date))

@@ -8,7 +8,7 @@ struct PropertyMonthWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "ubberninja.mango.propertymonth", provider: SnapshotProvider()) { entry in
             PropertyMonthWidgetEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .mangoWidgetTheme()
                 .widgetURL(WidgetLink.url(for: .home))
         }
         .configurationDisplayName("Property month")

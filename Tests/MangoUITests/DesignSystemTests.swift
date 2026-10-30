@@ -116,17 +116,21 @@ final class DesignSystemTests: XCTestCase {
 
     // MARK: Themes
 
-    func testEveryCatalogueThemeHasAPhoneTheme() {
-        XCTAssertEqual(PhoneTheme.all.map(\.id), ThemePalette.all.map(\.id))
-        XCTAssertEqual(PhoneTheme.named("no-such-theme").id, "classic")
+    func testEveryThemeSetHasAPhoneThemeAndMangoIsTheDefault() {
+        XCTAssertEqual(PhoneTheme.all.map(\.id), ThemeSet.all.map(\.id))
+        XCTAssertEqual(PhoneTheme.named("no-such-theme").id, "mango")
+        XCTAssertEqual(EnvironmentValues().phoneTheme.id, "mango")
+        // The widgets keep the system font unless a set's pairing is put in the environment.
+        XCTAssertEqual(EnvironmentValues().phoneFonts, .system)
     }
 
-    /// The phone draws each theme's roles (BudgetCore's `ThemeRolesTests` checks their contrast).
-    func testPhoneThemeCarriesThePalettesRoles() {
-        for palette in ThemePalette.all {
-            let theme = PhoneTheme(palette)
-            XCTAssertEqual(theme.roles(.light), palette.roles(.light), palette.id)
-            XCTAssertEqual(theme.roles(.dark), palette.roles(.dark), palette.id)
+    /// The phone draws each set's roles and fonts (BudgetCore's `ThemeSetTests` checks their contrast).
+    func testPhoneThemeCarriesTheSetsRolesAndFonts() {
+        for set in ThemeSet.all {
+            let theme = PhoneTheme(set)
+            XCTAssertEqual(theme.roles(.light), set.light, set.id)
+            XCTAssertEqual(theme.roles(.dark), set.dark, set.id)
+            XCTAssertEqual(theme.fonts, set.fonts, set.id)
         }
     }
 }
