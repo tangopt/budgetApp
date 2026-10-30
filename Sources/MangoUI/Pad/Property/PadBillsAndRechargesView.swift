@@ -124,18 +124,24 @@ struct PadBillsAndRechargesView: View {
         let summary = model.summary(year: model.year)
         let currency = model.currency
         return VStack(alignment: .leading, spacing: 10) {
-            PadGrid(minimumColumnWidth: 190) {
-                tile("Outstanding", caption: summary.outstandingCaption, pill: summary.overdue > 0 ? "\(summary.overdue) overdue" : nil) {
+            // D8: three figures in one strip. "Bills paid" and "Difference" mirrored each other, so they are one: does the
+            // year match the bank.
+            PadGrid(minimumColumnWidth: 180, maximumColumns: 3, balanced: false) {
+                tile("Waiting for the tenant", caption: summary.outstandingCaption, pill: summary.overdue > 0 ? "\(summary.overdue) overdue" : nil) {
                     MoneyText(minorUnits: summary.outstandingMinorUnits, currency: currency, role: .neutral, fit: .shrink(), font: .title2.weight(.semibold))
                 }
                 tile("Recharged in \(String(summary.year))", caption: summary.rechargedCaption) {
                     MoneyText(minorUnits: summary.rechargedMinorUnits, currency: currency, role: .income, fit: .shrink(), font: .title2.weight(.semibold))
                 }
-                tile("Bills paid for those months", caption: "What the bank paid for their bills") {
-                    MoneyText(minorUnits: summary.billsPaidMinorUnits, currency: currency, role: .expense, fit: .shrink(), font: .title2.weight(.semibold))
-                }
-                tile("Difference", caption: summary.differenceCaption) {
-                    MoneyText(minorUnits: summary.differenceMinorUnits, currency: currency, role: .income, fit: .shrink(), font: .title2.weight(.semibold))
+                tile("Matches the bank", caption: Self.matchCaption(summary, currency: currency)) {
+                    if summary.differenceMinorUnits == 0 {
+                        Text("Yes").mangoFont(.title2, weight: .semibold, figures: true).foregroundStyle(theme.income)
+                    } else {
+                        HStack(spacing: MangoSpacing.xxs) {
+                            MoneyText(minorUnits: abs(summary.differenceMinorUnits), currency: currency, role: .expense, fit: .shrink(), font: .title2.weight(.semibold))
+                            Text("off").mangoFont(.title2, weight: .semibold).foregroundStyle(theme.expense).fixedSize()
+                        }
+                    }
                 }
             }
             ForEach(summary.reasons) { reason in
@@ -154,6 +160,11 @@ struct PadBillsAndRechargesView: View {
                 }
             }
         }
+    }
+
+    /// What the bank paid for the year's bills against what the statements recharged, in a line.
+    static func matchCaption(_ summary: PadBillsAndRechargesModel.Summary, currency: Currency) -> String {
+        "Bank paid \(Money.format(summary.billsPaidMinorUnits, currency: currency))"
     }
 
     private func tile<Value: View>(_ title: String, caption: String, pill: String? = nil, @ViewBuilder value: () -> Value) -> some View {
