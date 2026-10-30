@@ -43,6 +43,12 @@ enum StepCardRule {
     static func showsPill(_ accessory: StepAccessory) -> Bool { !showsAction(accessory) }
 }
 
+/// Whether a step card shows as one line, and what tapping it does.
+struct StepCollapse {
+    let isCollapsed: Bool
+    let toggle: () -> Void
+}
+
 /// The number disc: done is a green tick, the current step the accent, later steps an outline, steps that don't apply
 /// a dash.
 enum StepMarkerState: Sendable {
@@ -58,10 +64,13 @@ struct StepCard<Content: View>: View {
     let statusLine: String?
     let accessory: StepAccessory
     let content: Content
+    /// A completed step shows as one line (disc, title, pill); `toggle` expands it again. Nil: always expanded.
+    let collapse: StepCollapse?
     @Environment(\.phoneTheme) private var theme
 
     init(number: Int, marker: StepMarkerState, title: String, statusLine: String? = nil, accessory: StepAccessory,
-         @ViewBuilder content: () -> Content = { EmptyView() }) {
+         collapse: StepCollapse? = nil, @ViewBuilder content: () -> Content = { EmptyView() }) {
+        self.collapse = collapse
         self.number = number
         self.marker = marker
         self.title = title
@@ -71,6 +80,35 @@ struct StepCard<Content: View>: View {
     }
 
     var body: some View {
+        if let collapse, collapse.isCollapsed {
+            collapsedLine(collapse)
+        } else {
+            expanded
+        }
+    }
+
+    /// The one-line form of a completed step: tapping it expands the card.
+    private func collapsedLine(_ collapse: StepCollapse) -> some View {
+        Button(action: collapse.toggle) {
+            Card {
+                HStack(spacing: MangoSpacing.s) {
+                    disc
+                    Text(title.figuresUnbroken).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    pillIfAny
+                    Image(systemName: "chevron.down").mangoFont(.footnote, weight: .semibold).foregroundStyle(theme.textTertiary)
+                        .accessibilityHidden(true)
+                }
+                .padding(.horizontal, MangoSpacing.cardPadding)
+                .frame(minHeight: ListRowLayout.minHeight)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the step's details")
+    }
+
+    private var expanded: some View {
         Card {
             HStack(alignment: .top, spacing: MangoSpacing.s) {
                 disc
@@ -90,6 +128,11 @@ struct StepCard<Content: View>: View {
                 }
             }
             .padding(MangoSpacing.cardPadding)
+        }
+        .overlay {
+            if marker == .current {
+                RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).strokeBorder(theme.accent, lineWidth: 2)
+            }
         }
         .accessibilityElement(children: .contain)
     }
