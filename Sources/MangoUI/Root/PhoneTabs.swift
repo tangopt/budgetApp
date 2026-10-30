@@ -244,7 +244,8 @@ public struct PhoneTabs: View {
     public var body: some View {
         TabView(selection: $model.selection) {
             Tab("Home", systemImage: "house", value: PhoneTab.home) {
-                HomeView(model: model.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
+                HomeView(model: model.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings,
+                         onOpenTab: { model.selection = $0 })
                     .offlineBanner(syncStatus, lastSync: lastSync)
             }
             Tab("Month", systemImage: "calendar", value: PhoneTab.month) {
@@ -256,7 +257,7 @@ public struct PhoneTabs: View {
                     .offlineBanner(syncStatus, lastSync: lastSync)
             }
             if model.hasProperty {
-                Tab("Property", systemImage: "building.2", value: PhoneTab.property) {
+                Tab("Flat", systemImage: "building.2", value: PhoneTab.property) {
                     PropertyView(model: model.property, syncStatus: syncStatus, onRefresh: onRefresh)
                         .offlineBanner(syncStatus, lastSync: lastSync)
                 }

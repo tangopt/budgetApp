@@ -98,22 +98,32 @@ public struct AccountsView: View {
     }
 }
 
-/// Net worth today (`AccountsOverview.netWorthGBP`) and the change since last December.
+/// Net worth today (`AccountsOverview.netWorthGBP`) and the change since last December, in one compact card (design
+/// review D2: Home owns the big card and the chart).
 struct AccountsHeader: View {
     let page: AccountsPage
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        Card(title: "Net worth") {
-            MoneyText(minorUnits: page.overview.netWorthGBP, currency: .gbp, role: .balance, fit: .shrink(),
-                      font: .largeTitle.weight(.semibold))
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Net worth")
-                .accessibilityValue(MoneyPresentation(minorUnits: page.overview.netWorthGBP, currency: .gbp, role: .balance).spoken)
-            if let since = page.sinceYearEnd {
-                FigureRow(label: AccountsCopy.sinceLabel(since)) {
-                    MoneyText(minorUnits: since.changeMinorUnits, currency: .gbp, role: .income)
+        let layout = AmountRowLayout.stacks(at: dynamicTypeSize)
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: MangoSpacing.s))
+        Card {
+            VStack(alignment: .leading, spacing: 2) {
+                layout {
+                    Text("Net worth").mangoFont(.body)
+                    if !AmountRowLayout.stacks(at: dynamicTypeSize) { Spacer(minLength: 0) }
+                    MoneyText(minorUnits: page.overview.netWorthGBP, currency: .gbp, role: .balance, font: .figureL)
+                }
+                if let since = page.sinceYearEnd {
+                    Text(AccountsCopy.sinceCaption(since).figuresUnbroken)
+                        .mangoFont(.subheadline).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Net worth")
+            .accessibilityValue(([MoneyPresentation(minorUnits: page.overview.netWorthGBP, currency: .gbp, role: .balance).spoken]
+                + (page.sinceYearEnd.map { [AccountsCopy.sinceCaption($0)] } ?? [])).joined(separator: ", "))
         }
     }
 }

@@ -12,7 +12,6 @@ public enum SearchCopy {
     public static let noTransactionsTitle = "No transactions yet"
     public static let noTransactionsMessage = "Transactions appear here once the household's data arrives."
     public static let recentTitle = "Recent"
-    public static let detailFooter = "Edit on iPad or Mac"
     /// Under a day's total when the day lists an incoming transfer leg that the total leaves out.
     public static let transferNote = "Transfers between your accounts aren't counted in the total"
 

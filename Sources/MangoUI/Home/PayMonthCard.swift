@@ -18,7 +18,7 @@ struct PayMonthCard: View {
             FigureRow(label: "Spent") {
                 MoneyText(minorUnits: month.expenses.actual, currency: .gbp, role: .expense)
             }
-            if usesPadPage { PayMonthInteractiveChart(summary: summary) } else { bar }
+            if usesPadPage { PayMonthInteractiveChart(summary: summary) } else { PayMonthBarView(summary: summary) }
             FigureRow(label: "Still expected") {
                 MoneyText(minorUnits: summary.leftToSpendMinorUnits, currency: .gbp, role: .neutral)
             }
@@ -30,8 +30,14 @@ struct PayMonthCard: View {
             }
         }
     }
+}
 
-    private var bar: some View {
+/// The pay month's bar: spent solid, still expected hatched, with its legend.
+struct PayMonthBarView: View {
+    let summary: HomeSummary
+    @Environment(\.phoneTheme) private var theme
+
+    var body: some View {
         let shares = PayMonthBar(spentMinorUnits: summary.month.expenses.actual,
                                  stillExpectedMinorUnits: summary.leftToSpendMinorUnits,
                                  plannedMinorUnits: summary.plannedSpendingMinorUnits)

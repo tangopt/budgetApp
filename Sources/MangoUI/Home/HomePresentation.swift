@@ -1,3 +1,4 @@
+import SwiftUI
 import Foundation
 import BudgetCore
 
@@ -8,6 +9,36 @@ public enum HomeCopy {
 
     /// Upcoming lists this many items.
     public static let upcomingLimit = 5
+    /// The iPhone's Home lists this many (design review D1: the next 4, with the Calendar as the full list).
+    public static let phoneUpcomingLimit = 4
+
+    /// The iPhone Home's blocks, top to bottom (design review §2.3, §4): Left to spend leads, then the two tiles, then
+    /// what needs the person and what is coming; the freshness line sits last, and above all of them only when the
+    /// data is stale.
+    public enum PhoneBlock: Equatable, Sendable {
+        case staleData, leftToSpend, tiles, attention, upcoming, freshness
+    }
+
+    public static func phoneBlocks(_ summary: HomeSummary) -> [PhoneBlock] {
+        (summary.isFreshnessAmber ? [.staleData] : []) + [.leftToSpend, .tiles, .attention, .upcoming]
+            + (summary.isFreshnessAmber ? [] : [.freshness])
+    }
+
+    /// Under the Left to spend figure: "after spending and what is still expected · payday in 12 days".
+    public static func leftToSpendCaption(_ summary: HomeSummary) -> String {
+        "after spending and what is still expected · payday \(daysToPayday(summary.daysToPayday))"
+    }
+
+    /// Under the Net worth tile's figure: "+£1,200.00 since last month"; nil without a previous month.
+    public static func netWorthTileCaption(_ netWorth: NetWorthSeries) -> String? {
+        guard let change = netWorth.changeVsPreviousMonthMinorUnits else { return nil }
+        let text = MoneyPresentation(minorUnits: change, currency: .gbp, role: .income).text
+        return "\(change > 0 ? "+" : "")\(text) since last month"
+    }
+
+    /// The two tiles stand side by side only at sizes where a pound figure fits half the width (up to Large); above
+    /// that each takes the full width.
+    public static func tilesSideBySide(at size: DynamicTypeSize) -> Bool { size <= .large }
 
     /// "Data through 15 Oct 2026 · last import 15 Oct 2026"; past 14 days, with the age: "Data through 1 Oct 2026 ·
     /// 21 days old · last import 2 Oct 2026". "No data yet" without any.

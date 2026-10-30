@@ -2,54 +2,7 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// Edit a transaction's category and note (step 7b). The choices are drafts: nothing is written until Save, Cancel
-/// leaves the transaction as it was, and a refusal (a filed year, Edit lost) shows in the sheet and keeps the draft.
-public struct TransactionEditSheet: View {
-    let row: TransactionSearch.Row
-    @ObservedObject var model: QuickEditModel
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.phoneTheme) private var theme
-    @State private var categoryId: Int64?
-    @State private var note: String
-    @State private var saving = false
-
-    public init(row: TransactionSearch.Row, model: QuickEditModel) {
-        self.row = row
-        self.model = model
-        _categoryId = State(initialValue: row.transaction.categoryId)
-        _note = State(initialValue: row.transaction.note ?? "")
-    }
-
-    public var body: some View {
-        NavigationStack {
-            TransactionEditForm(row: row, model: model, categoryId: $categoryId, note: $note)
-                .mangoNavigationTitle("Edit transaction")
-                .navigationBarTitleDisplayModeInline()
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { save() }
-                            .disabled(saving)
-                    }
-                }
-        }
-        .presentationDetents([.large])
-        .onDisappear { model.refusal = nil }
-    }
-
-    private func save() {
-        saving = true
-        Task {
-            let saved = await model.save(transactionId: row.id, categoryId: categoryId, note: note)
-            saving = false
-            if saved { dismiss() }
-        }
-    }
-}
-
-/// The sheet's body (also what the snapshot route renders).
+/// The transaction sheet's edit form (`TransactionDetailSheet` in edit mode).
 struct TransactionEditForm: View {
     let row: TransactionSearch.Row
     @ObservedObject var model: QuickEditModel

@@ -9,7 +9,7 @@ struct AttentionCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        Card(title: "Needs attention") {
+        Card(title: "Needs you") {
             if lines.isEmpty {
                 Text("Nothing needs attention.")
                     .foregroundStyle(.secondary)

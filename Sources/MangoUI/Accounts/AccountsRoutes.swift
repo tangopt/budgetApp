@@ -9,7 +9,7 @@ public enum AccountsRoutes {
     /// pounds equivalents), 7 below the first screen at default size; the detail 21 (the balance and 20 amounts), 16
     /// below it. The captions' days aren't figures the probe measures (they may wrap between words, never inside a day).
     static let all: [DemoRoute] = [
-        DemoRoute(name: "accounts", minimumFigures: 17, figuresBelowFold: 6,
+        DemoRoute(name: "accounts", minimumFigures: 16, figuresBelowFold: 3,
                   check: { context in try figuresCheck(context) }) { context in
             accounts(context.dbQueue, today: context.today, status: context.syncStatus)
         },

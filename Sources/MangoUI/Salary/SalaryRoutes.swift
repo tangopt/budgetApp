@@ -20,11 +20,16 @@ public enum SalaryRoutes {
 
     static let all: [DemoRoute] = [
         // The strip (3) and one column (3 take-home, tax, NI, loan, pension, allowance, 2 rates): 13 on the offer.
-        DemoRoute(name: "salary", minimumFigures: 13) { context in
-            AnyView(NavigationStack { SalarySimulatorScreen(viewModel: demoModel(today: context.today), startingOn: .offer) })
+        DemoRoute(name: "salary", minimumFigures: 4) { context in
+            AnyView(NavigationStack { SalarySimulatorScreen(viewModel: demoModel(today: context.today), startingOn: .inputs) })
         },
-        // 10: in 834×1194 portrait the Bonus paid row pushes the take-home card's first figure below the fold.
-        DemoRoute(name: "salary", sizes: DemoRoute.padSizes, minimumFigures: 10, pad: true) { context in
+        // Results: the headline, the take-home, the deductions and the flow's differences.
+        DemoRoute(name: "salary-results", minimumFigures: 13) { context in
+            AnyView(NavigationStack { SalarySimulatorScreen(viewModel: demoModel(today: context.today), startingOn: .results) })
+        },
+        // Landscape shows inputs and results side by side; in the narrower portrait detail the iPhone's tabs show (6).
+        // Accessibility 3 too: rows stack there and no figure is cut off.
+        DemoRoute(name: "salary", sizes: DemoRoute.padSizes + [.accessibility3], minimumFigures: 4, pad: true) { context in
             let tabs = PadRoutes.tabs(context)
             return AnyView(PadRootView(tabs: tabs, syncStatus: context.syncStatus, initialSelection: .salary,
                                        salary: demoModel(today: context.today), columns: .doubleColumn))

@@ -196,3 +196,29 @@ final class PropertyTests: XCTestCase {
         XCTAssertEqual(PropertyCopy.nothingComingUp, "Nothing due in the next 60 days.")
     }
 }
+
+/// The Flat tab's checklist progress (design review §4).
+final class FlatChecklistTests: XCTestCase {
+    private func step(_ id: ThisMonthChecklist.StepID, _ state: ThisMonthChecklist.StepState, detail: String? = nil) -> ThisMonthChecklist.Step {
+        ThisMonthChecklist.Step(id: id, state: state, headline: id.rawValue, detail: detail, actions: [])
+    }
+
+    private func checklist(_ states: [ThisMonthChecklist.StepState]) -> ThisMonthChecklist {
+        ThisMonthChecklist(tenancyId: 1, tenancyName: "Tenancy 2", month: Date(timeIntervalSince1970: 0),
+                           steps: zip(ThisMonthChecklist.StepID.allCases, states).map { step($0, $1, detail: "detail \($0.rawValue)") },
+                           side: [], evidenceCount: 0, downloadsWaiting: 0, lastStatementId: nil, statementId: nil)
+    }
+
+    func testProgressCountsDoneAndNotNeededSteps() {
+        let shown = FlatChecklistPresentation(checklist([.done, .notApplicable, .needsYou, .waiting]))
+        XCTAssertEqual(shown.progressText, "2 of 4 done")
+        XCTAssertEqual((0..<4).map(shown.isFilled), [true, true, false, false])
+    }
+
+    func testOnlyTheCurrentStepKeepsItsLineAndEveryStepIsAPillNeverAnAction() {
+        let shown = FlatChecklistPresentation(checklist([.done, .needsYou, .waiting, .waiting]))
+        XCTAssertEqual(shown.steps.map(\.marker), [.done, .current, .later, .later])
+        XCTAssertEqual(shown.steps.map(\.statusLine), [nil, "detail billsIn", nil, nil])
+        XCTAssertEqual(shown.steps.map(\.pillText), ["Done", "To do", "Waiting", "Waiting"])
+    }
+}

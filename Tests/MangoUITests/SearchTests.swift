@@ -378,7 +378,6 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(detail.note, "Boiler pressure valve replaced")
         XCTAssertEqual(detail.currency, .eur)
         XCTAssertEqual(detail.amount.minorUnits, -32_000)
-        XCTAssertEqual(SearchCopy.detailFooter, "Edit on iPad or Mac")
     }
 
     // MARK: Tabs

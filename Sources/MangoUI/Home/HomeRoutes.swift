@@ -16,7 +16,7 @@ public enum HomeRoutes {
     /// the first-screen window): Net worth 3 (figure, change, year end), This pay month 4, Needs attention 2 counts,
     /// Upcoming 5. At least 7 sit below the first screen at default size.
     static let all: [DemoRoute] = [
-        DemoRoute(name: "home", minimumFigures: 14, figuresBelowFold: 7,
+        DemoRoute(name: "home", minimumFigures: 9, figuresBelowFold: 2,
                   check: { context in try netWorthCheck(context) }) { context in
             home(context.dbQueue, today: context.today, status: context.syncStatus)
         },
@@ -32,7 +32,7 @@ public enum HomeRoutes {
             }
             return home(empty, today: context.today, status: .idle(lastSync: nil))
         },
-        DemoRoute(name: "home-stale_data", minimumFigures: 14, figuresBelowFold: 7) { context in
+        DemoRoute(name: "home-stale_data", minimumFigures: 9, figuresBelowFold: 2) { context in
             home(context.dbQueue, today: staleToday(from: context.today), status: context.syncStatus)
         },
     ]

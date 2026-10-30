@@ -44,6 +44,6 @@ public enum QuickEditRoutes {
         guard let row = SearchRoutes.detailRow(context) else { return AnyView(Text("The demo's boiler repair didn't load")) }
         let model = model(context)
         model.preload(lists: QuickEditModel.readListsNow(context.dbQueue), refusal: refusal)
-        return AnyView(TransactionEditSheet(row: row, model: model))
+        return AnyView(TransactionDetailSheet(row: row, startsEditing: true).environment(\.quickEdit, model))
     }
 }

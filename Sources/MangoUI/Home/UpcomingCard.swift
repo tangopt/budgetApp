@@ -6,10 +6,11 @@ import BudgetCore
 /// Drawn by the shared `UpcomingList`.
 struct UpcomingCard: View {
     let items: [HomeSummary.UpcomingItem]
+    var limit = HomeCopy.upcomingLimit
 
     var body: some View {
         Card(title: "Upcoming") {
-            UpcomingList(entries: HomeCopy.nextUpcoming(items).map(UpcomingEntry.init),
+            UpcomingList(entries: Array(items.prefix(limit)).map(UpcomingEntry.init),
                          emptyText: "Nothing due in the next \(HomeSummary.upcomingDays) days.")
         }
     }

@@ -38,6 +38,9 @@ public struct HomeSummary: Equatable, Sendable {
     /// (`MonthBlend`, as the Mac's current month card) less the actual — the year chart's
     /// hatched "still expected" for the month.
     public let leftToSpendMinorUnits: Int
+    /// What the pay month leaves: income less spent less still expected (signed), the same figure as Month's "Left to
+    /// spend" (`PayMonthReview.leftToSpendMinorUnits`), so the two screens never differ.
+    public let monthLeftToSpendMinorUnits: Int
     /// The pay month's projected spending (`month.expenses.projected`, positive).
     public let plannedSpendingMinorUnits: Int
     /// The current pay month's close day (its payday): the pay calendar's close date.
@@ -80,6 +83,7 @@ public struct HomeSummary: Equatable, Sendable {
             netWorth: DashboardCalculator.netWorthSeries(input),
             month: month,
             leftToSpendMinorUnits: max(0, planned - month.expenses.actual),
+            monthLeftToSpendMinorUnits: DashboardCalculator.monthlyFlow(input, month: input.payCalendar.current).net,
             plannedSpendingMinorUnits: planned,
             paydayDate: payday,
             daysToPayday: daysToPayday,

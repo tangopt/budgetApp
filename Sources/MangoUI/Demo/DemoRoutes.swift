@@ -118,7 +118,8 @@ public enum SharingRoutes {
                                          iCloud: .available, keyHeld: true,
                                          status: .idle(lastSync: today.addingTimeInterval(-300)),
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },
-                                         onLockNow: {}, onSyncNow: {}, sharing: sharing))
+                                         onLockNow: {}, onSyncNow: {}, sharing: sharing,
+                                         salary: SalaryRoutes.demoModel(today: today), personName: "A", title: "Me"))
         },
         // The `accounts` route's 17 figures, with A's badges.
         DemoRoute(name: "accounts-sharing_badges", minimumFigures: 17, figuresBelowFold: 6) { context in
