@@ -255,3 +255,14 @@ struct AttentionTile: View {
         }
     }
 }
+
+/// A widget that is switched on but has nothing to show yet: its title and a quiet line saying so.
+struct EmptyWidgetTile: View {
+    let title: String
+
+    var body: some View {
+        DashTile(title) { _ in
+            Text("Nothing to show yet").font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
