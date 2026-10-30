@@ -11,7 +11,7 @@ struct ThisMonthCard: View {
     private var currency: Currency { glance.property.currency }
 
     var body: some View {
-        Card(title: "This month") {
+        Card(title: "Rent and recharge") {
             if let status = PropertyCopy.rentStatus(glance.rent) {
                 rentRow(status: status)
             } else {

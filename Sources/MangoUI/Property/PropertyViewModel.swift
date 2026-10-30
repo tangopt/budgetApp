@@ -8,10 +8,14 @@ public struct PropertyPage: Equatable, Sendable {
     public var glances: [PropertyGlance]
     /// The day the page was read for.
     public let today: Date
+    /// This month's checklist for the first property's current tenancy (design review §4: the Flat tab shows its
+    /// progress, read-only); nil when it has no tenancy.
+    public var checklist: ThisMonthChecklist?
 
-    public init(glances: [PropertyGlance], today: Date) {
+    public init(glances: [PropertyGlance], today: Date, checklist: ThisMonthChecklist? = nil) {
         self.glances = glances
         self.today = today
+        self.checklist = checklist
     }
 
     /// The one property, shown directly; nil when there are several.
@@ -111,7 +115,17 @@ public final class PropertyViewModel: ObservableObject {
 
     nonisolated static func read(_ db: Database, today: Date) throws -> State {
         let glances = try PropertyGlance.all(db: db, today: today)
-        return glances.isEmpty ? .empty : .loaded(PropertyPage(glances: glances, today: today))
+        guard !glances.isEmpty else { return .empty }
+        return .loaded(PropertyPage(glances: glances, today: today, checklist: try? checklist(db, glance: glances[0], today: today)))
+    }
+
+    /// The checklist of the property's current tenancy (`PadPropertyModel.ordered` puts it first).
+    nonisolated static func checklist(_ db: Database, glance: PropertyGlance, today: Date) throws -> ThisMonthChecklist? {
+        guard let propertyId = glance.property.id else { return nil }
+        let tenancies = PadPropertyModel.ordered(try Tenancy.filter(Column("propertyId") == propertyId).fetchAll(db), today: today)
+        guard let tenancyId = tenancies.first?.id else { return nil }
+        let checklist = try ThisMonthChecklist.build(db: db, tenancyId: tenancyId, today: today, trayCount: 0)
+        return checklist.isHidden ? nil : checklist
     }
 
     // MARK: Reloading after a sync
@@ -303,6 +317,8 @@ public enum PropertyCopy {
         return parts.joined(separator: ", ")
     }
 
+    /// The Flat tab lists the next two flat items.
+    public static let comingUpLimit = 2
     public static let nothingComingUp = "Nothing due in the next \(PropertyGlance.comingUpDays) days."
     public static let notLet = "No tenancy runs today."
     public static let amountNotKnown = "Amount not known"
