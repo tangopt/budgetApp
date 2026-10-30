@@ -33,7 +33,7 @@ struct PadMoneyChartsContent: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(section.title).mangoFont(.subheadline, weight: .semibold).foregroundStyle(.secondary).padding(.bottom, 6)
                     ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, figure in
-                        if index > 0 { Divider() }
+                        if index > 0 { MangoDivider() }
                         row(figure)
                     }
                 }

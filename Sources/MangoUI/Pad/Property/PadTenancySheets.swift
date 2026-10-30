@@ -85,7 +85,7 @@ struct PadTenancyFormSheet: View {
             .environment(\.timeZone, calendar.timeZone)
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle(draft.existing == nil ? "New tenancy" : "Edit tenancy")
+            .mangoNavigationTitle(draft.existing == nil ? "New tenancy" : "Edit tenancy")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()
@@ -159,7 +159,7 @@ struct PadLinkedDocumentsSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle(title)
+            .mangoNavigationTitle(title)
             .navigationBarTitleDisplayModeInline()
             .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
             .task {

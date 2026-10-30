@@ -148,7 +148,7 @@ struct PadChecksView: View {
                 .padding(.bottom, 6)
                 ForEach(model.lines) { line in
                     checkLine(line)
-                    if line.id != model.lines.last?.id { Divider() }
+                    if line.id != model.lines.last?.id { MangoDivider() }
                 }
             }
         }
@@ -166,12 +166,11 @@ struct PadChecksView: View {
             .padding(.vertical, 8)
             .padding(.horizontal, 8)
             .frame(minHeight: 44)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(isSelected ? theme.accent.opacity(0.12) : .clear))
+            .mangoRowSelection(isSelected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityValue(line.state == .ok ? "All well" : line.state == .issue ? "Needs a look" : "Not checked")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityHint("Shows the details")
     }
 

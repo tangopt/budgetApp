@@ -39,7 +39,6 @@ struct PadTenanciesScreen: View {
                     if property.tenancies.isEmpty {
                         empty
                     } else {
-                        controls
                         PadRefusalBanner(message: write.message(for: PadTenanciesModel.screenRow))
                         if let tenancy = property.selectedTenancy {
                             PadTenancyDetailView(model: model, write: write, tenancy: tenancy, run: { run($0, nil, nil) })
@@ -51,7 +50,7 @@ struct PadTenanciesScreen: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("Tenancies")
+            .padPage("Tenancies", contexts: tenancyContexts, primary: newTenancyAction) { moreMenu }
         }
         .modifier(PadReceiptPanelHost(model: model) { receipt in
             PadReceiptPanelExtra(model: model, write: write, receipt: receipt, run: { run($0, receipt, $1) })
@@ -99,56 +98,35 @@ struct PadTenanciesScreen: View {
         .frame(maxWidth: .infinity).padding(.top, 60)
     }
 
-    private var controls: some View {
-        HStack(alignment: .center, spacing: 10) {
-            picker
-            Spacer(minLength: 8)
-            let actions = model.screenActions(hasBrowser: browser != nil)
-            if actions.contains(.newTenancy) {
-                ViewThatFits(in: .horizontal) {
-                    Button { run(.newTenancy, nil, nil) } label: { Label("New tenancy", systemImage: "plus") }
-                        .buttonStyle(.pad(.primary))
-                    Button { run(.newTenancy, nil, nil) } label: { Image(systemName: "plus") }
-                        .buttonStyle(.pad(.primary))
-                        .accessibilityLabel("New tenancy")
-                }
-            }
-            let more = actions.filter { $0 != .newTenancy }
-            if !more.isEmpty {
-                Menu {
-                    ForEach(more, id: \.self) { action in
-                        Button(action.title + (action == .utilityInvoices ? "…" : "")) { run(action, nil, nil) }
-                    }
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle").frame(minHeight: 44)
-                }
-                .buttonStyle(.pad(.secondary))
-                .accessibilityLabel("More")
-            }
-        }
+    /// The tenancy picker: the capsule says the reference label, the menu adds its days.
+    private var tenancyContexts: [ContextPicker] {
+        guard !property.tenancies.isEmpty else { return [] }
+        return [ContextPicker("Tenancy", items: property.tenancies, selected: property.selectedTenancyId.map(String.init),
+                              fallback: "Tenancy", id: { String($0.id ?? 0) }, title: Self.pickerTitle,
+                              shortTitle: { $0.referenceLabel }, choose: { property.selectedTenancyId = $0.id })]
     }
 
-    private var picker: some View {
-        Menu {
-            ForEach(property.tenancies) { tenancy in
-                Button { property.selectedTenancyId = tenancy.id } label: {
-                    if tenancy.id == property.selectedTenancyId {
-                        Label(Self.pickerTitle(tenancy), systemImage: "checkmark")
-                    } else {
-                        Text(Self.pickerTitle(tenancy))
-                    }
+    /// The page's one primary action.
+    private var newTenancyAction: PageAction? {
+        guard !property.tenancies.isEmpty, model.screenActions(hasBrowser: browser != nil).contains(.newTenancy) else { return nil }
+        return PageAction("New tenancy", systemImage: "plus") { run(.newTenancy, nil, nil) }
+    }
+
+    /// The other page actions, in a menu.
+    @ViewBuilder
+    private var moreMenu: some View {
+        let more = model.screenActions(hasBrowser: browser != nil).filter { $0 != .newTenancy }
+        if !property.tenancies.isEmpty, !more.isEmpty {
+            Menu {
+                ForEach(more, id: \.self) { action in
+                    Button(action.title + (action == .utilityInvoices ? "…" : "")) { run(action, nil, nil) }
                 }
+            } label: {
+                Image(systemName: "ellipsis.circle").mangoFont(.body, weight: .semibold)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
-        } label: {
-            HStack(spacing: 6) {
-                Text(property.selectedTenancy?.referenceLabel ?? "Tenancy").lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.up.chevron.down").mangoFont(.footnote)
-            }
-            .mangoFont(.headline)
-            .frame(minHeight: 44)
+            .accessibilityLabel("More")
         }
-        .accessibilityLabel("Tenancy")
-        .accessibilityValue(property.selectedTenancy?.referenceLabel ?? "")
     }
 
     /// "Tenancy 2 · 1 Aug 2024 – ongoing": the reference and its days, never the tenant.
@@ -197,7 +175,7 @@ struct PadTenanciesScreen: View {
                     Text(String(year.year)).mangoFont(.headline, figures: true).foregroundStyle(.secondary).padding(.top, 4)
                     Card {
                         ForEach(Array(year.receipts.enumerated()), id: \.element.id) { index, receipt in
-                            if index > 0 { Divider() }
+                            if index > 0 { MangoDivider() }
                             PadRentReceiptRow(receipt: receipt, isSelected: receipt.id == model.selectedReceiptId,
                                               actions: model.actions(for: receipt), write: write,
                                               select: { model.select(receipt) },

@@ -99,7 +99,7 @@ struct DocumentDetailsCard: View {
         Card {
             let rows = details.rows
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                if index > 0 { Divider() }
+                if index > 0 { MangoDivider() }
                 DocumentDetailRow(row: row)
             }
         }

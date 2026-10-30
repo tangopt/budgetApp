@@ -128,44 +128,26 @@ struct PadCalendarView: View {
 
     private func obligationList(_ items: [PropertyObligation]) -> some View {
         Card {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, obligation in
-                if index > 0 { Divider() }
-                row(obligation)
+            UpcomingList(entries: items.map(entry), emptyText: "Nothing is due.", selectedId: model.selectedId) { id in
+                if let obligation = items.first(where: { $0.id == id }) { model.select(obligation) }
             }
         }
     }
 
-    /// One obligation as a list row: its icon and title, the day and kind pill, the amount.
-    private func row(_ obligation: PropertyObligation) -> some View {
-        let isSelected = obligation.id == model.selectedId
-        return Button { model.select(obligation) } label: {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary)
-                    .frame(width: 22).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
-                    Text(PhoneDateFormat.day(obligation.date).unbroken).mangoFont(.subheadline, figures: true).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: pillTone(obligation.kind))
-                PadObligationAmount(obligation: obligation, font: .headline)
-                    .frame(minWidth: 90, alignment: .trailing)
-            }
-            .frame(minHeight: 44)
-            .padding(.horizontal, 6)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isSelected ? theme.accent.opacity(0.12) : .clear))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityHint("Opens the details")
+    /// One obligation as the shared upcoming list draws it: its icon and title, the day, the kind pill, the amount.
+    private func entry(_ obligation: PropertyObligation) -> UpcomingEntry {
+        let figure: UpcomingEntry.Figure = if let amount = obligation.expectedMinorUnits, let currency = obligation.currency {
+            .expected(minorUnits: amount, currency: currency, isEstimate: obligation.isEstimate)
+        } else { .none }
+        return UpcomingEntry(id: obligation.id, title: PadCalendarModel.shortTitle(obligation),
+                             caption: PhoneDateFormat.day(obligation.date), symbol: PadCalendarModel.symbol(obligation.kind),
+                             figure: figure, pill: (PadCalendarModel.kindName(obligation.kind), pillStatus(obligation.kind)))
     }
 
-    private func pillTone(_ kind: PropertyObligationKind) -> PadStatusPill.Tone {
+    private func pillStatus(_ kind: PropertyObligationKind) -> StatusPill.Status {
         switch kind {
-        case .ptIncomeTaxReturn, .ukSelfAssessmentJanuary, .ukSelfAssessmentJuly: .accent
-        case .mortgageRateReset, .insuranceRenewal: .warning
+        case .ptIncomeTaxReturn, .ukSelfAssessmentJanuary, .ukSelfAssessmentJuly: .todo
+        case .mortgageRateReset, .insuranceRenewal: .waiting
         case .imiInstalment, .mortgageInstalment, .recurringCost: .neutral
         }
     }

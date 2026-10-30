@@ -109,7 +109,7 @@ private struct PadAccountFormScaffold<Content: View>: View {
             }.padFormChrome()
             .scrollContentBackground(.hidden)
             .background(theme.background)
-            .navigationTitle(title)
+            .mangoNavigationTitle(title)
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

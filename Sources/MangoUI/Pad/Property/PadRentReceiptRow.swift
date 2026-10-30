@@ -55,9 +55,8 @@ struct PadRentReceiptRow: View {
             PadRefusalBanner(message: write.message(for: receipt.rowId))
         }
         .padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isSelected ? theme.accent.opacity(0.12) : .clear))
+        .mangoRowSelection(isSelected)
         .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-receipt-\(receipt.id)")
     }
 

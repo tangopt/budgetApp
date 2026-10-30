@@ -197,7 +197,7 @@ struct CheckAndLinkSheet: View {
             Text("Fields marked “\(CheckAndLinkSheetCopy.readBadge)” were read from the PDF.")
                 .mangoFont(.caption).foregroundStyle(.secondary)
             ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                if index > 0 { Divider() }
+                if index > 0 { MangoDivider() }
                 CheckRowView(row: row)
             }
             if case .document(let document) = proposal, document.needsKind {

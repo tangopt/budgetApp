@@ -54,21 +54,22 @@ struct PadDocumentsView: View {
                     .padding(.top, 40)
                 Spacer()
             } else {
-                List(selection: $model.selectedId) {
-                    ForEach(groups) { group in
-                        Section(group.title) {
+                // Rows are `ListRow`s, so the selected document has the same tint and bar as every other selected row.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: MangoSpacing.xs) {
+                        ForEach(groups) { group in
+                            Text(group.title).mangoFont(.footnote, weight: .semibold).foregroundStyle(.secondary)
+                                .textCase(.uppercase).padding(.top, MangoSpacing.s).padding(.horizontal, MangoSpacing.xs)
+                                .accessibilityAddTraits(.isHeader)
                             ForEach(group.documents) { document in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(document.displayName).lineLimit(2).truncationMode(.middle)
-                                    Text(PhoneDateFormat.day(document.docDate)).mangoFont(.footnote).foregroundStyle(.secondary)
-                                }
-                                .tag(document.id)
+                                ListRow(document.displayName, detail: PhoneDateFormat.day(document.docDate),
+                                        isSelected: model.selectedId == document.id) { model.selectedId = document.id }
                             }
                         }
                     }
+                    .padding(.horizontal, inset - MangoSpacing.xs)
+                    .padding(.bottom, MangoSpacing.xl)
                 }
-                .listStyle(.sidebar)
-                .contentMargins(.horizontal, inset - MangoSpacing.m, for: .scrollContent)
             }
         }
     }
@@ -151,7 +152,7 @@ struct PadKindSheet: View {
                     Text(editor.name)
                 }
             }.padFormChrome()
-            .navigationTitle("Change kind")
+            .mangoNavigationTitle("Change kind")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

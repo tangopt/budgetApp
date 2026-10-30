@@ -102,7 +102,7 @@ struct AddSiteSheet: View {
                     Section { Text(error).foregroundStyle(theme.expense) }
                 }
             }
-            .navigationTitle("Add site")
+            .mangoNavigationTitle("Add site")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

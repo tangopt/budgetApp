@@ -47,7 +47,7 @@ struct PadMoneyView: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("Money")
+            .padPage("Money", contexts: [periodContext])
         }
         .modifier(PadMoneyPanelHost(model: model) { line in
             PadMoneyPanelExtra(model: model, write: write, line: line, run: { run($0) })
@@ -74,9 +74,8 @@ struct PadMoneyView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { periodMenu; viewPicker.frame(maxWidth: 300); Spacer(minLength: 8); if model.offersGBP { gbpToggle } }
+                HStack(spacing: 12) { viewPicker.frame(maxWidth: 300); Spacer(minLength: 8); if model.offersGBP { gbpToggle } }
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) { periodMenu; Spacer(minLength: 8) }
                     viewPicker
                     if model.offersGBP { gbpToggle }
                 }
@@ -87,32 +86,23 @@ struct PadMoneyView: View {
         }
     }
 
-    private var periodMenu: some View {
-        Menu {
-            ForEach(model.snapshot.years, id: \.self) { year in
-                Button { Task { await model.choose(.calendarYear(year)) } } label: {
-                    if model.periodChoice == .calendarYear(year) { Label(String(year), systemImage: "checkmark") } else { Text(String(year)) }
-                }
-            }
-            Divider()
-            ForEach(model.snapshot.years, id: \.self) { year in
-                Button { Task { await model.choose(.taxYear(year)) } } label: {
-                    let title = "Tax year \(UKTaxYear(startYear: year).label)"
-                    if model.periodChoice == .taxYear(year) { Label(title, systemImage: "checkmark") } else { Text(title) }
-                }
-            }
-            Divider()
-            Button("Custom range…") { showsCustom = true }
-        } label: {
-            HStack(spacing: 6) {
-                Text(model.periodTitle.figuresUnbroken).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").mangoFont(.footnote)
-            }
-            .mangoFont(.headline)
-            .frame(minHeight: 44)
+    /// The period, as the page's context picker: calendar years, tax years, then a custom range.
+    private var periodContext: ContextPicker {
+        let years = model.snapshot.years
+        var options = years.map { ContextPicker.Option(id: "calendar-\($0)", title: String($0)) }
+        options += years.map { ContextPicker.Option(id: "tax-\($0)", title: "Tax year \(UKTaxYear(startYear: $0).label)") }
+        options.append(.init(id: "custom", title: "Custom range…"))
+        let selected: String? = switch model.periodChoice {
+        case .calendarYear(let year): "calendar-\(year)"
+        case .taxYear(let year): "tax-\(year)"
+        default: nil
         }
-        .accessibilityLabel("Period")
-        .accessibilityValue(model.periodTitle)
+        return ContextPicker(label: model.periodTitle, accessibilityName: "Period", options: options, selectedId: selected) { id in
+            if id == "custom" { showsCustom = true; return }
+            let parts = id.split(separator: "-")
+            guard parts.count == 2, let year = Int(parts[1]) else { return }
+            Task { await model.choose(parts[0] == "tax" ? .taxYear(year) : .calendarYear(year)) }
+        }
     }
 
     private var viewPicker: some View {
@@ -189,7 +179,7 @@ struct PadMoneyView: View {
             PadSectionHeader("Months")
             Card {
                 ForEach(Array(model.months.enumerated()), id: \.element.start) { index, month in
-                    if index > 0 { Divider() }
+                    if index > 0 { MangoDivider() }
                     monthRow(month)
                 }
             }
@@ -343,12 +333,11 @@ struct PadMoneyLineRow: View {
             // As a card in a grid row, as tall as the row.
             .frame(maxWidth: .infinity, maxHeight: card ? .infinity : nil, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: card ? MangoRadius.card : 12, style: .continuous).fill(card ? theme.surface : theme.background))
-            .overlay(RoundedRectangle(cornerRadius: card ? MangoRadius.card : 12, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+            .mangoRowSelection(isSelected, radius: card ? MangoRadius.card : MangoRadius.control)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens the transaction")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -526,7 +515,7 @@ struct PadMoneyCustomRangeSheet: View {
             }.padFormChrome()
             .environment(\.timeZone, MonthRange.calendar.timeZone)
             .environment(\.calendar, MonthRange.calendar)
-            .navigationTitle("Custom range")
+            .mangoNavigationTitle("Custom range")
             .navigationBarTitleDisplayModeInline()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Cancel") { dismiss() } }.padFlatToolbarItem()

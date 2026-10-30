@@ -32,13 +32,11 @@ struct PadThisMonthView: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("This month") {
+            .padPage("This month", subtitle: model.snapshot.map { ThisMonthCopy.month($0.checklist.month) },
+                     contexts: tenancyContext) {
                 // The built-in browser and its Downloads tray (hidden with demo data).
                 if let browser {
-                    Button { browser.present() } label: {
-                        Label("Sites & downloads", systemImage: RowAction.openSite.systemImage)
-                    }
-                    .buttonStyle(.pad(.secondary))
+                    RowIconButton(.openSite, item: "sites and downloads") { browser.present() }
                 }
             }
         }
@@ -91,27 +89,17 @@ struct PadThisMonthView: View {
         }
     }
 
+    /// The tenancy this month is about (the reference label, never the tenant), switchable when there are several.
+    private var tenancyContext: [ContextPicker] {
+        guard let checklist = model.snapshot?.checklist else { return [] }
+        return [ContextPicker("Tenancy", items: model.tenancies, selected: String(checklist.tenancyId), fallback: checklist.tenancyName,
+                              id: { String($0.id ?? 0) }, title: { $0.referenceLabel },
+                              choose: { tenancy in Task { await model.select(tenancy.id ?? 0) } })]
+    }
+
     private func header(_ checklist: ThisMonthChecklist) -> some View {
         let done = Self.doneCount(checklist)
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\(checklist.tenancyName) · \(ThisMonthCopy.month(checklist.month))")
-                    .mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
-                if model.tenancies.count > 1 {
-                    Menu {
-                        ForEach(model.tenancies) { tenancy in
-                            Button { Task { await model.select(tenancy.id ?? 0) } } label: {
-                                if tenancy.id == checklist.tenancyId { Label(tenancy.referenceLabel, systemImage: "checkmark") }
-                                else { Text(tenancy.referenceLabel) }
-                            }
-                        }
-                    } label: {
-                        Label("Tenancy", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly)
-                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Choose tenancy")
-                }
-            }
+        return VStack(alignment: .leading, spacing: MangoSpacing.xs) {
             if !checklist.isHidden {
                 ProgressView(value: Double(done), total: Double(max(checklist.steps.count, 1)))
                     .tint(theme.accent)
@@ -130,50 +118,80 @@ struct PadThisMonthView: View {
     static func progressText(_ checklist: ThisMonthChecklist) -> String { "\(doneCount(checklist)) of \(checklist.steps.count) done" }
 
     private func steps(_ snapshot: PadThisMonthModel.Snapshot) -> some View {
-        VStack(spacing: 12) {
+        let current = Self.currentStep(snapshot.checklist)
+        return VStack(spacing: MangoSpacing.tile) {
             ForEach(Array(snapshot.checklist.steps.enumerated()), id: \.element.id) { index, step in
-                stepCard(step, number: index + 1, snapshot: snapshot)
+                stepCard(step, number: index + 1, isCurrent: step.id == current, snapshot: snapshot)
             }
         }
+    }
+
+    /// The step the person is on: the first that needs them, else the first still waiting. Its action is the filled
+    /// one; later steps' actions are plain.
+    static func currentStep(_ checklist: ThisMonthChecklist) -> ThisMonthChecklist.StepID? {
+        (checklist.steps.first { $0.state == .needsYou } ?? checklist.steps.first { $0.state == .waiting })?.id
     }
 
     // MARK: Step cards
 
-    private func stepCard(_ step: ThisMonthChecklist.Step, number: Int, snapshot: PadThisMonthModel.Snapshot) -> some View {
-        Card {
-            HStack(alignment: .top, spacing: 12) {
-                marker(step.state, number: number)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(step.headline.figuresUnbroken).mangoFont(.headline).fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 4)
-                        pill(step)
-                    }
-                    detail(step, snapshot: snapshot)
-                    if step.id == .billsIn { providers(step, snapshot: snapshot) }
-                    stepActions(step, snapshot: snapshot)
-                    if let message = write.message(for: PadThisMonthModel.confirmRow), step.id == .lastRechargePaid {
-                        PadRefusalBanner(message: message)
+    private func stepCard(_ step: ThisMonthChecklist.Step, number: Int, isCurrent: Bool, snapshot: PadThisMonthModel.Snapshot) -> some View {
+        let marker: StepMarkerState = switch step.state {
+        case .done: .done
+        case .notApplicable: .notApplicable
+        case .needsYou, .waiting: isCurrent ? .current : .later
+        }
+        // A pill when nothing is needed from the person, one button when they must act; never both.
+        let accessory = StepCardRule.accessory(needsAction: step.state == .needsYou, action: primaryAction(step, isCurrent: isCurrent),
+                                               pillText: Self.pillText(step), status: Self.pillStatus(step))
+        return StepCard(number: number, marker: marker, title: step.headline, statusLine: statusLine(step, snapshot: snapshot),
+                        accessory: accessory) {
+            stepBody(step, snapshot: snapshot, accessory: accessory)
+        }
+    }
+
+    /// The one line under the title: what the step found.
+    private func statusLine(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot) -> String? {
+        if step.id == .chargesInGrid, step.state != .notApplicable {
+            return PadThisMonthModel.chargesText(step, soFarMinorUnits: snapshot.rechargeSoFarMinorUnits, currency: snapshot.currency)
+        }
+        return step.detail
+    }
+
+    /// The step's one action when the person must act: the first offered of its actions that names a job.
+    private func primaryAction(_ step: ThisMonthChecklist.Step, isCurrent: Bool) -> StepAction? {
+        for action in step.actions where model.offers(action) {
+            switch action {
+            case .confirmMatch: return StepAction("Confirm match", isCurrent: isCurrent) { perform(action) }
+            case .prepareEmail: return StepAction("Prepare statement", isCurrent: isCurrent) { perform(action) }
+            case .markReceived: return StepAction("Mark received", isCurrent: isCurrent) { perform(action) }
+            default: continue
+            }
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func stepBody(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot, accessory: StepAccessory) -> some View {
+        if step.id == .chargesInGrid, step.state != .notApplicable {
+            Button("See the grid") { go(.billsAndRecharges) }.buttonStyle(.pad(.secondary, size: .small))
+        }
+        if step.id == .billsIn { providers(step, snapshot: snapshot) }
+        if step.id == .lastRechargePaid {
+            if step.actions.contains(where: { if case .confirmMatch = $0 { true } else { false } }), StepCardRule.showsAction(accessory) {
+                Text(ThisMonthCopy.notExact).mangoFont(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(step.actions, id: \.self) { action in
+                if case .fetchStatement(let kind) = action, browser != nil {
+                    HStack(spacing: 4) {
+                        RowIconButton(.openSite, item: kind == .bank ? "bank statement" : kind.title, size: .small) { perform(action) }
+                        Text("Open the bank's site").mangoFont(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(16)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func marker(_ state: ThisMonthChecklist.StepState, number: Int) -> some View {
-        ZStack {
-            Circle().fill(state == .done ? theme.income : Color.clear)
-            Circle().strokeBorder(state == .done ? theme.income : (state == .needsYou ? theme.accent : Color.secondary.opacity(0.5)), lineWidth: 2)
-            switch state {
-            case .done: Image(systemName: "checkmark").mangoFont(.subheadline, weight: .bold).foregroundStyle(.white)
-            case .notApplicable: Image(systemName: "minus").mangoFont(.subheadline, weight: .bold).foregroundStyle(.secondary)
-            default: Text("\(number)").mangoFont(.subheadline, weight: .semibold).foregroundStyle(state == .needsYou ? theme.accent : .secondary)
+            if let message = write.message(for: PadThisMonthModel.confirmRow) {
+                PadRefusalBanner(message: message)
             }
         }
-        .frame(width: 32, height: 32)
-        .accessibilityHidden(true)
     }
 
     static func pillText(_ step: ThisMonthChecklist.Step) -> String {
@@ -185,29 +203,13 @@ struct PadThisMonthView: View {
         }
     }
 
-    private func pill(_ step: ThisMonthChecklist.Step) -> some View {
-        let tint: Color = switch step.state {
-        case .done: theme.income
-        case .needsYou: theme.accent
-        case .waiting: theme.pending
-        case .notApplicable: .secondary
-        }
-        return Text(Self.pillText(step))
-            .mangoFont(.caption, weight: .semibold).foregroundStyle(tint)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(Capsule().fill(tint.opacity(0.14)))
-            .fixedSize()
-    }
-
-    @ViewBuilder
-    private func detail(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot) -> some View {
-        if step.id == .chargesInGrid, step.state != .notApplicable {
-            let text = PadThisMonthModel.chargesText(step, soFarMinorUnits: snapshot.rechargeSoFarMinorUnits, currency: snapshot.currency)
-            Text(text.figuresUnbroken)
-                .mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Button("See the grid") { go(.billsAndRecharges) }.buttonStyle(.pad(.textLink, size: .small))
-        } else if let text = step.detail {
-            Text(text.figuresUnbroken).mangoFont(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    /// The pill's colours: done, waiting, to do (when the step needs the person but offers no button), not needed.
+    static func pillStatus(_ step: ThisMonthChecklist.Step) -> StatusPill.Status {
+        switch step.state {
+        case .done: .done
+        case .needsYou: .todo
+        case .waiting: .waiting
+        case .notApplicable: .neutral
         }
     }
 
@@ -216,7 +218,7 @@ struct PadThisMonthView: View {
     private func providers(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot) -> some View {
         VStack(spacing: 0) {
             ForEach(step.providers) { provider in
-                Divider()
+                MangoDivider()
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(provider.name).mangoFont(.subheadline, weight: .semibold).fixedSize(horizontal: false, vertical: true)
@@ -267,44 +269,6 @@ struct PadThisMonthView: View {
         }
     }
 
-    // MARK: Step actions
-
-    @ViewBuilder
-    private func stepActions(_ step: ThisMonthChecklist.Step, snapshot: PadThisMonthModel.Snapshot) -> some View {
-        switch step.id {
-        case .lastRechargePaid:
-            ForEach(step.actions, id: \.self) { action in
-                switch action {
-                case .confirmMatch where model.offers(action):
-                    HStack(spacing: 12) {
-                        Button("Confirm match") { perform(action) }.buttonStyle(.pad(.primary, size: .small))
-                        Text(ThisMonthCopy.notExact).mangoFont(.caption).foregroundStyle(.secondary)
-                    }
-                case .markReceived where model.offers(action):
-                    Button("Mark received") { perform(action) }.buttonStyle(.pad(.secondary, size: .small))
-                case .fetchStatement(let kind) where browser != nil:
-                    HStack(spacing: 4) {
-                        RowIconButton(.openSite, item: kind == .bank ? "bank statement" : kind.title, size: .small) { perform(action) }
-                        Text("Open the bank's site").mangoFont(.caption).foregroundStyle(.secondary)
-                    }
-                case .prepareEmail where model.offers(action):
-                    Button("Prepare statement") { perform(action) }.buttonStyle(.pad(.secondary, size: .small))
-                default:
-                    EmptyView()
-                }
-            }
-        case .emailTenant:
-            if step.state != .done, step.state != .notApplicable {
-                let action = step.actions.first { if case .prepareEmail = $0 { true } else { false } }
-                Button("Prepare statement") { if let action { perform(action) } }
-                    .buttonStyle(.pad(.primary))
-                    .disabled(action == nil || !model.offers(action!))
-            }
-        case .billsIn, .chargesInGrid:
-            EmptyView()
-        }
-    }
-
     // MARK: Side column
 
     private func side(_ snapshot: PadThisMonthModel.Snapshot) -> some View {
@@ -313,7 +277,7 @@ struct PadThisMonthView: View {
             if !checklist.side.isEmpty {
                 sideCard("Also this month") {
                     ForEach(Array(checklist.side.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 { Divider() }
+                        if index > 0 { MangoDivider() }
                         sideRow(item, currency: snapshot.currency)
                     }
                 }
@@ -321,7 +285,7 @@ struct PadThisMonthView: View {
             sideCard("Evidence for the tax year") {
                 Text(checklist.evidenceCount == 0 ? "Nothing missing" : "\(checklist.evidenceCount) missing")
                     .figureText().mangoFont(.subheadline)
-                Button("Open Evidence") { go(.evidence) }.buttonStyle(.pad(.textLink, size: .small))
+                Button("Open Evidence") { go(.evidence) }.buttonStyle(.pad(.secondary, size: .small))
             }
             downloads(checklist)
         }
@@ -372,7 +336,7 @@ struct PadThisMonthView: View {
                         }
                     }
                 }
-                Button("Sites & downloads") { browser.present() }.buttonStyle(.pad(.textLink, size: .small))
+                Button("Sites & downloads") { browser.present() }.buttonStyle(.pad(.secondary, size: .small))
             }
         }
     }
