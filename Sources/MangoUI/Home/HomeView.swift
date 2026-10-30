@@ -17,6 +17,7 @@ public struct HomeView: View {
     /// The iPad's recharges-status chart: the selected tenancy's bills by stage (empty: no card; the iPhone passes none).
     let recharges: [PadBillsAndRechargesModel.StageCount]
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.usesPadPage) private var usesPadPage
 
     public init(model: HomeViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void,
                 onSettings: @escaping () -> Void, now: @escaping () -> Date = { Date() },
@@ -44,9 +45,8 @@ public struct HomeView: View {
             }
             .offlineBannerSlot()
             // On the iPad, Settings is the sidebar footer's.
-            .phonePageTitle("Home")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+            .phonePageTitle("Home") {
+                if !usesPadPage {
                     Button(action: onSettings) {
                         Image(systemName: "person.crop.circle")
                             .mangoFont(.title2)

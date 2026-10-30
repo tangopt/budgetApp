@@ -19,21 +19,21 @@ struct MortgageCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Divider()
+            MangoDivider()
             outstanding
             if let progress = mortgage.progress {
-                Divider()
+                MangoDivider()
                 repaid(progress)
             }
             if let rate = mortgage.ratePercent {
-                Divider()
+                MangoDivider()
                 FigureRow(label: "Rate") {
                     Text(PropertyCopy.rate(rate))
                         .figureText()
                 }
             }
             if let review = mortgage.nextReview {
-                Divider()
+                MangoDivider()
                 FigureRow(label: "Next review") {
                     DateText(review)
                 }

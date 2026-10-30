@@ -146,7 +146,7 @@ public struct AccountDetailView: View {
             .padding(16)
         }
         .background(theme.background)
-        .navigationTitle(title)
+        .mangoNavigationTitle(title)
         .navigationBarTitleDisplayModeInline()
         .task {
             if case .idle = model.state { await model.load() }
@@ -198,7 +198,7 @@ struct RecentTransactionsCard: View {
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             } else {
                 ForEach(Array(recent.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { Divider() }
+                    if index > 0 { MangoDivider() }
                     let amount = AccountDetailModel.amount(row.amountMinorUnits, category: row.category)
                     let content = AmountRow(label: row.description, secondary: AccountDetailModel.secondary(row),
                                             amount: MoneyText(minorUnits: amount.minorUnits, currency: row.currency, role: amount.role))

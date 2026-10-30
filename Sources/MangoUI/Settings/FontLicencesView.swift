@@ -64,7 +64,7 @@ struct FontLicencesView: View {
                 Text("These fonts are used under the SIL Open Font License.")
             }
         }
-        .navigationTitle("Font licences")
+        .mangoNavigationTitle("Font licences")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -81,7 +81,7 @@ private struct FontLicenceText: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
         }
-        .navigationTitle(entry.name)
+        .mangoNavigationTitle(entry.name)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

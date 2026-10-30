@@ -63,10 +63,7 @@ public struct SalarySimulatorScreen: View {
         }
         .background(theme.background)
         .task { await viewModel.refreshPrefill() }
-        .phonePageTitle("Salary calculator")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .phonePageTitle("Salary calculator", keepsNavigationBar: true)
     }
 
     // MARK: Comparison strip

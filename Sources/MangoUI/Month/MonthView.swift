@@ -114,7 +114,7 @@ public struct MonthView: View {
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             } else {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { Divider() }
+                    if index > 0 { MangoDivider() }
                     NavigationLink(value: MonthRowDestination(row: row, range: page.review.range)) {
                         HStack(spacing: 8) {
                             CategoryRow(row: row)

@@ -34,7 +34,7 @@ public struct PropertyView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .navigationTitle(model.state.page?.single?.property.name ?? "Property")
+            .phonePageTitle(model.state.page?.single?.property.name ?? "Property")
             .navigationDestination(for: PropertyDestination.self) { destination in
                 PropertyDetailScreen(model: model, destination: destination, onRefresh: onRefresh)
                     .demoBannerSlot()
@@ -75,7 +75,7 @@ public struct PropertyView: View {
     private func list(_ page: PropertyPage) -> some View {
         Card {
             ForEach(Array(page.glances.enumerated()), id: \.element.property.id) { index, glance in
-                if index > 0 { Divider() }
+                if index > 0 { MangoDivider() }
                 if let id = glance.property.id {
                     NavigationLink(value: PropertyDestination(propertyId: id)) {
                         HStack(spacing: 8) {
@@ -151,6 +151,6 @@ struct PropertyDetailScreen: View {
             await onRefresh()
             await model.load()
         }
-        .navigationTitle(glance?.property.name ?? "Property")
+        .mangoNavigationTitle(glance?.property.name ?? "Property")
     }
 }

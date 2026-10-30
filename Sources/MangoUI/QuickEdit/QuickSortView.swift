@@ -16,7 +16,7 @@ public struct QuickSortView: View {
     public var body: some View {
         NavigationStack {
             QuickSortContent(model: model)
-                .navigationTitle("Sort uncategorised")
+                .mangoNavigationTitle("Sort uncategorised")
                 .navigationBarTitleDisplayModeInline()
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {

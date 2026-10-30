@@ -17,7 +17,7 @@ public enum QuickEditRoutes {
             let model = model(context)
             let (queue, lists) = QuickEditModel.readNow(context.dbQueue, today: today, viewer: .demoAdmin)
             model.preload(lists: lists, queue: queue)
-            return AnyView(NavigationStack { QuickSortContent(model: model).navigationTitle("Sort uncategorised").navigationBarTitleDisplayModeInline() })
+            return AnyView(NavigationStack { QuickSortContent(model: model).mangoNavigationTitle("Sort uncategorised").navigationBarTitleDisplayModeInline() })
         },
         DemoRoute(name: "update-balance", minimumFigures: 0) { context in
             let account = try? context.dbQueue.read { db in
