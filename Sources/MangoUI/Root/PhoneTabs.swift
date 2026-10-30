@@ -244,7 +244,8 @@ public struct PhoneTabs: View {
     public var body: some View {
         TabView(selection: $model.selection) {
             Tab("Home", systemImage: "house", value: PhoneTab.home) {
-                HomeView(model: model.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
+                HomeView(model: model.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings,
+                         onOpenTab: { model.selection = $0 })
                     .offlineBanner(syncStatus, lastSync: lastSync)
             }
             Tab("Month", systemImage: "calendar", value: PhoneTab.month) {

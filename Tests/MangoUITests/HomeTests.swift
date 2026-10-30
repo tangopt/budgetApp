@@ -140,6 +140,38 @@ final class HomeTests: XCTestCase {
         XCTAssertTrue(HomeCopy.freshness(stale).contains("\(stale.dataAgeDays!) days old"), HomeCopy.freshness(stale))
     }
 
+    // MARK: iPhone order (design review §2.3)
+
+    func testThePhoneLeadsWithLeftToSpendAndKeepsTheFreshLineLast() async throws {
+        let queue = try demoDatabase()
+        let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
+        await model.load()
+        guard case let .loaded(fresh) = model.state else { return XCTFail() }
+        XCTAssertEqual(HomeCopy.phoneBlocks(fresh), [.leftToSpend, .tiles, .attention, .upcoming, .freshness])
+
+        let later = HomeViewModel(dbQueue: queue, today: { HomeRoutes.staleToday(from: DemoDatabase.defaultAsOf) })
+        await later.load()
+        guard case let .loaded(stale) = later.state else { return XCTFail() }
+        XCTAssertEqual(HomeCopy.phoneBlocks(stale), [.staleData, .leftToSpend, .tiles, .attention, .upcoming])
+    }
+
+    func testTheHeroAndTileCaptionsNameTheFiguresTheyBelongTo() async throws {
+        let model = HomeViewModel(dbQueue: try demoDatabase(), today: { DemoDatabase.defaultAsOf })
+        await model.load()
+        guard case let .loaded(summary) = model.state else { return XCTFail() }
+        let planned = Money.format(summary.plannedSpendingMinorUnits, currency: .gbp)
+        XCTAssertEqual(HomeCopy.leftToSpendCaption(summary), "of \(planned) planned · payday \(HomeCopy.daysToPayday(summary.daysToPayday))")
+        let caption = try XCTUnwrap(HomeCopy.netWorthTileCaption(summary.netWorth))
+        XCTAssertTrue(caption.hasSuffix(" since last month"), caption)
+        XCTAssertEqual(HomeCopy.phoneUpcomingLimit, 4)
+    }
+
+    func testTilesShareTheRowUpToLargeOnly() {
+        XCTAssertTrue(HomeCopy.tilesSideBySide(at: .large))
+        XCTAssertFalse(HomeCopy.tilesSideBySide(at: .xxxLarge))
+        XCTAssertFalse(HomeCopy.tilesSideBySide(at: .accessibility3))
+    }
+
     // MARK: This pay month
 
     func testDaysToPaydayReadsAsWords() {
