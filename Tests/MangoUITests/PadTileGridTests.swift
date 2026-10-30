@@ -24,3 +24,19 @@ final class PadTileGridTests: XCTestCase {
         XCTAssertEqual(grid.columns(for: .nan, count: 0), 1)
     }
 }
+
+/// The bills grid sizes its month columns from the widest figure (fewer columns, never squeezed figures).
+final class PadBillsGridSizingTests: XCTestCase {
+    func testACellIsNeverNarrowerThanTheMinimumAndGrowsWithTheWidestFigure() {
+        XCTAssertEqual(PadBillsGridView.cellWidth(widestFigure: 40, widestLabel: 50), PadBillsGridView.minimumCellWidth)
+        XCTAssertEqual(PadBillsGridView.cellWidth(widestFigure: 120, widestLabel: 50), 120 + 16 + 4)
+        XCTAssertEqual(PadBillsGridView.cellWidth(widestFigure: 60, widestLabel: 130.2), 131 + 16 + 4)
+    }
+
+    func testAWiderFigureShowsFewerMonthsNeverZero() {
+        let narrow = PadBillsGridView.columnsFit(width: 800, providerWidth: 120, cellWidth: 92)
+        let wide = PadBillsGridView.columnsFit(width: 800, providerWidth: 120, cellWidth: 140)
+        XCTAssertGreaterThan(narrow, wide)
+        XCTAssertEqual(PadBillsGridView.columnsFit(width: 50, providerWidth: 120, cellWidth: 140), 1)
+    }
+}
