@@ -77,7 +77,7 @@ public struct SalarySimulatorScreen: View {
                 Button(viewModel.resetTitle) { viewModel.reset() }.frame(minHeight: 44)
             }
             VStack(spacing: 0) {
-                AmountRow(label: "Take-home a month",
+                AmountRow(label: "Take-home a normal month",
                           amount: MoneyText(minorUnits: comparison.monthlyDifference, currency: .gbp, role: .income))
                 AmountRow(label: "Take-home a year",
                           amount: MoneyText(minorUnits: comparison.annualDifference, currency: .gbp, role: .income))
@@ -193,8 +193,8 @@ struct SalaryResultsCard: View {
         Card(title: "Take-home") {
             SalarySideHeader(sides: sides)
             money("A year", .neutral) { $0.takeHomeAnnual }
-            money("A month", .neutral) { $0.takeHomeMonthly }
-            money("A week", .neutral) { $0.takeHomeWeekly }
+            money("A normal month", .neutral) { $0.takeHomeMonthly }
+            bonusMonth
             Divider()
             optional("Income tax", .expense) { $0.incomeTax }
             optional("National Insurance", .expense) { $0.employeeNI }
@@ -217,6 +217,16 @@ struct SalaryResultsCard: View {
                     .lineLimit(2, reservesSpace: true).multilineTextAlignment(.trailing)
             })
         }
+    }
+
+    /// The bonus month's take-home; a dash for a salary whose bonus is spread monthly (or has none).
+    private var bonusMonth: some View {
+        SalaryRow(label: SalaryComparison.bonusMonthLabel(sides.filter(isReady).map(result)), cells: sides.map { side in
+            Group {
+                if isReady(side), let slip = result(side).bonusMonth { MoneyText(minorUnits: slip.takeHome, currency: .gbp, role: .neutral) }
+                else { Text("—").foregroundStyle(.secondary).accessibilityLabel("none") }
+            }
+        })
     }
 
     private func notes(_ result: SalaryResult, ready: Bool) -> String {
@@ -327,6 +337,13 @@ struct SalaryFormCard: View {
             SalarySideHeader(sides: sides)
             row("Salary a year") { PoundsInput(label: "Salary a year", pence: $0.grossAnnual) }
             row("Bonus") { BonusInput(inputs: $0) }
+            row("Bonus paid") { inputs in
+                Picker("Bonus paid", selection: inputs.bonusPayment) {
+                    ForEach(BonusPayment.choices, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .disabled(inputs.wrappedValue.bonusPay == 0)
+            }
             row("Tax code") { inputs in
                 TextField("1257L", text: inputs.taxCode)
                     .multilineTextAlignment(.trailing)

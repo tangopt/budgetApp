@@ -33,7 +33,7 @@ struct SalaryResultsView: View {
             Button(model.resetTitle) { model.reset() }.buttonStyle(.link).font(.caption)
         }, content: {
             FigureStrip([
-                FigureTile(title: "Take-home a month", value: .money(model.comparison.monthlyDifference, .gbp, .signed)),
+                FigureTile(title: "Take-home a normal month", value: .money(model.comparison.monthlyDifference, .gbp, .signed)),
                 FigureTile(title: "Take-home a year", value: .money(model.comparison.annualDifference, .gbp, .signed)),
                 FigureTile(title: "Of each extra £1 gross you keep",
                            value: .text(Self.pence(model.comparison.keepPerExtraPound)))
@@ -59,8 +59,10 @@ struct SalaryResultsView: View {
                         Text("New").font(.subheadline.weight(.semibold)).frame(width: Self.valueColumn, alignment: .trailing)
                     }
                     pair("A year", current.takeHomeAnnual, offer.takeHomeAnnual, bold: true, always: true)
-                    pair("A month", current.takeHomeMonthly, offer.takeHomeMonthly, bold: true, always: true)
-                    pair("A week", current.takeHomeWeekly, offer.takeHomeWeekly, bold: true, always: true)
+                    pair("A normal month", current.takeHomeMonthly, offer.takeHomeMonthly, bold: true, always: true)
+                    // A dash for a salary whose bonus is spread monthly (or has none).
+                    pair(SalaryComparison.bonusMonthLabel([current, offer]), current.bonusMonth?.takeHome ?? 0,
+                         offer.bonusMonth?.takeHome ?? 0, bold: true)
                     Divider().gridCellColumns(3)
                     pair("Income tax", current.incomeTax, offer.incomeTax, cost: true)
                     pair("National Insurance", current.employeeNI, offer.employeeNI, cost: true)

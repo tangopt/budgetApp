@@ -3,7 +3,7 @@ import SwiftUI
 import BudgetCore
 
 /// The salary simulator: two salaries (what you have, an offer) and what each leaves you,
-/// with the difference pinned above the forms.
+/// with the difference pinned above the forms. "Try in Forecast…" is the button under the form (the only one).
 struct SalarySimulatorView: View {
     @Bindable var model: SalaryComparisonViewModel
     /// The Forecast screen's model, for "Try in Forecast…"; nil (the button off) where there is none.
@@ -40,13 +40,6 @@ struct SalarySimulatorView: View {
         .sheet(item: $sheet) { host in
             TryInForecastSheet(host: host, onSaved: saved)
         }
-        .screenToolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(forecastTitle) { openSheet() }
-                    .disabled(offerReason != nil)
-                    .help(offerReason ?? "Make a forecast scenario with this new salary")
-            }
-        }
         .navigationTitle("Salary calculator")
     }
 
@@ -64,13 +57,11 @@ struct SalarySimulatorView: View {
     }
 
     private func editingBanner(_ edit: SalaryOfferEdit) -> some View {
+        // The update button is the one under the form: the screen has one.
         InlineBanner(.info, action: {
-            HStack(spacing: 8) {
-                Button("Stop editing") { model.endOfferEdit(saved: false) }
-                Button(forecastTitle) { openSheet() }.disabled(offerReason != nil)
-            }
+            Button("Stop editing") { model.endOfferEdit(saved: false) }
         }, content: {
-            Text("Editing the new salary in \(edit.scenarioName). Change the salaries, then update the scenario. Your own figures come back when you stop.")
+            Text("Editing the new salary in \(edit.scenarioName). Change the salaries, then update the scenario under the form. Your own figures come back when you stop.")
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         })
     }
