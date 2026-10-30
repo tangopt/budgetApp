@@ -6,15 +6,19 @@ import UIKit
 import AppKit
 #endif
 
-/// A `ThemeCatalog` theme as the phone draws it: its colour roles (`ThemeRoles`, design review 2026-10-28 §3.1), each
-/// a `Color` that resolves to the theme's light or dark value by the trait collection (iPhone spec §4: the same 15
-/// themes as the Mac). Classic's grounds and text are system colours and are drawn as the iOS system colours (the
-/// grouped backgrounds, the label colour), so Classic looks like a stock iOS app; its accent and money colours are
-/// darkened in light mode, where the system's are under 4.5:1. Read it with `@Environment(\.phoneTheme)`.
+/// A theme set (`ThemeSet`, design review 2026-10-28 §3.5) as the phone and iPad draw it: its colour roles
+/// (`ThemeRoles`), each a `Color` that resolves to the set's light or dark value by the trait collection. Classic's
+/// grounds and primary text are the system's own and are drawn as the iOS system colours (the grouped backgrounds,
+/// the label colour), so Classic looks like a stock iOS app. Read it with `@Environment(\.phoneTheme)`; the set's
+/// fonts are `\.phoneFonts`, set beside it by the app (widgets keep the system font).
 public struct PhoneTheme: Identifiable, Sendable {
-    public let palette: ThemePalette
-    public var id: String { palette.id }
-    public var name: String { palette.name }
+    public let themeSet: ThemeSet
+    public var id: String { themeSet.id }
+    public var name: String { themeSet.name }
+    /// The set's font pairing (what the app puts in `\.phoneFonts`).
+    public var fonts: ThemeFontPairing { themeSet.fonts }
+    /// Whether cards draw a border (Clear), nothing but surface steps (Flat), or neither.
+    public var edges: ThemeSet.Edges { themeSet.edges }
     /// The roles' values, light and dark, for the contrast maths.
     public let lightRoles: ThemeRoles
     public let darkRoles: ThemeRoles
@@ -62,14 +66,9 @@ public struct PhoneTheme: Identifiable, Sendable {
     public let warningTint: Color
     public let neutralMoney: Color
 
-    /// The palette's theme with the roles derived from it.
-    public init(_ palette: ThemePalette) {
-        self.init(palette, light: palette.roles(.light), dark: palette.roles(.dark))
-    }
-
-    /// A theme from explicit roles (the theme sets, step 8, fill them directly).
-    public init(_ palette: ThemePalette, light: ThemeRoles, dark: ThemeRoles) {
-        self.palette = palette
+    public init(_ themeSet: ThemeSet) {
+        self.themeSet = themeSet
+        let light = themeSet.light, dark = themeSet.dark
         lightRoles = light
         darkRoles = dark
         func color(_ role: KeyPath<ThemeRoles, ThemeColor>) -> Color {
@@ -96,7 +95,8 @@ public struct PhoneTheme: Identifiable, Sendable {
         transferTint = color(\.transferTint)
         pendingTint = color(\.pendingTint)
         warningTint = color(\.warningTint)
-        neutralMoney = Self.color(light: palette.light.neutralMoney, dark: palette.dark.neutralMoney)
+        // Zero and neutral amounts read as body text.
+        neutralMoney = text
     }
 
     /// The roles for a variant.
@@ -114,12 +114,15 @@ public struct PhoneTheme: Identifiable, Sendable {
         }
     }
 
-    public static let all: [PhoneTheme] = ThemePalette.all.map(PhoneTheme.init)
-    public static let classic = PhoneTheme(ThemePalette.named(ThemePalette.defaultID))
+    /// The eight sets, in the picker's order.
+    public static let all: [PhoneTheme] = ThemeSet.all.map(PhoneTheme.init)
+    /// The default for new installs.
+    public static let mango = PhoneTheme(.mango)
+    public static let classic = PhoneTheme(.classic)
 
-    /// The theme with `id`, else Classic.
+    /// The set with `id`, else Mango.
     public static func named(_ id: String) -> PhoneTheme {
-        all.first { $0.id == id } ?? classic
+        all.first { $0.id == id } ?? mango
     }
 
     // MARK: Token → Color
@@ -208,6 +211,7 @@ public struct PhoneTheme: Identifiable, Sendable {
 }
 
 extension EnvironmentValues {
-    /// The phone's theme (Classic unless the app sets another).
-    @Entry public var phoneTheme: PhoneTheme = .classic
+    /// The phone's theme set (Mango, the default, unless the app sets another; the widgets read the app's choice
+    /// from the App Group).
+    @Entry public var phoneTheme: PhoneTheme = .mango
 }

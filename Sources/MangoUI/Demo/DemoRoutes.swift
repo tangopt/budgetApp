@@ -114,7 +114,7 @@ public enum SharingRoutes {
         DemoRoute(name: "settings-sharing", minimumFigures: 0) { context in
             let today = context.today
             let sharing = (try? context.dbQueue.read { db in try SharingSectionState.read(db, viewer: .demoAdmin) }) ?? .notNamed
-            return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id), fontId: .constant(FontCatalog.defaultID),
+            return AnyView(SettingsSheet(appearance: .constant(.system), themeSetId: .constant(ThemeSet.defaultID),
                                          iCloud: .available, keyHeld: true,
                                          status: .idle(lastSync: today.addingTimeInterval(-300)),
                                          version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { today },

@@ -21,6 +21,12 @@ public struct Card<Content: View>: View {
             stack
         }
         .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
+        // Clear draws a visible border on every card; the other sets tell cards from the ground by the surface step.
+        .overlay {
+            if theme.edges == .bordered {
+                RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).strokeBorder(theme.separator, lineWidth: 1)
+            }
+        }
         // A figure must stay on the card, not just in the window.
         .wrapProbeClips()
     }

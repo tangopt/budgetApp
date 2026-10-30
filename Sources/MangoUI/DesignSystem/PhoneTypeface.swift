@@ -12,9 +12,10 @@ import AppKit
 #endif
 
 extension EnvironmentValues {
-    /// The typeface the phone and iPad draw app text in (step 16; Settings ▸ Appearance ▸ Font). SF Pro by default.
-    /// Read through `mangoFont(_:weight:)`, `MoneyText`, `DateText` and `figureText`.
-    @Entry public var phoneTypeface: PhoneFont = FontCatalog.font(id: FontCatalog.defaultID)
+    /// The faces the phone and iPad draw app text in: the theme set's pairing (step 8; display, body and figure
+    /// faces). SF Pro throughout unless the app sets the set's (the widgets keep it). Read through
+    /// `mangoFont(_:weight:)`, `MoneyText`, `DateText` and `figureText`.
+    @Entry public var phoneFonts: ThemeFontPairing = .system
 
     /// The style and weight the nearest `mangoFont` set, and the font it set, so a figure inside can redraw the same
     /// style in figure digits.
@@ -103,6 +104,26 @@ public enum MangoType {
 /// Which font a text style draws in for a typeface. Pure: `mangoFont`, `MoneyText`, `DateText` and `figureText` call
 /// it with what the environment holds.
 public enum TypefaceResolver {
+    /// The face of a set's pairing a style draws in (design review §3.5): figures in the figure face; large titles,
+    /// titles and headlines in the display face; everything else in the body face.
+    public static func face(_ fonts: ThemeFontPairing, style: Font.TextStyle, isFigure: Bool) -> PhoneFont {
+        if isFigure { return fonts.figureFont }
+        return isDisplay(style) ? fonts.displayFont : fonts.bodyFont
+    }
+
+    /// The styles the display face draws.
+    public static func isDisplay(_ style: Font.TextStyle) -> Bool {
+        switch style {
+        case .largeTitle, .title, .title2, .title3, .headline: true
+        default: false
+        }
+    }
+
+    public static func font(_ fonts: ThemeFontPairing, style: Font.TextStyle, weight: Font.Weight?, isFigure: Bool,
+                            available: (String) -> Bool = BundledFonts.isAvailable) -> Font {
+        font(face(fonts, style: style, isFigure: isFigure), style: style, weight: weight, isFigure: isFigure, available: available)
+    }
+
     public enum Choice: Equatable, Sendable {
         /// The system font in one of its designs (SF Pro, SF Pro Rounded, New York), at the style's size.
         case system(design: Font.Design, weight: Font.Weight?)
@@ -251,7 +272,7 @@ private extension Logger {
 }
 
 extension View {
-    /// App text in the phone's typeface (`\.phoneTypeface`) at a Dynamic Type style: the replacement for
+    /// App text in the theme set's faces (`\.phoneFonts`) at a Dynamic Type style: the replacement for
     /// `.mangoFont(.subheadline)` / `.mangoFont(.title3, weight: .semibold)`. `figures` draws the digits tabular (in the system
     /// font's digits when the typeface has no tabular ones).
     public func mangoFont(_ style: Font.TextStyle, weight: Font.Weight? = nil, figures: Bool = false) -> some View {
@@ -271,11 +292,11 @@ struct MangoFontModifier: ViewModifier {
     let style: PhoneTextStyle
     let figures: Bool
     var source: String? = nil
-    @Environment(\.phoneTypeface) private var face
+    @Environment(\.phoneFonts) private var fonts
 
     func body(content: Content) -> some View {
         let isFigure = figures || style.isFigure
-        let font = TypefaceResolver.font(face, style: style.style, weight: style.weight, isFigure: isFigure)
+        let font = TypefaceResolver.font(fonts, style: style.style, weight: style.weight, isFigure: isFigure)
         let drawn = isFigure ? font.monospacedDigit() : font
         if style.isFigure {
             content
@@ -292,16 +313,19 @@ struct MangoFontModifier: ViewModifier {
     }
 }
 
-/// A figure (`figureText`) in the font around it: when that font came from `mangoFont` and the typeface has no
-/// tabular digits, the same style in the system font's. SF Pro and a font set any other way are left as they are.
+/// A figure (`figureText`) in the font around it: when that font came from `mangoFont` and the set's figure face
+/// isn't the face it was drawn in (Studio's Plex Mono under Plex Sans, SF Pro under Calm's Source Sans), or has no
+/// tabular digits, the same style in the figure face. A font set any other way is left as it is.
 struct FigureFontModifier: ViewModifier {
-    @Environment(\.phoneTypeface) private var face
+    @Environment(\.phoneFonts) private var fonts
     @Environment(\.mangoFontContext) private var context
     @Environment(\.font) private var font
 
     func body(content: Content) -> some View {
-        if face.hasTabularDigits == false, let context, context.font == font {
-            content.font(TypefaceResolver.font(face, style: context.style.style, weight: context.style.weight,
+        if let context, context.font == font,
+           fonts.figureFont != TypefaceResolver.face(fonts, style: context.style.style, isFigure: false)
+            || !fonts.figureFont.hasTabularDigits {
+            content.font(TypefaceResolver.font(fonts, style: context.style.style, weight: context.style.weight,
                                                isFigure: true).monospacedDigit())
         } else {
             content

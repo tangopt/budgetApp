@@ -8,7 +8,7 @@ struct NetWorthWidget: Widget {
         StaticConfiguration(kind: "ubberninja.mango.networth", provider: SnapshotProvider()) { entry in
             NetWorthWidgetView(entry: entry)
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .mangoWidgetTheme()
                 .widgetURL(WidgetLink.url(for: .home))
         }
         .configurationDisplayName("Net worth")

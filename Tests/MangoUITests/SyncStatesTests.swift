@@ -108,7 +108,7 @@ final class SyncStatesTests: XCTestCase {
         XCTAssertEqual(PhoneAppearance.light.colorScheme, .light)
         XCTAssertEqual(PhoneAppearance.dark.colorScheme, .dark)
         XCTAssertEqual(PhoneAppearance(storedValue: "nonsense"), .system)
-        XCTAssertEqual(PhoneTheme.named("nonsense").id, PhoneTheme.classic.id)
+        XCTAssertEqual(PhoneTheme.named("nonsense").id, PhoneTheme.mango.id)
         XCTAssertEqual(PhoneTheme.named(PhoneTheme.all.last!.id).id, PhoneTheme.all.last!.id)
     }
 

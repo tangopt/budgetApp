@@ -2,6 +2,7 @@ import SwiftUI
 import BudgetCore
 import MangoUI
 import OSLog
+import WidgetKit
 
 /// The iPhone app's entry point. A snapshot build (`SNAPSHOTS`) runs only the snapshot harness, as the Mac's
 /// `BudgetMain` does, so a stray snapshot build never opens the phone's real database; every other build is
@@ -31,6 +32,8 @@ struct MangoPhoneApp: App {
     init() {
         // The bundled typefaces (Phone/Fonts, the app's Fonts folder), before any text is drawn.
         BundledFonts.register()
+        // Step 8: the old colour theme and font become a theme set, once, before the root reads it.
+        ThemeSetPreference.migrate(.standard)
     }
 
     var body: some Scene {
@@ -75,9 +78,8 @@ struct PhoneRoot: View {
     /// Settings' read-only Sharing section, read each time Settings opens.
     @State private var sharing: SharingSectionState?
     @AppStorage("phone.appearance") private var appearanceValue = PhoneAppearance.system.rawValue
-    @AppStorage("phone.theme") private var themeId = PhoneTheme.classic.id
-    /// The typeface app text is drawn in (step 16): this device's own choice, never synced.
-    @AppStorage("phone.font") private var fontId = FontCatalog.defaultID
+    /// The theme set (step 8; palette and fonts): this device's own choice, never synced, mirrored for the widgets.
+    @AppStorage(ThemeSetPreference.key) private var themeSetId = ThemeSet.defaultID
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
 
@@ -111,10 +113,11 @@ struct PhoneRoot: View {
             }
         }
         .lockCover(lock)
-        .environment(\.phoneTheme, PhoneTheme.named(themeId))
-        .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
-        .tint(PhoneTheme.named(themeId).accent)
+        .environment(\.phoneTheme, PhoneTheme.named(themeSetId))
+        .environment(\.phoneFonts, PhoneTheme.named(themeSetId).fonts)
+        .tint(PhoneTheme.named(themeSetId).accent)
         .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
+        .task(id: themeSetId) { shareThemeWithWidgets() }
         .onChange(of: lock.state) { _, state in
             // The cover window dismisses open sheets in UIKit on a lock; their SwiftUI state is cleared here too, so
             // nothing re-presents after unlocking and the avatar opens Settings again.
@@ -309,7 +312,7 @@ struct PhoneRoot: View {
     /// while demo data is shown.
     private func settings(_ environment: PhoneEnvironment, _ tabs: PhoneTabsModel) -> some View {
         let demo: SettingsDemoRow? = environment.isDemo ? .leave(leaveDemo) : (environment.hasRealData ? nil : .tryIt(tryDemo))
-        return SettingsSheet(appearance: appearance, themeId: $themeId, fontId: $fontId, iCloud: sync.account, keyHeld: sync.keyHeld,
+        return SettingsSheet(appearance: appearance, themeSetId: $themeSetId, iCloud: sync.account, keyHeld: sync.keyHeld,
                              status: sync.status, version: Self.version, onLockNow: { lock.lock() },
                              onSyncNow: sync.isRunning ? { await sync.syncNow() } : nil, demo: demo, sharing: sharing,
                              outputs: $outputs.settings, notificationAccess: outputs.notificationAccess,
@@ -318,8 +321,8 @@ struct PhoneRoot: View {
             .task { await outputs.refreshNotificationAccess() }
             .task { sharing = await SharingSectionState.load(environment.dbQueue, viewer: tabs.viewer) }
             .environment(\.showsDemoData, environment.isDemo)
-            .environment(\.phoneTheme, PhoneTheme.named(themeId))
-            .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
+            .environment(\.phoneTheme, PhoneTheme.named(themeSetId))
+            .environment(\.phoneFonts, PhoneTheme.named(themeSetId).fonts)
             .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 
@@ -329,12 +332,22 @@ struct PhoneRoot: View {
             SalarySimulatorScreen(viewModel: salary)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSalary = false } } }
         }
-        .environment(\.phoneTheme, PhoneTheme.named(themeId))
-        .environment(\.phoneTypeface, FontCatalog.font(id: fontId))
+        .environment(\.phoneTheme, PhoneTheme.named(themeSetId))
+        .environment(\.phoneFonts, PhoneTheme.named(themeSetId).fonts)
         .preferredColorScheme(PhoneAppearance(storedValue: appearanceValue).colorScheme)
     }
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Demo")
+
+    /// The widgets draw in the app's theme set (its colours; they keep the system font): its id in the App Group,
+    /// and a reload when it changed.
+    private func shareThemeWithWidgets() {
+        let group = PhoneOutputs.appGroupDefaults()
+        guard ThemeSetPreference.widgetSet(group).id != ThemeSet.named(themeSetId).id
+                || group.string(forKey: ThemeSetPreference.widgetKey) == nil else { return }
+        ThemeSetPreference.share(themeSetId, with: group)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
 
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
