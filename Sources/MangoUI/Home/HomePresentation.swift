@@ -24,10 +24,9 @@ public enum HomeCopy {
             + (summary.isFreshnessAmber ? [] : [.freshness])
     }
 
-    /// Under the Left to spend figure: "of £3,916.33 planned · payday in 12 days".
+    /// Under the Left to spend figure: "after spending and what is still expected · payday in 12 days".
     public static func leftToSpendCaption(_ summary: HomeSummary) -> String {
-        let planned = MoneyPresentation(minorUnits: summary.plannedSpendingMinorUnits, currency: .gbp, role: .neutral).text
-        return "of \(planned) planned · payday \(daysToPayday(summary.daysToPayday))"
+        "after spending and what is still expected · payday \(daysToPayday(summary.daysToPayday))"
     }
 
     /// Under the Net worth tile's figure: "+£1,200.00 since last month"; nil without a previous month.

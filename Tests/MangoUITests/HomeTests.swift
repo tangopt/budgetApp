@@ -156,11 +156,18 @@ final class HomeTests: XCTestCase {
     }
 
     func testTheHeroAndTileCaptionsNameTheFiguresTheyBelongTo() async throws {
-        let model = HomeViewModel(dbQueue: try demoDatabase(), today: { DemoDatabase.defaultAsOf })
+        let queue = try demoDatabase()
+        let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
         await model.load()
         guard case let .loaded(summary) = model.state else { return XCTFail() }
-        let planned = Money.format(summary.plannedSpendingMinorUnits, currency: .gbp)
-        XCTAssertEqual(HomeCopy.leftToSpendCaption(summary), "of \(planned) planned · payday \(HomeCopy.daysToPayday(summary.daysToPayday))")
+        XCTAssertEqual(HomeCopy.leftToSpendCaption(summary), "after spending and what is still expected · payday \(HomeCopy.daysToPayday(summary.daysToPayday))")
+        // Home's Left to spend is Month's: one figure, one name.
+        let today = DemoDatabase.defaultAsOf
+        let review = try await queue.read { db in
+            let input = try DashboardInput.load(db: db, today: today, actuals: try PhoneViewer.everyone.actuals(db: db, today: today))
+            return PayMonthReview.make(month: input.payCalendar.current, input: input)
+        }
+        XCTAssertEqual(summary.monthLeftToSpendMinorUnits, review.leftToSpendMinorUnits)
         let caption = try XCTUnwrap(HomeCopy.netWorthTileCaption(summary.netWorth))
         XCTAssertTrue(caption.hasSuffix(" since last month"), caption)
         XCTAssertEqual(HomeCopy.phoneUpcomingLimit, 4)

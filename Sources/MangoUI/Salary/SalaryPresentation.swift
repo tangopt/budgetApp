@@ -15,7 +15,11 @@ enum SalaryPresentation {
     /// The narrowest width that holds the inputs and the results side by side (the iPad).
     static let sideBySideWidth: CGFloat = 700
 
-    static func showsSideBySide(width: CGFloat) -> Bool { width >= sideBySideWidth }
+    /// Wide enough, and not at accessibility sizes: there a column is too narrow for a stacked figure beside its caption,
+    /// so the iPad uses the iPhone's tabs.
+    static func showsSideBySide(width: CGFloat, size: DynamicTypeSize = .large) -> Bool {
+        width >= sideBySideWidth && !size.isAccessibilitySize
+    }
 
     /// Rows with two salaries stack (label, then Current over New) from xxxLarge up: two figure columns don't fit beside
     /// a label there, and a figure never wraps or shrinks.

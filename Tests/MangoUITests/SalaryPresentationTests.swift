@@ -14,6 +14,7 @@ final class SalaryPresentationTests: XCTestCase {
         XCTAssertFalse(SalaryPresentation.showsSideBySide(width: 393))
         XCTAssertFalse(SalaryPresentation.showsSideBySide(width: 699))
         XCTAssertTrue(SalaryPresentation.showsSideBySide(width: 834))
+        XCTAssertFalse(SalaryPresentation.showsSideBySide(width: 834, size: .accessibility3), "tabs at accessibility sizes")
     }
 
     func testTheStripSaysWhatTheNewSalaryKeeps() {

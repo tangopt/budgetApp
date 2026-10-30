@@ -32,7 +32,7 @@ public struct SalarySimulatorScreen: View {
     public var body: some View {
         GeometryReader { proxy in
             Group {
-                if SalaryPresentation.showsSideBySide(width: proxy.size.width) {
+                if SalaryPresentation.showsSideBySide(width: proxy.size.width, size: dynamicTypeSize) {
                     sideBySide(width: proxy.size.width)
                 } else {
                     tabbed

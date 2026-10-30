@@ -11,7 +11,7 @@ struct LeftToSpendCard: View {
             Text("Left to spend")
                 .mangoFont(.footnote)
                 .foregroundStyle(.secondary)
-            MoneyText(minorUnits: summary.leftToSpendMinorUnits, currency: .gbp, role: .neutral, fit: .shrink(),
+            MoneyText(minorUnits: summary.monthLeftToSpendMinorUnits, currency: .gbp, role: .balance, fit: .shrink(),
                       font: .figureXL)
             Text(HomeCopy.leftToSpendCaption(summary).figuresUnbroken)
                 .mangoFont(.footnote)
