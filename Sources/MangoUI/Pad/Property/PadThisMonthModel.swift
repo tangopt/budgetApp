@@ -14,7 +14,10 @@ enum PadDestination: Equatable {
     case recharges
     /// Bills & recharges with the draft statement's Prepare email sheet open.
     case prepareEmail(statementId: Int64)
+    /// Documents ▸ Missing (the tax year's missing evidence).
     case evidence
+    /// Documents ▸ Downloads (the saved sites and the downloads tray).
+    case downloads
 }
 
 /// The iPad's This-month screen (step 10, Task 10): the selected tenancy's checklist as `ThisMonthChecklist` computes it

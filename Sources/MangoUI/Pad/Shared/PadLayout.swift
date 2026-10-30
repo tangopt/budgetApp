@@ -43,6 +43,42 @@ struct PadPageInsetReading<Content: View>: View {
     var body: some View { content(inset) }
 }
 
+/// A page that is one of several segments of a sidebar destination (Flat details: Money, Costs, Profile; Documents:
+/// Missing, Library, Downloads). `padPage` then titles the page with the destination's `title` and draws the segmented
+/// control under the header; the segment's own title is only its name in the control. Set on the destination by
+/// `PadRootView`.
+struct PadPageSegments {
+    let title: String
+    let names: [String]
+    let selected: Int
+    let select: (Int) -> Void
+}
+
+extension EnvironmentValues {
+    @Entry var padPageSegments: PadPageSegments? = nil
+}
+
+/// The segmented control under a page header, at the page inset.
+private struct PadSegmentBar: View {
+    let segments: PadPageSegments
+    @Environment(\.padPageInset) private var inset
+    @Environment(\.phoneTheme) private var theme
+
+    var body: some View {
+        Picker(segments.title, selection: Binding(get: { segments.selected }, set: { segments.select($0) })) {
+            ForEach(Array(segments.names.enumerated()), id: \.offset) { index, name in Text(name).tag(index) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel(segments.title)
+        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, inset)
+        .padding(.bottom, MangoSpacing.s)
+        .background(theme.background)
+    }
+}
+
 private struct PadPageScaffold<Trailing: View>: ViewModifier {
     let title: String
     let subtitle: String?
@@ -52,14 +88,19 @@ private struct PadPageScaffold<Trailing: View>: ViewModifier {
     let trailing: Trailing
     /// The iPhone: the gutter is fixed, not read from the width.
     let isPhone: Bool
+    @Environment(\.padPageSegments) private var segments
 
     func body(content: Content) -> some View {
-        content
+        let pageTitle = segments?.title ?? title
+        return content
             .safeAreaInset(edge: .top, spacing: 0) {
-                PageHeader(title: title, subtitle: subtitle, contexts: contexts, primary: primary,
-                           topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
+                VStack(spacing: 0) {
+                    PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
+                               topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
+                    if let segments { PadSegmentBar(segments: segments) }
+                }
             }
-            .navigationTitle(title)
+            .navigationTitle(pageTitle)
             #if os(iOS)
             .modifier(PadNavigationBar(keepsSearchBar: keepsSearchBar))
             #endif

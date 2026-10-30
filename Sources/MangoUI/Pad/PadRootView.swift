@@ -26,6 +26,9 @@ public struct PadRootView: View {
     let onRefresh: () async -> Void
     let onSettings: () -> Void
     @State private var selection: PadSection
+    /// Flat details' and Documents' segments, kept while the person is elsewhere.
+    @State private var flatSegment: FlatDetailsSegment
+    @State private var documentsSegment: DocumentsSegment
     @State private var userName = "You"
     @State private var ownSalary = SalaryComparisonViewModel()
     /// A salary simulator to show instead of the iPad's own (the snapshot routes').
@@ -36,7 +39,8 @@ public struct PadRootView: View {
     /// `waitingChanges`: this iPad's changes the server hasn't taken yet, in the zones it pushes to
     /// (`SyncWaitingChanges`). `browser`: the built-in browser; ignored with demo data, where it is hidden.
     public init(tabs: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
-                initialSelection: PadSection = .home, sidebarCollapsed: Bool = false,
+                initialSelection: PadSection = .home, flatSegment: FlatDetailsSegment = .money,
+                documentsSegment: DocumentsSegment = .library, sidebarCollapsed: Bool = false,
                 waitingChanges: Int = 0, browser: BrowserModel? = nil, salary: SalaryComparisonViewModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
         self.tabs = tabs
@@ -52,6 +56,8 @@ public struct PadRootView: View {
         self.onRefresh = onRefresh
         self.onSettings = onSettings
         _selection = State(initialValue: initialSelection)
+        _flatSegment = State(initialValue: flatSegment)
+        _documentsSegment = State(initialValue: documentsSegment)
         self.salary = salary
         _sidebarCollapsed = SceneStorage(wrappedValue: sidebarCollapsed, "padSidebarCollapsed")
     }
@@ -60,7 +66,7 @@ public struct PadRootView: View {
         GeometryReader { proxy in
             let state = PadSidebarState(isCollapsed: sidebarCollapsed).effective(
                 width: proxy.size.width, height: proxy.size.height,
-                panelOpen: (selection == .documents && documents.selectedId != nil) || (selection == .billsAndRecharges && tabs.padBills.selectedBillId != nil) || (selection == .tenancies && tabs.padTenancies.selectedReceiptId != nil) || (selection == .evidence && evidence.selectedItemId != nil) || (selection == .money && tabs.padMoney.panel != nil))
+                panelOpen: panelIsOpen)
             HStack(spacing: 0) {
                 PadSidebar(state: state, selection: $selection, hasProperty: tabs.showsPropertySections, userName: userName, avatar: nil,
                            sync: SyncSidebarStatus.make(isRunning: syncStatus != .off, status: syncStatus, progress: nil, refusal: nil),
@@ -91,6 +97,22 @@ public struct PadRootView: View {
             if !shows, selection.requiresProperty { selection = .home }
         }
         .modifier(BrowserPresentation(browser: browser))
+    }
+
+    /// Whether the selected screen has a document panel open beside it (the 11-inch portrait sidebar then makes room).
+    private var panelIsOpen: Bool {
+        switch selection {
+        case .documents:
+            switch documentsSegment {
+            case .library: documents.selectedId != nil
+            case .missing: evidence.selectedItemId != nil
+            case .downloads: false
+            }
+        case .billsAndRecharges: tabs.padBills.selectedBillId != nil
+        case .tenancies: tabs.padTenancies.selectedReceiptId != nil
+        case .flatDetails: flatSegment == .money && (tabs.padMoney.panel != nil || tabs.padMoney.expandedMonth != nil)
+        default: false
+        }
     }
 
     @ViewBuilder
@@ -134,34 +156,67 @@ public struct PadRootView: View {
             PadBillsAndRechargesView(model: tabs.padBills, property: tabs.padProperty, write: tabs.padWrite, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .documents:
-            PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
-                .offlineBanner(syncStatus, lastSync: lastSync)
+            documentsDetail
         case .salary:
             NavigationStack { SalarySimulatorScreen(viewModel: salary ?? ownSalary) }
-        case .evidence:
-            PadEvidenceView(model: tabs.padEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus,
-                            showBills: { selection = .billsAndRecharges })
-                .offlineBanner(syncStatus, lastSync: lastSync)
-        case .money:
-            PadMoneyView(model: tabs.padMoney, write: tabs.padDocumentWrite, syncStatus: syncStatus, showDocument: showDocument)
-                .environment(\.quickEdit, tabs.quickEdit)
-                .offlineBanner(syncStatus, lastSync: lastSync)
+        case .flatDetails:
+            flatDetails
         case .calendar:
             PadCalendarView(model: tabs.padCalendar, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
-        case .checks:
-            PadChecksView(model: tabs.padChecks, write: tabs.padWrite, syncStatus: syncStatus, showEvidence: { selection = .evidence })
-                .environment(\.quickEdit, tabs.quickEdit)
-                .offlineBanner(syncStatus, lastSync: lastSync)
-        case .profile:
-            PadProfileView(model: tabs.padProfile, write: tabs.padWrite, syncStatus: syncStatus, showDocument: showDocument)
-                .offlineBanner(syncStatus, lastSync: lastSync)
         }
+    }
+
+    /// Flat details (design review D5): Money, Costs (the recurring-cost checks) and Profile, one segment at a time.
+    @ViewBuilder
+    private var flatDetails: some View {
+        let segments = PadPageSegments(title: "Flat details", names: FlatDetailsSegment.allCases.map(\.rawValue),
+                                       selected: FlatDetailsSegment.allCases.firstIndex(of: flatSegment) ?? 0) {
+            flatSegment = FlatDetailsSegment.allCases[$0]
+        }
+        Group {
+            switch flatSegment {
+            case .money:
+                PadMoneyView(model: tabs.padMoney, write: tabs.padDocumentWrite, syncStatus: syncStatus, showDocument: showDocument)
+                    .environment(\.quickEdit, tabs.quickEdit)
+            case .costs:
+                PadChecksView(model: tabs.padChecks, write: tabs.padWrite, syncStatus: syncStatus, showEvidence: { open(.evidence) })
+                    .environment(\.quickEdit, tabs.quickEdit)
+            case .profile:
+                PadProfileView(model: tabs.padProfile, write: tabs.padWrite, syncStatus: syncStatus, showDocument: showDocument)
+            }
+        }
+        .environment(\.padPageSegments, segments)
+        .offlineBanner(syncStatus, lastSync: lastSync)
+    }
+
+    /// Documents (design review D3, D4): Missing (the tax year's evidence and the other missing rows), Library, and
+    /// Downloads (the saved sites and the downloads tray).
+    @ViewBuilder
+    private var documentsDetail: some View {
+        let segments = PadPageSegments(title: "Documents", names: DocumentsSegment.allCases.map(\.rawValue),
+                                       selected: DocumentsSegment.allCases.firstIndex(of: documentsSegment) ?? 0) {
+            documentsSegment = DocumentsSegment.allCases[$0]
+        }
+        Group {
+            switch documentsSegment {
+            case .missing:
+                PadEvidenceView(model: tabs.padEvidence, write: tabs.padDocumentWrite, syncStatus: syncStatus,
+                                showBills: { selection = .billsAndRecharges })
+            case .library:
+                PadDocumentsView(model: tabs.padDocuments, actions: tabs.padDocumentActions, write: tabs.padDocumentWrite, syncStatus: syncStatus)
+            case .downloads:
+                PadDownloadsView(syncStatus: syncStatus)
+            }
+        }
+        .environment(\.padPageSegments, segments)
+        .offlineBanner(syncStatus, lastSync: lastSync)
     }
 
     /// Tenancies' and Profile's Show in Documents: the Documents screen with that document selected.
     private func showDocument(_ id: Int64) {
         tabs.padDocuments.selectedId = id
+        documentsSegment = .library
         selection = .documents
     }
 
@@ -174,7 +229,13 @@ public struct PadRootView: View {
             selection = .billsAndRecharges
             tabs.padBills.emailStatementId = statementId
         case .evidence:
-            selection = .evidence
+            // Documents ▸ Missing, narrowed to what is missing.
+            tabs.padEvidence.missingOnly = true
+            documentsSegment = .missing
+            selection = .documents
+        case .downloads:
+            documentsSegment = .downloads
+            selection = .documents
         case .site, .check:
             break
         }
