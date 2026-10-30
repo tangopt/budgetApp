@@ -252,6 +252,8 @@ struct PadTileGrid: Layout {
         var columns = 1
         var columnWidth: CGFloat = 0
         var rowHeights: [CGFloat] = []
+        /// Each item's row, first column and columns spanned.
+        var placements: [(row: Int, column: Int, span: Int)] = []
     }
 
     func makeCache(subviews: Subviews) -> Cache { Cache() }
@@ -272,16 +274,37 @@ struct PadTileGrid: Layout {
 
     private func measure(width: CGFloat, subviews: Subviews, cache: inout Cache) {
         guard cache.width != width else { return }
-        let columns = columns(for: width, count: subviews.count)
+        let spans = subviews.map { max(1, $0[PadGridSpan.self]) }
+        let columns = columns(for: width, count: subviews.count, spans: spans)
         let columnWidth = max(0, (width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
-        var heights: [CGFloat] = []
-        var index = 0
-        while index < subviews.count {
-            let row = subviews[index..<min(index + columns, subviews.count)]
-            heights.append(row.map { $0.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height }.max() ?? 0)
-            index += columns
+        // Items flow left to right; one that doesn't fit what is left of the row starts the next.
+        var placements: [(row: Int, column: Int, span: Int)] = []
+        var row = 0, column = 0
+        for requested in spans {
+            let span = min(requested, columns)
+            if column + span > columns { row += 1; column = 0 }
+            placements.append((row, column, span))
+            column += span
         }
-        cache = Cache(width: width, columns: columns, columnWidth: columnWidth, rowHeights: heights)
+        var heights = [CGFloat](repeating: 0, count: (placements.last?.row ?? -1) + 1)
+        for (index, place) in placements.enumerated() {
+            let itemWidth = columnWidth * CGFloat(place.span) + spacing * CGFloat(place.span - 1)
+            let height = subviews[index].sizeThatFits(ProposedViewSize(width: itemWidth, height: nil)).height
+            heights[place.row] = max(heights[place.row], height)
+        }
+        cache = Cache(width: width, columns: columns, columnWidth: columnWidth, rowHeights: heights, placements: placements)
+    }
+
+    /// Columns for items that may span several: no balancing (a spanning item would break the even rows).
+    private func columns(for width: CGFloat, count: Int, spans: [Int]) -> Int {
+        spans.contains { $0 > 1 } ? max(1, min(columns(for: width, count: count, ignoringBalance: true), maximumColumns))
+                                  : columns(for: width, count: count)
+    }
+
+    private func columns(for width: CGFloat, count: Int, ignoringBalance: Bool) -> Int {
+        guard width.isFinite else { return max(1, min(maximumColumns, max(count, 1))) }
+        let fitting = Int(((width + spacing) / (minimumColumnWidth + spacing)).rounded(.down))
+        return max(1, min(fitting, maximumColumns, max(count, 1)))
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
@@ -299,18 +322,26 @@ struct PadTileGrid: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         measure(width: bounds.width, subviews: subviews, cache: &cache)
+        var rowTops: [CGFloat] = []
         var y = bounds.minY
-        for (row, height) in cache.rowHeights.enumerated() {
-            for column in 0..<cache.columns {
-                let index = row * cache.columns + column
-                guard index < subviews.count else { break }
-                let x = bounds.minX + CGFloat(column) * (cache.columnWidth + spacing)
-                subviews[index].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                                      proposal: ProposedViewSize(width: cache.columnWidth, height: height))
-            }
-            y += height + spacing
+        for height in cache.rowHeights { rowTops.append(y); y += height + spacing }
+        for (index, place) in cache.placements.enumerated() {
+            let x = bounds.minX + CGFloat(place.column) * (cache.columnWidth + spacing)
+            let itemWidth = cache.columnWidth * CGFloat(place.span) + spacing * CGFloat(place.span - 1)
+            subviews[index].place(at: CGPoint(x: x, y: rowTops[place.row]), anchor: .topLeading,
+                                  proposal: ProposedViewSize(width: itemWidth, height: cache.rowHeights[place.row]))
         }
     }
+}
+
+/// How many columns an item of a `PadTileGrid` spans (default 1; at most the columns there are).
+struct PadGridSpan: LayoutValueKey {
+    static let defaultValue = 1
+}
+
+extension View {
+    /// This tile or card takes `columns` columns of its `PadTileGrid`.
+    func padGridSpan(_ columns: Int) -> some View { layoutValue(key: PadGridSpan.self, value: columns) }
 }
 
 // MARK: Shared screens on the iPad
