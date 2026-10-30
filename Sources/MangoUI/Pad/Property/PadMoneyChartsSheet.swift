@@ -9,6 +9,7 @@ struct PadMoneyChartsContent: View {
     @ObservedObject var model: PadMoneyModel
     let onShow: (PadMoneyModel.Figure) -> Void
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private static let utc = TimeZone(identifier: "UTC")!
 
@@ -45,16 +46,23 @@ struct PadMoneyChartsContent: View {
 
     @ViewBuilder
     private func row(_ figure: PadMoneyModel.Figure) -> some View {
-        let content = ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                Text(figure.title).fontWeight(figure.isTotal ? .semibold : .regular).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 8)
-                amount(figure)
-                chevron(figure)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(figure.title).fontWeight(figure.isTotal ? .semibold : .regular)
-                amount(figure)
+        // A plain stack, not `ViewThatFits`: a row that isn't a button (no drill-down) was laid out by `ViewThatFits` 126 pt
+        // left of the page in Flat (Inter is wider), its figure cut off. Beside its figure the name truncates in the
+        // middle; at accessibility sizes the figure goes under it.
+        let content = Group {
+            if AmountRowLayout.stacks(at: dynamicTypeSize) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(figure.title).fontWeight(figure.isTotal ? .semibold : .regular)
+                    amount(figure)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: 12) {
+                    Text(figure.title).fontWeight(figure.isTotal ? .semibold : .regular).lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    amount(figure).layoutPriority(1)
+                    chevron(figure)
+                }
             }
         }
         .frame(minHeight: 44)
