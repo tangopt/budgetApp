@@ -190,8 +190,8 @@ struct PadMoneyView: View {
         let selected = model.expandedMonth == month.start
         return Button { Task { await model.toggle(month) } } label: {
             HStack(alignment: .center, spacing: 10) {
-                Text(PadMoneyModel.monthTitle(month).figuresUnbroken).mangoFont(.headline).lineLimit(1)
-                Spacer(minLength: 8)
+                Text(PadMoneyModel.monthTitle(month).figuresUnbroken).mangoFont(.headline).lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 MoneyText(minorUnits: model.shown(month.figures.netCashFlow), currency: model.displayCurrency, role: .income, font: .headline)
                 Image(systemName: "chevron.right").mangoFont(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
             }

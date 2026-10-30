@@ -37,7 +37,7 @@ struct PadAccountsView: View {
                 HStack(spacing: 0) {
                     list(split: split)
                     if split {
-                        MangoDivider()
+                        Divider()
                         panel
                     }
                 }

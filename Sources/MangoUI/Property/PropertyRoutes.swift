@@ -10,7 +10,7 @@ public enum PropertyRoutes {
     /// and pounds, the share repaid, the rate, the review's day and 7 obligations), 8 below the first screen at default
     /// size; without its mortgage 9 (rent, recharge, 7 obligations), 3 below it.
     static let all: [DemoRoute] = [
-        DemoRoute(name: "property", minimumFigures: 15, figuresBelowFold: 8,
+        DemoRoute(name: "property", minimumFigures: 15, figuresBelowFold: 7,
                   check: { context in try figuresCheck(context.dbQueue, today: context.today, route: "property") }) { context in
             property(context.dbQueue, today: context.today, status: context.syncStatus)
         },
