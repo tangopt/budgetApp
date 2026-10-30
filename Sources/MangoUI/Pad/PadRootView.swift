@@ -1,8 +1,8 @@
 import SwiftUI
 import BudgetCore
 
-/// The iPad's unlocked app (step 8, Task 6; step 10, Task 3): the sidebar (`PadSidebar`: Home, Month, Accounts, Search;
-/// Property; Everything else; collapsible to an icon rail; footer with the person, sync and Settings) and the selected
+/// The iPad's unlocked app (step 8, Task 6; step 10, Task 3; redesign step 4): the sidebar (`PadSidebar`: Home, Month, Accounts,
+/// Search; Flat (This month, Bills & recharges, Tenancies, Flat details); Everything else (Documents, Calendar, Salary calculator); collapsible to an icon rail; footer with the person, sync and Settings) and the selected
 /// screen as its detail. Home, Month and Search reuse the iPhone's views over the same
 /// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
@@ -129,7 +129,8 @@ public struct PadRootView: View {
     private func sectionDetail(_ section: PadSection) -> some View {
         switch section {
         case .home:
-            PadHomeScreen(tabs: tabs, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
+            PadHomeScreen(tabs: tabs, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings,
+                          onOpenCalendar: { selection = .calendar })
                 .offlineBanner(syncStatus, lastSync: lastSync)
         case .month:
             MonthView(model: tabs.month, syncStatus: syncStatus, onRefresh: onRefresh)
@@ -272,8 +273,11 @@ private struct PadHomeScreen: View {
     let syncStatus: SyncStatus
     let onRefresh: () async -> Void
     let onSettings: () -> Void
+    let onOpenCalendar: () -> Void
 
-    init(tabs: PhoneTabsModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void, onSettings: @escaping () -> Void) {
+    init(tabs: PhoneTabsModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void, onSettings: @escaping () -> Void,
+         onOpenCalendar: @escaping () -> Void) {
+        self.onOpenCalendar = onOpenCalendar
         self.tabs = tabs
         self.bills = tabs.padBills
         self.syncStatus = syncStatus
@@ -283,6 +287,6 @@ private struct PadHomeScreen: View {
 
     var body: some View {
         HomeView(model: tabs.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings,
-                 recharges: bills.stageCounts(year: bills.year))
+                 recharges: bills.stageCounts(year: bills.year), onOpenCalendar: onOpenCalendar)
     }
 }

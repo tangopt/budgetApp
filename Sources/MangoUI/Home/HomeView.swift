@@ -18,14 +18,17 @@ public struct HomeView: View {
     let now: () -> Date
     /// The iPad's recharges-status chart: the selected tenancy's bills by stage (empty: no card; the iPhone passes none).
     let recharges: [PadBillsAndRechargesModel.StageCount]
+    /// The iPad: Upcoming's link to the Calendar.
+    let onOpenCalendar: (() -> Void)?
     @Environment(\.phoneTheme) private var theme
     @Environment(\.usesPadPage) private var usesPadPage
 
     public init(model: HomeViewModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void,
                 onSettings: @escaping () -> Void, onOpenTab: @escaping (PhoneTab) -> Void = { _ in },
                 now: @escaping () -> Date = { Date() },
-                recharges: [PadBillsAndRechargesModel.StageCount] = []) {
+                recharges: [PadBillsAndRechargesModel.StageCount] = [], onOpenCalendar: (() -> Void)? = nil) {
         self.recharges = recharges
+        self.onOpenCalendar = onOpenCalendar
         self.model = model
         self.syncStatus = syncStatus
         self.onRefresh = onRefresh
@@ -108,7 +111,7 @@ public struct HomeView: View {
             NetWorthCard(netWorth: summary.netWorth)
             if showsRecharges { RechargesStatusCard(counts: recharges) }
             AttentionCard(lines: attention)
-            UpcomingCard(items: summary.upcoming).padGridSpan(showsRecharges ? 1 : 2)
+            UpcomingCard(items: summary.upcoming, openCalendar: onOpenCalendar).padGridSpan(showsRecharges ? 1 : 2)
         }
         .padEqualHeightCards()
     }

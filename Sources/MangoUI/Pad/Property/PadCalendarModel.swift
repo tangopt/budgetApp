@@ -55,15 +55,43 @@ public final class PadCalendarModel: ObservableObject {
         public var id: String { rawValue }
     }
 
+    /// Whose items the Calendar shows (redesign step 4): everything, the flat's, or the personal planned bills.
+    public enum Scope: String, CaseIterable, Identifiable, Sendable {
+        case all = "All", flat = "Flat", personal = "Personal"
+        public var id: String { rawValue }
+    }
+
     public struct Snapshot: Equatable, Sendable {
         public var today: Date
-        /// Due from today on, within twelve months.
+        /// Due from today on, within twelve months: the flat's obligations and the personal planned bills, by date.
         public var upcoming: [PropertyObligation]
-        /// Dated in the twelve months up to today.
+        /// Dated in the twelve months up to today (the flat's; planned bills only look ahead).
         public var past: [PropertyObligation]
+        /// Whether the viewer may see each side: the filter is offered only when both are on.
+        public var seesFlat = true
+        public var seesPersonal = true
 
         public static let empty = Snapshot(today: Date(timeIntervalSince1970: 0), upcoming: [], past: [])
     }
+
+    /// The side the list and grid show.
+    @Published public var scope: Scope = .all {
+        didSet { if scope != oldValue { selectedDay = nil; selectedId = nil } }
+    }
+
+    /// The scopes to offer: the filter appears only when the viewer sees both sides.
+    public var offeredScopes: [Scope] { snapshot.seesFlat && snapshot.seesPersonal ? Scope.allCases : [] }
+
+    private func scoped(_ items: [PropertyObligation]) -> [PropertyObligation] {
+        switch scope {
+        case .all: items
+        case .flat: items.filter { !$0.isPersonal }
+        case .personal: items.filter(\.isPersonal)
+        }
+    }
+
+    private var upcomingShown: [PropertyObligation] { scoped(snapshot.upcoming) }
+    private var pastShown: [PropertyObligation] { scoped(snapshot.past) }
 
     @Published public private(set) var snapshot: Snapshot = .empty
     @Published public var layout: Layout = .month
@@ -77,13 +105,16 @@ public final class PadCalendarModel: ObservableObject {
     @Published public var selectedId: String?
 
     public let property: PadPropertyModel
+    /// What the viewer may see (Property for the flat's items, Forecast for the planned bills); nil: everything.
+    private let write: PadWriteModel?
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
     private var generation = 0
     private var isPreloaded = false
 
-    public init(property: PadPropertyModel, dbQueue: any DatabaseReader, today: @escaping () -> Date) {
+    public init(property: PadPropertyModel, write: PadWriteModel? = nil, dbQueue: any DatabaseReader, today: @escaping () -> Date) {
         self.property = property
+        self.write = write
         self.dbQueue = dbQueue
         self.today = today
         shownMonth = Self.monthStart(MonthRange.calendar.startOfDay(for: today()))
@@ -101,31 +132,40 @@ public final class PadCalendarModel: ObservableObject {
         guard !isPreloaded else { return }
         generation += 1
         let mine = generation
-        guard let propertyId = property.property?.id else {
-            snapshot = .empty
-            return
-        }
+        let propertyId = property.property?.id
+        let scope = await write?.readScope() ?? .everything
         let day = MonthRange.calendar.startOfDay(for: today())
         let reader = dbQueue
-        guard let read = try? await reader.read({ db in try Self.read(db, propertyId: propertyId, today: day) }), mine == generation else { return }
+        guard let read = try? await reader.read({ db in try Self.read(db, propertyId: propertyId, today: day, scope: scope) }), mine == generation else { return }
         snapshot = read
         if let id = selectedId, !(read.upcoming + read.past).contains(where: { $0.id == id }) { selectedId = nil }
     }
 
     public nonisolated static func readNow(_ dbQueue: any DatabaseReader, propertyId: Int64?, today: Date) -> Snapshot {
-        guard let propertyId else { return .empty }
         let day = MonthRange.calendar.startOfDay(for: today)
-        return (try? dbQueue.read { db in try read(db, propertyId: propertyId, today: day) }) ?? .empty
+        return (try? dbQueue.read { db in try read(db, propertyId: propertyId, today: day, scope: .everything) }) ?? .empty
     }
 
-    /// The Mac's read: twelve months from today (`today` is already the stored UTC day), and the twelve behind.
-    nonisolated static func read(_ db: Database, propertyId: Int64, today: Date) throws -> Snapshot {
+    /// The Mac's read for the flat (twelve months from today, `today` already the stored UTC day, and the twelve behind), and the
+    /// forecast's planned bills for the twelve months ahead, each only where `scope` shows its area.
+    nonisolated static func read(_ db: Database, propertyId: Int64?, today: Date, scope: DeviceReadScope) throws -> Snapshot {
         let calendar = MonthRange.calendar
         let end = calendar.date(byAdding: .month, value: 12, to: today)!
         let start = calendar.date(byAdding: .month, value: -12, to: today)!
-        return Snapshot(today: today,
-                        upcoming: try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: today, to: end, today: today),
-                        past: try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: start, to: today, today: today))
+        var upcoming: [PropertyObligation] = []
+        var past: [PropertyObligation] = []
+        let seesFlat = try propertyId != nil && scope.sees(.property, db: db)
+        if let propertyId, seesFlat {
+            upcoming = try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: today, to: end, today: today)
+            past = try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: start, to: today, today: today)
+        }
+        let seesPersonal = try scope.sees(.forecast, db: db)
+        if seesPersonal {
+            let input = try DashboardInput.load(db: db, today: today)
+            upcoming += PropertyObligation.plannedBills(input, days: 365).filter { $0.date < end }
+        }
+        upcoming.sort { ($0.date, $0.id) < ($1.date, $1.id) }
+        return Snapshot(today: today, upcoming: upcoming, past: past, seesFlat: seesFlat, seesPersonal: seesPersonal)
     }
 
     // MARK: What is shown
@@ -139,17 +179,19 @@ public final class PadCalendarModel: ObservableObject {
 
     /// The agenda for the chosen range: months with something due, narrowed to `selectedDay` when one is tapped.
     public var agenda: [PropertyCalendarGrid.AgendaMonth] {
-        let items = range == .upcoming ? snapshot.upcoming : snapshot.past
+        let items = range == .upcoming ? upcomingShown : pastShown
         let narrowed = selectedDay.map { day in items.filter { calendar.isDate($0.date, inSameDayAs: day) } } ?? items
         return PropertyCalendarGrid.agenda(narrowed, from: snapshot.today, months: range == .upcoming ? 12 : -12, calendar: calendar)
     }
 
     /// The month grid: every obligation read, upcoming or past, on its day.
     public var gridDays: [PropertyCalendarGrid.GridDay] {
-        PropertyCalendarGrid.month(shownMonth, items: snapshot.past + snapshot.upcoming, calendar: calendar)
+        PropertyCalendarGrid.month(shownMonth, items: pastShown + upcomingShown, calendar: calendar)
     }
 
     public var isEmpty: Bool { snapshot.upcoming.isEmpty && snapshot.past.isEmpty }
+    /// Nothing in the chosen scope (the filter narrowed it to nothing).
+    public var isEmptyInScope: Bool { upcomingShown.isEmpty && pastShown.isEmpty }
 
     public var selected: PropertyObligation? {
         guard let selectedId else { return nil }
@@ -173,7 +215,7 @@ public final class PadCalendarModel: ObservableObject {
 
     /// What is due in the month the grid shows (or on the tapped day), in date order, under the grid.
     public var shownMonthItems: [PropertyObligation] {
-        let all = (snapshot.past + snapshot.upcoming).sorted { ($0.date, $0.id) < ($1.date, $1.id) }
+        let all = (pastShown + upcomingShown).sorted { ($0.date, $0.id) < ($1.date, $1.id) }
         if let day = selectedDay { return all.filter { calendar.isDate($0.date, inSameDayAs: day) } }
         return all.filter { calendar.isDate($0.date, equalTo: shownMonth, toGranularity: .month) }
     }
@@ -194,6 +236,10 @@ public final class PadCalendarModel: ObservableObject {
     // MARK: Words
 
     /// The kind as a pill: a tax deadline, a rate revision, a renewal, or what the cost is.
+    public nonisolated static func kindName(_ obligation: PropertyObligation) -> String {
+        obligation.isPersonal ? "Planned bill" : kindName(obligation.kind)
+    }
+
     public nonisolated static func kindName(_ kind: PropertyObligationKind) -> String {
         switch kind {
         case .imiInstalment: "Property tax"
@@ -204,6 +250,10 @@ public final class PadCalendarModel: ObservableObject {
         case .insuranceRenewal: "Renewal"
         case .recurringCost: "Recurring cost"
         }
+    }
+
+    public nonisolated static func symbol(_ obligation: PropertyObligation) -> String {
+        obligation.isPersonal ? "creditcard" : symbol(obligation.kind)
     }
 
     public nonisolated static func symbol(_ kind: PropertyObligationKind) -> String {
@@ -230,6 +280,11 @@ public final class PadCalendarModel: ObservableObject {
 
     /// What the obligation is, for its card.
     public nonisolated static func explanation(_ obligation: PropertyObligation) -> String {
+        if obligation.isPersonal { return "A bill from your budget plan, confirmed for this day." }
+        return explanationOfKind(obligation)
+    }
+
+    private nonisolated static func explanationOfKind(_ obligation: PropertyObligation) -> String {
         switch obligation.kind {
         case .imiInstalment: "A Portuguese property tax instalment (May, August and November). The amount is last year's, when there is one."
         case .ptIncomeTaxReturn: "The Portuguese income tax return (IRS), due by 30 June for the year before."

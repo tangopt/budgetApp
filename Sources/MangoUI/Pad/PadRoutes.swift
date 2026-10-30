@@ -108,6 +108,13 @@ public enum PadRoutes {
         DemoRoute(name: "pad-calendar", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
+        // Redesign step 4: the Calendar's filter, the flat's items only and the personal planned bills only.
+        DemoRoute(name: "pad-calendar-flat", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .flat), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar-personal", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .personal), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
         DemoRoute(name: "pad-calendar-month", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .month), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
@@ -537,11 +544,13 @@ public enum PadRoutes {
 
     /// Editing tabs with Calendar read; `layout` Month shows the grid for the demo's month.
     @MainActor
-    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout) -> PhoneTabsModel {
+    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout,
+                             scope: PadCalendarModel.Scope = .all) -> PhoneTabsModel {
         let tabs = editingTabs(context)
         let model = tabs.padCalendar
         model.preload(PadCalendarModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
         model.layout = layout
+        model.scope = scope
         if layout == .month, let first = model.snapshot.upcoming.first { model.selectedId = first.id }
         return tabs
     }
