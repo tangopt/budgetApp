@@ -7,6 +7,7 @@ struct PaydayWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "ubberninja.mango.payday", provider: SnapshotProvider()) { entry in
             PaydayWidgetView(entry: entry)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .containerBackground(.fill.tertiary, for: .widget)
                 .widgetURL(WidgetLink.url(for: .home))
         }

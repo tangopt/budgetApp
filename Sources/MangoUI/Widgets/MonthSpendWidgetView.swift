@@ -40,11 +40,16 @@ public struct MonthSpendWidgetView: View {
     private var spendColor: Color { overPace ? theme.warning : Color.accentColor }
 
     public var body: some View {
-        switch size {
-        case .small: small
-        case .medium: medium
-        case .large: large
+        // Figures keep their size rather than shrink (I13), so in a tile of fixed size the text grows to the largest
+        // non-accessibility size at most.
+        Group {
+            switch size {
+            case .small: small
+            case .medium: medium
+            case .large: large
+            }
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 
     private var title: some View {

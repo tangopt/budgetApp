@@ -31,6 +31,8 @@ public struct WidgetsPreview: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // As the widgets: figures keep their size in tiles of fixed size, so the text grows no further than this.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 
     private func tile(_ title: String, _ figure: String) -> some View {
