@@ -55,14 +55,12 @@ struct PadCalendarView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 layoutPicker.frame(maxWidth: 260)
-                if model.layout == .agenda { rangePicker.frame(maxWidth: 260) }
-                Spacer(minLength: 8)
+                                Spacer(minLength: 8)
                 if model.selectedDay != nil { clearDay }
             }
             VStack(alignment: .leading, spacing: 10) {
                 layoutPicker
-                if model.layout == .agenda { rangePicker }
-                if model.selectedDay != nil { clearDay }
+                                if model.selectedDay != nil { clearDay }
             }
         }
     }
@@ -75,12 +73,14 @@ struct PadCalendarView: View {
         .accessibilityLabel("View")
     }
 
-    private var rangePicker: some View {
-        Picker("Range", selection: $model.range) {
-            ForEach(PadCalendarModel.Range.allCases) { Text($0.rawValue).tag($0) }
+    /// Not a second segmented control: one plain button flips the agenda between ahead and back.
+    private var rangeSwitch: some View {
+        let ahead = model.range == .upcoming
+        return Button { model.range = ahead ? .past : .upcoming } label: {
+            Label(ahead ? "Earlier months" : "Coming months", systemImage: ahead ? "arrow.uturn.backward" : "arrow.uturn.forward")
         }
-        .pickerStyle(.segmented)
-        .accessibilityLabel("Range")
+        .buttonStyle(.pad(.secondary, size: .small))
+        .accessibilityLabel(ahead ? "Show the last twelve months" : "Show the next twelve months")
     }
 
     private var clearDay: some View {
@@ -101,6 +101,7 @@ struct PadCalendarView: View {
                 Text(model.range == .upcoming ? "The next twelve months" : "The last twelve months")
                     .mangoFont(.title3, weight: .semibold).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
+                rangeSwitch
             }
             Text("≈ an estimate from the property's history").mangoFont(.footnote).foregroundStyle(.secondary)
         }

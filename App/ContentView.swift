@@ -18,7 +18,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case taxYears = "Tax years"
     case documents = "Documents"
     case missingEvidence = "Missing evidence"
-    case salary = "UK Salary Calculator"
+    case salary = "Salary calculator"
     case rules = "Rules"
     case categories = "Categories"
     case uncategorized = "Uncategorized"
@@ -34,7 +34,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .budgetGrid: return "tablecells"
         case .forecast: return "chart.line.uptrend.xyaxis"
-        case .salary: return "sterlingsign.circle"
+        case .salary: return "percent"
         case .rules: return "wand.and.stars"
         case .categories: return "tag"
         case .accounts: return "building.columns"
@@ -256,7 +256,7 @@ struct ContentView: View {
             // The sidebar column is hosted apart from the window's root, so the lock overlay's own hiding
             // doesn't reach it: it hides itself while covered, and takes no clicks, focus or VoiceOver.
             .lockCoverHidden(lockCovered)
-            // Wide enough for "UK Salary Calculator" and "Missing documents" with its badge.
+            // Wide enough for "Salary calculator" and "Missing documents" with its badge.
             .navigationSplitViewColumnWidth(min: 200, ideal: 210)
         } detail: {
             Group {

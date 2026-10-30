@@ -80,7 +80,7 @@ enum SnapshotCatalog {
                 width("documents", 2000)
                 models.documents.selectedId = (try? context.demoCustomKinds())?.documentId
             },
-            screen("salary", "bonus_percent", "UK Salary Calculator: a 10% bonus on the new salary, the split moved left", .salary) { models, _ in
+            screen("salary", "bonus_percent", "Salary calculator: a 10% bonus on the new salary, the split moved left", .salary) { models, _ in
                 SnapshotMode.defaults.set(0.43, forKey: PaneSizing.splitKey("salary"))
                 models.salary.current.grossAnnual = 4_000_000
                 models.salary.offer.grossAnnual = 5_200_000
@@ -818,7 +818,7 @@ enum SnapshotCatalog {
             },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
             screen("forecast", "grid", "Forecast: Grid", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .grid },
-            screen("salary", "main", "UK Salary Calculator: a £52,000 offer against £40,000", .salary) { models, _ in
+            screen("salary", "main", "Salary calculator: a £52,000 offer against £40,000", .salary) { models, _ in
                 models.salary.offer.grossAnnual = 5_200_000
             },
             screen("accounts", "main", "Accounts", .accounts),

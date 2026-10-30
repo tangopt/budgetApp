@@ -14,7 +14,7 @@ struct PadRentReceiptRow: View {
     let perform: (PadTenanciesAction) -> Void
     @Environment(\.phoneTheme) private var theme
 
-    static let rowActions: [PadTenanciesAction] = [.viewReceipt, .linkPayment, .addDocument, .fetchFromPortal]
+    static let rowActions: [PadTenanciesAction] = [.linkPayment, .addDocument, .fetchFromPortal]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

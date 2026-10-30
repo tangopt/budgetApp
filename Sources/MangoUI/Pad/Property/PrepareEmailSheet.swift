@@ -162,7 +162,7 @@ struct PrepareEmailSheet: View {
             .background(theme.background)
             .navigationTitle("Email · \(model.monthName)")
             .navigationBarTitleDisplayModeInline()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { PadIconButton(systemImage: "checkmark", label: "Done", prominent: true) { dismiss() } }.padFlatToolbarItem() }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PadIconButton(systemImage: "xmark", label: "Close") { dismiss() } }.padFlatToolbarItem() }
         }
         .task {
             if model.package == nil { await model.reload() }
@@ -270,20 +270,15 @@ struct PrepareEmailSheet: View {
 
     @ViewBuilder
     private func buttons(_ package: RechargeEmailPackage) -> some View {
-        Button("Open in Mail") { compose(package, route: nil) }
+        Button("Send in Mail") { compose(package, route: nil) }
             .buttonStyle(.pad(.primary))
             .disabled(model.flow.stage != .preview)
         Button("Share instead") { compose(package, route: .shareSheet) }
             .buttonStyle(.pad(.secondary))
             .disabled(model.flow.stage != .preview)
-        if write.canEdit {
-            Button("Mark as sent…") { model.askToMarkSent() }
-                .buttonStyle(.pad(.secondary))
-                .disabled(model.flow.stage != .preview)
-        }
     }
 
-    static let noMailCopy = "Mail isn't set up on this iPad: Open in Mail shows the share sheet with the same text and files. Add the recipient there."
+    static let noMailCopy = "Mail isn't set up on this iPad: Send in Mail shows the share sheet with the same text and files. Add the recipient there."
 
     private func compose(_ package: RechargeEmailPackage, route: MailComposer.Route?) {
         model.opened()

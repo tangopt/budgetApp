@@ -55,11 +55,8 @@ struct PadAccountDetailView: View {
     private var buttons: some View {
         let shown = buttonList
         if !shown.isEmpty {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { ForEach(shown, id: \.title) { button($0) } }
-                VStack(spacing: 8) { ForEach(shown, id: \.title) { button($0).frame(maxWidth: .infinity) } }
-            }
-            .controlSize(.large)
+            // Icon buttons: a label like "Fetch statement" truncated in the narrow panel (labels live in the tooltip and VoiceOver).
+            HStack(spacing: 8) { ForEach(shown, id: \.title) { button($0) } }
         }
     }
 
@@ -75,7 +72,7 @@ struct PadAccountDetailView: View {
             list.append(ActionButton(title: "Update balance", systemImage: "plusminus.circle") { quickEdit.balanceAccountId = detail.accountId })
         }
         if actions.contains(.fetchStatement), browser != nil {
-            list.append(ActionButton(title: "Fetch statement", systemImage: "arrow.down.doc") { fetchStatement() })
+            list.append(ActionButton(title: "Fetch statement", systemImage: "tray.and.arrow.down") { fetchStatement() })
         }
         if actions.contains(.editDetails), let onEdit {
             list.append(ActionButton(title: "Edit", systemImage: "pencil") { onEdit(detail.accountId) })
@@ -84,8 +81,7 @@ struct PadAccountDetailView: View {
     }
 
     private func button(_ action: ActionButton) -> some View {
-        Button(action: action.run) { Label(action.title, systemImage: action.systemImage).frame(maxWidth: .infinity) }
-            .buttonStyle(.pad(.secondary))
+        PadIconButton(systemImage: action.systemImage, label: action.title, action: action.run)
     }
 
     /// The account's bank site when the saved sites have one, else the sites strip. The PDF it downloads goes through the

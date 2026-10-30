@@ -101,6 +101,7 @@ private struct QuickSortButtons: View {
     let card: PhoneQuickEdits.QuickSortCard
     @ObservedObject var model: QuickEditModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         let choices = QuickSortChoices(card: card, lists: model.lists)
@@ -120,8 +121,18 @@ private struct QuickSortButtons: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(suggested ? .accentColor : .gray)
+                    // Chips sit on the surface with primary text (well over 4.5:1); the suggestion is tinted with the accent.
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(suggested ? theme.accent.opacity(0.16) : theme.surface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(suggested ? theme.accent : Color.primary.opacity(0.15), lineWidth: suggested ? 1.5 : 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .accessibilityHint(suggested ? "Suggested category" : "Categorises and saves")
                 }
             }
