@@ -29,31 +29,71 @@ public struct TransactionDetailPresentation {
     }
 }
 
-/// A transaction: the amount large, the description, then account, date, category and note. Where the user may edit it
-/// (`QuickEditModel.canEdit`) an Edit button opens the edit sheet; otherwise there is no edit control at all (absent,
-/// not disabled) and the footer reads "Edit on iPad or Mac". Large detent; Done closes it.
+/// What the transaction sheet is editing: the category and the note, as drafts. Nothing is written until Save; Cancel
+/// drops them (design review I1, D7).
+public struct TransactionDraft: Equatable, Sendable {
+    public var categoryId: Int64?
+    public var note: String
+
+    public init(row: TransactionSearch.Row) {
+        categoryId = row.transaction.categoryId
+        note = row.transaction.note ?? ""
+    }
+
+    /// Whether Save would change anything (a note of spaces is no note).
+    public func differs(from row: TransactionSearch.Row) -> Bool {
+        func clean(_ text: String?) -> String { (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+        return categoryId != row.transaction.categoryId || clean(note) != clean(row.transaction.note)
+    }
+}
+
+/// The one transaction sheet (design review I1, D7): the amount large, the description, then account, date, category and
+/// note. Where the user may edit it (`QuickEditModel.canEdit`) an Edit button turns the same sheet into a form in place
+/// (Cancel / Save in the nav bar; nothing is written until Save, and a refusal shows in the form and keeps the draft);
+/// otherwise there is no edit control at all. Large detent; Done closes it.
 public struct TransactionDetailSheet: View {
-    let row: TransactionSearch.Row
+    @State private var row: TransactionSearch.Row
     @Environment(\.dismiss) private var dismiss
     @Environment(\.phoneTheme) private var theme
     @Environment(\.quickEdit) private var quickEdit
     @State private var canEdit = false
-    @State private var editing = false
+    @State private var editing: Bool
+    @State private var draft: TransactionDraft
+    @State private var saving = false
 
-    public init(row: TransactionSearch.Row) {
-        self.row = row
+    /// `startsEditing`: opens as the form (the snapshot route).
+    public init(row: TransactionSearch.Row, startsEditing: Bool = false) {
+        _row = State(initialValue: row)
+        _editing = State(initialValue: startsEditing)
+        _draft = State(initialValue: TransactionDraft(row: row))
     }
 
     public var body: some View {
         NavigationStack {
-            TransactionDetailContent(row: row, showsFooter: !canEdit)
-                .background(theme.background)
-                .mangoNavigationTitle("Transaction")
-                .navigationBarTitleDisplayModeInline()
-                .toolbar {
+            Group {
+                if editing, let quickEdit {
+                    TransactionEditForm(row: row, model: quickEdit, categoryId: $draft.categoryId, note: $draft.note)
+                } else {
+                    TransactionDetailContent(row: row)
+                }
+            }
+            .background(theme.background)
+            .mangoNavigationTitle(editing ? "Edit transaction" : "Transaction")
+            .navigationBarTitleDisplayModeInline()
+            .toolbar {
+                if editing {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { cancel() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { save() }
+                            .disabled(saving)
+                            .accessibilityIdentifier("save-transaction")
+                    }
+                } else {
                     if canEdit {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Edit") { editing = true }
+                            Button("Edit") { draft = TransactionDraft(row: row); editing = true }
                                 .accessibilityIdentifier("edit-transaction")
                         }
                     }
@@ -61,12 +101,31 @@ public struct TransactionDetailSheet: View {
                         Button("Done") { dismiss() }
                     }
                 }
-                .demoBannerSlot()
+            }
+            .demoBannerSlot()
         }
         .presentationDetents([.large])
+        .interactiveDismissDisabled(editing && draft.differs(from: row))
         .task(id: row.id) { canEdit = await quickEdit?.canEdit(transactionId: row.id) ?? false }
-        .sheet(isPresented: $editing) {
-            if let quickEdit { TransactionEditSheet(row: row, model: quickEdit) }
+        .onDisappear { quickEdit?.refusal = nil }
+    }
+
+    private func cancel() {
+        draft = TransactionDraft(row: row)
+        quickEdit?.refusal = nil
+        editing = false
+    }
+
+    private func save() {
+        guard let quickEdit else { return }
+        saving = true
+        Task {
+            let saved = await quickEdit.save(transactionId: row.id, categoryId: draft.categoryId, note: draft.note)
+            saving = false
+            guard saved else { return }
+            // Back to the read view with what was saved.
+            if let fresh = await quickEdit.row(transactionId: row.id) { row = fresh }
+            editing = false
         }
     }
 }
@@ -74,8 +133,6 @@ public struct TransactionDetailSheet: View {
 /// The sheet's scrolling body (also what the snapshot route renders).
 struct TransactionDetailContent: View {
     let row: TransactionSearch.Row
-    /// "Edit on iPad or Mac", where the user can't edit here.
-    var showsFooter = true
 
     var body: some View {
         let shown = TransactionDetailPresentation(row)
@@ -118,12 +175,6 @@ struct TransactionDetailContent: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                }
-                if showsFooter {
-                    Label(SearchCopy.detailFooter, systemImage: "ipad.and.iphone")
-                        .mangoFont(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(16)

@@ -77,7 +77,17 @@ final class QuickEditTests: XCTestCase {
         XCTAssertTrue(canEdit)
         // The sheet holds its draft in its own state: building it (and loading the choices) writes nothing.
         model.preload(lists: QuickEditModel.readListsNow(db))
-        _ = TransactionEditSheet(row: row, model: model)
+        var draft = TransactionDraft(row: row)
+        XCTAssertFalse(draft.differs(from: row))
+        draft.note = "  weekly shop "
+        XCTAssertTrue(draft.differs(from: row))
+        draft = TransactionDraft(row: row)
+        draft.categoryId = groceries
+        XCTAssertEqual(draft.differs(from: row), row.transaction.categoryId != groceries)
+        draft = TransactionDraft(row: row)
+        draft.note += "   "
+        XCTAssertFalse(draft.differs(from: row), "spaces are no change")
+        _ = TransactionDetailSheet(row: row)
         XCTAssertEqual(after.value, 0)
         XCTAssertEqual(try transaction("AMZN MKTPLACE 2Q4X"), target)
 
