@@ -120,13 +120,23 @@ public final class OfferSheetModel {
 
     /// "From Apr 2026: £2,600.00 a month net, was £2,000.00": the offer's take-home from the month its salary
     /// starts (after any gap), against the entry it replaces; "£200.00 less than …" when it pays less.
+    /// With a yearly bonus, "; plus £3,000.00 net a year in Mar" follows.
     public var preview: String {
-        let takeHome = SalaryCalculator.calculate(offer).takeHomeMonthly
+        let result = SalaryCalculator.calculate(offer)
+        let takeHome = result.takeHomeMonthly
         let from = offerStart
         let head = "From \(Self.monthLabel(from)): \(Money.format(takeHome, currency: .gbp)) a month net"
-        guard let was = salaryEntry?.amountMinorUnits else { return head + ", new income" }
-        if takeHome < was { return head + ", \(Money.format(was - takeHome, currency: .gbp)) less than \(Money.format(was, currency: .gbp))" }
-        return head + ", was \(Money.format(was, currency: .gbp))"
+        let bonus = bonusPreview(result)
+        guard let was = salaryEntry?.amountMinorUnits else { return head + ", new income" + bonus }
+        if takeHome < was { return head + ", \(Money.format(was - takeHome, currency: .gbp)) less than \(Money.format(was, currency: .gbp))" + bonus }
+        return head + ", was \(Money.format(was, currency: .gbp))" + bonus
+    }
+
+    private func bonusPreview(_ result: SalaryResult) -> String {
+        guard let payslips = result.payslipsTakeHome, let month = offer.bonusPayment.month else { return "" }
+        let bonus = payslips - 12 * result.takeHomeMonthly
+        guard bonus > 0 else { return "" }
+        return "; plus \(Money.format(bonus, currency: .gbp)) net a year in \(BonusPayment.shortMonth(month))"
     }
 
     /// The spec to build (or rebuild) the scenario from.

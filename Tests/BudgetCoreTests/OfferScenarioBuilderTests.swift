@@ -402,6 +402,47 @@ final class OfferScenarioBuilderTests: XCTestCase {
         }
     }
 
+    // MARK: - Bonus
+
+    /// A bonus paid once a year: a normal month's take-home monthly, and the bonus's net once a year in its month.
+    func testYearlyBonusIsAnAnnualEntryInItsMonth() throws {
+        let f = try fixture()
+        var withBonus = offer
+        withBonus.bonusAnnual = 500_000
+        withBonus.bonusPayment = .yearly(month: 3)
+        let result = SalaryCalculator.calculate(withBonus)
+        let normal = try XCTUnwrap(result.normalMonth), bonusMonth = try XCTUnwrap(result.bonusMonth)
+        let scenario = try create(f, spec(f, offer: withBonus))
+        let added = try entries(f, scenario).filter { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId }
+        let monthly = try XCTUnwrap(added.first { $0.frequency == .monthly })
+        XCTAssertEqual(monthly.amountMinorUnits, normal.takeHome)
+        XCTAssertEqual(monthly.note, "Offer: salary")
+        let yearly = try XCTUnwrap(added.first { $0.frequency == .annually })
+        // A March bonus: nothing to even out after it, so it's the bonus month less a normal month.
+        XCTAssertEqual(yearly.amountMinorUnits, bonusMonth.takeHome - normal.takeHome)
+        XCTAssertEqual(yearly.amountMinorUnits, try XCTUnwrap(result.payslipsTakeHome) - 12 * normal.takeHome)
+        XCTAssertEqual(yearly.startDate, utc(2027, 3, 1), "the first March from the April start")
+        XCTAssertEqual(yearly.note, "Offer: bonus")
+        XCTAssertEqual(yearly.accountId, f.accountId)
+
+        // Spread monthly: today's behaviour, a twelfth of the year a month and no yearly entry.
+        withBonus.bonusPayment = .monthly
+        try f.manager.dbQueue.write { db in try OfferScenarioBuilder.rebuild(db: db, scenarioId: scenario.id!, spec: self.spec(f, offer: withBonus)) }
+        let rebuilt = try entries(f, scenario).filter { $0.scenarioChange == .added && $0.categoryId == f.salaryCategoryId }
+        XCTAssertEqual(rebuilt.map(\.frequency), [.monthly], "the rebuild took the yearly entry away")
+        XCTAssertEqual(rebuilt.first?.amountMinorUnits, SalaryCalculator.roundHalfUp(SalaryCalculator.calculate(withBonus).takeHomeAnnual, 12))
+    }
+
+    func testYearlyBonusStartsInTheStartMonthWhenItIsTheBonusMonth() throws {
+        let f = try fixture()
+        var withBonus = offer
+        withBonus.bonusAnnual = 500_000
+        withBonus.bonusPayment = .yearly(month: 4)
+        let scenario = try create(f, spec(f, offer: withBonus))
+        let yearly = try XCTUnwrap(try entries(f, scenario).first { $0.frequency == .annually })
+        XCTAssertEqual(yearly.startDate, utc(2026, 4, 1))
+    }
+
     // MARK: - Combined (step 17)
 
     /// Two offers both change the salary and the pension: combined, the later offer's whole

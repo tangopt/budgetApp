@@ -42,7 +42,8 @@ public struct OfferPensionCandidate: Equatable, Identifiable, Sendable {
 
 /// A job offer as a scenario (spec 2026-10-28-step14-job-offer-forecast-design.md): a copy of the budget
 /// (`Scenarios.create`) where the salary entry's copy ends the day before the start month and the offer's
-/// take-home pay follows it (after any notice-period gap), the pension entry's copy changes from the start
+/// take-home pay follows it (after any notice-period gap; a normal month's, with a yearly bonus added once a year in
+/// its month), the pension entry's copy changes from the start
 /// (`OfferPensionCandidate`), and the one-offs are added. Every write carries the scenario's id: the budget and
 /// actuals are never touched. The spec is stored in `scenario.offerInputs`.
 ///
@@ -165,7 +166,12 @@ public enum OfferScenarioBuilder {
         var anchorDay: Int?
         var startMonth: Date
         var offerStart: Date
+        /// The offer's take-home in a normal month (without a yearly bonus).
         var takeHomeMonthly: Int
+        /// A yearly bonus: what it adds to the year's take-home (the 12 payslips less 12 normal months: the bonus
+        /// month's extra, and any PAYE gives back after it), and the first of the month it's first paid in. nil when
+        /// the offer has no bonus or spreads it monthly (then it's in `takeHomeMonthly`).
+        var bonus: (amount: Int, start: Date)?
         /// A transfer into a pension account: the offer's employee plus employer pension a month.
         var pensionTransferMonthly: Int
         /// A pension expense: how much more (or less) the employee pays a month with the offer.
@@ -207,10 +213,17 @@ public enum OfferScenarioBuilder {
         let pensionIsTransfer = try pension.map { try isPensionTransfer(db: db, $0) } ?? false
         let offerStart = utc.date(byAdding: .month, value: spec.noticeGapMonths, to: spec.startMonth)!
         let salaryAnchor = salary.map { $0.anchorDay ?? utc.component(.day, from: $0.startDate) }
+        var bonus: (amount: Int, start: Date)?
+        if let payslips = offer.payslipsTakeHome, let month = spec.offer.bonusPayment.month {
+            let amount = payslips - 12 * offer.takeHomeMonthly
+            let start = (0..<12).lazy.map { utc.date(byAdding: .month, value: $0, to: offerStart)! }
+                .first { utc.component(.month, from: $0) == month }!
+            if amount > 0 { bonus = (amount, start) }
+        }
         return Plan(spec: spec, salary: salary, pension: pension, incomeCategoryId: categoryId,
                     groupId: salary?.groupId, accountId: salary?.accountId,
                     anchorDay: salaryAnchor == 1 ? nil : salaryAnchor,
-                    startMonth: spec.startMonth, offerStart: offerStart, takeHomeMonthly: offer.takeHomeMonthly,
+                    startMonth: spec.startMonth, offerStart: offerStart, takeHomeMonthly: offer.takeHomeMonthly, bonus: bonus,
                     pensionTransferMonthly: SalaryCalculator.roundHalfUp(offer.employeePension + offer.employerPension, 12),
                     employeePensionChangeMonthly: SalaryCalculator.roundHalfUp(offer.employeePension, 12)
                         - SalaryCalculator.roundHalfUp(current.employeePension, 12),
@@ -227,6 +240,7 @@ public enum OfferScenarioBuilder {
 
     private static let salaryNote = notePrefix + "salary"
     private static let pensionNote = notePrefix + "pension"
+    static let bonusNote = notePrefix + "bonus"
 
     // MARK: - Apply
 
@@ -241,6 +255,12 @@ public enum OfferScenarioBuilder {
         added.append(try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
                              accountId: plan.accountId, amount: plan.takeHomeMonthly, frequency: .monthly, start: plan.offerStart,
                              anchorDay: plan.anchorDay, note: salaryNote))
+        // A yearly bonus: its net, once a year in its month, beside the normal months' salary.
+        if let bonus = plan.bonus {
+            added.append(try add(db: db, scenarioId: scenarioId, categoryId: plan.incomeCategoryId, groupId: plan.groupId,
+                                 accountId: plan.accountId, amount: bonus.amount, frequency: .annually, start: bonus.start,
+                                 anchorDay: plan.anchorDay, note: bonusNote))
+        }
 
         // Pension: a transfer becomes the offer's contributions, an expense moves by the employee's change.
         if let pension = plan.pension, var copy = try copy(of: pension, db: db, scenarioId: scenarioId),
