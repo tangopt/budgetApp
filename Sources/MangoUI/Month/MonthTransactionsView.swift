@@ -159,7 +159,7 @@ public struct MonthTransactionsView: View {
                 Text(MonthCopy.range(model.range).figuresUnbroken)
                     .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
-                content
+                MonthTransactionsBody(model: model)
             }
             .padding(16)
         }
@@ -171,6 +171,14 @@ public struct MonthTransactionsView: View {
         }
         .modifier(MonthDetailSheet(model: quickEdit))
     }
+}
+
+/// A row's transactions, by day (the pushed list's and the iPad side panel's content).
+struct MonthTransactionsBody: View {
+    @ObservedObject var model: MonthTransactionsModel
+    @Environment(\.quickEdit) private var quickEdit
+
+    var body: some View { content }
 
     @ViewBuilder
     private var content: some View {
