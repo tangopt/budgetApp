@@ -266,11 +266,11 @@ final class SalaryCalculatorTests: XCTestCase {
         XCTAssertEqual(r.takeHomeAnnual, 4_535_740)
     }
 
-    func testWeeklyAndMonthly() {
-        // 25,119.60 / 12 = 2,093.30; / 52 = 483.0692… → 483.07
+    func testMonthly() {
+        // 25,119.60 / 12 = 2,093.30
         let r = calc(3_000_000)
         XCTAssertEqual(r.takeHomeMonthly, 209_330)
-        XCTAssertEqual(r.takeHomeWeekly, 48_307)
+        XCTAssertNil(r.bonusMonth, "no bonus, no bonus month")
         // Effective: (3,486 + 1,394.40) / 30,000 = 16.268% → 1 627 bp
         XCTAssertEqual(r.effectiveRateBP, 1_627)
     }

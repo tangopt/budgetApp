@@ -86,6 +86,13 @@ struct SalaryFormView: View {
             }
             row("Salary") { PoundsField(label: "Salary a year", pence: $0.grossAnnual) }
             row("Bonus") { BonusField(inputs: $0) }
+            row("Bonus paid") { inputs in
+                Picker("Bonus paid", selection: inputs.bonusPayment) {
+                    ForEach(BonusPayment.choices, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().frame(width: Self.column)
+                .disabled(inputs.wrappedValue.bonusPay == 0)
+            }
             row("Tax code") { inputs in
                 TextField("1257L", text: inputs.taxCode)
                     .multilineTextAlignment(.trailing).textFieldStyle(.roundedBorder).frame(width: 90)

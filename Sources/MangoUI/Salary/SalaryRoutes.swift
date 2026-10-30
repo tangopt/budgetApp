@@ -2,8 +2,9 @@ import SwiftUI
 import BudgetCore
 
 /// Step 13's snapshot routes: the salary simulator on iPhone (default size, `.xxxLarge`, `.accessibility3`) and on the
-/// iPad (inside the sidebar, at the four window sizes). A £52,000 offer against £40,000 with a Plan 2 loan and a 5%
-/// pension on the offer, so the strip shows a real difference and the results show their loan and pension lines.
+/// iPad (inside the sidebar, at the four window sizes). A £52,000 offer against £40,000 with a Plan 2 loan, a 5%
+/// pension and a 10% bonus paid in March on the offer, so the strip shows a real difference and the results show their
+/// loan, pension and bonus month lines.
 public enum SalaryRoutes {
     @MainActor
     static func demoModel(today: Date) -> SalaryComparisonViewModel {
@@ -13,6 +14,7 @@ public enum SalaryRoutes {
         offer.studentLoan = .plan2
         offer.pension = .percentOfGross(basisPoints: 500)
         offer.pensionMethod = .salarySacrifice
+        offer.bonusPercentBP = 1_000
         return SalaryComparisonViewModel(current: current, offer: offer)
     }
 

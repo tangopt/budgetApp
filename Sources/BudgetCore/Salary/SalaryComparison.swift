@@ -4,7 +4,7 @@ import Foundation
 public struct SalaryComparison: Equatable, Sendable {
     public var current: SalaryResult
     public var offer: SalaryResult
-    /// Offer take-home minus current, a month (negative when the offer pays less).
+    /// Offer take-home minus current in a normal month, without a yearly bonus (negative when the offer pays less).
     public var monthlyDifference: Int
     /// Offer take-home minus current, a year.
     public var annualDifference: Int
@@ -15,9 +15,21 @@ public struct SalaryComparison: Equatable, Sendable {
         let annual = offer.takeHomeAnnual - current.takeHomeAnnual
         return SalaryComparison(
             current: current, offer: offer,
-            monthlyDifference: SalaryCalculator.roundHalfUp(annual, 12),
+            monthlyDifference: offer.takeHomeMonthly - current.takeHomeMonthly,
             annualDifference: annual,
             keepPerExtraPound: offer.keepPerExtraPoundBP)
+    }
+}
+
+extension SalaryComparison {
+    /// "Bonus month (Mar)": the month of the yearly bonuses among `results` ("Mar/Dec" when they differ), or plain
+    /// "Bonus month" when none has one.
+    public static func bonusMonthLabel(_ results: [SalaryResult]) -> String {
+        let months = Set(results.compactMap { $0.bonusMonth == nil ? nil : $0.inputs.bonusPayment.month })
+        guard !months.isEmpty else { return "Bonus month" }
+        // In tax-year order, April first.
+        let names = months.sorted { SalaryCalculator.taxYearMonth($0) < SalaryCalculator.taxYearMonth($1) }.map(BonusPayment.shortMonth)
+        return "Bonus month (\(names.joined(separator: "/")))"
     }
 }
 

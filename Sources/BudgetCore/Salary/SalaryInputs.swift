@@ -37,6 +37,38 @@ public enum StudentLoanPlan: String, Codable, Equatable, Sendable, CaseIterable 
     case plan5
 }
 
+/// When the bonus is paid.
+public enum BonusPayment: Codable, Equatable, Hashable, Sendable {
+    /// In one payslip a year: `month` is the calendar month, 1 (January) to 12.
+    case yearly(month: Int)
+    /// A twelfth in every payslip.
+    case monthly
+
+    /// What saved inputs from before this existed mean, and a new salary's default: once a year in March.
+    public static let standard = BonusPayment.yearly(month: 3)
+
+    /// The calendar month of a yearly bonus (clamped to 1–12); nil when it is spread monthly.
+    public var month: Int? {
+        if case .yearly(let month) = self { return min(12, max(1, month)) }
+        return nil
+    }
+
+    /// What the "Bonus paid" picker offers: each month, then once a year in each calendar month.
+    public static let choices: [BonusPayment] = [.monthly] + (1...12).map { .yearly(month: $0) }
+
+    /// "Each month", or "In March".
+    public var label: String {
+        guard let month else { return "Each month" }
+        return "In " + Self.monthNames[month - 1]
+    }
+
+    /// "Mar".
+    public static func shortMonth(_ month: Int) -> String { String(monthNames[min(12, max(1, month)) - 1].prefix(3)) }
+
+    private static let monthNames = ["January", "February", "March", "April", "May", "June", "July", "August",
+                                     "September", "October", "November", "December"]
+}
+
 /// What the person tells the salary simulator. Amounts are pence a year.
 public struct SalaryInputs: Codable, Equatable, Sendable {
     public var grossAnnual: Int
@@ -44,6 +76,8 @@ public struct SalaryInputs: Codable, Equatable, Sendable {
     /// The bonus as a share of `grossAnnual` (basis points), when it is given as a percentage; nil = `bonusAnnual` is
     /// the bonus (what every saved input before this existed means).
     public var bonusPercentBP: Int?
+    /// When the bonus is paid; the year's figures are the same either way, the months differ.
+    public var bonusPayment: BonusPayment
     /// The calendar year the tax year starts in (2025 = 2025/26).
     public var taxYearStart: Int
     public var region: SalaryRegion
@@ -59,8 +93,9 @@ public struct SalaryInputs: Codable, Equatable, Sendable {
                 taxCode: String = "1257L", pension: PensionAmount = .percentOfGross(basisPoints: 0),
                 pensionMethod: PensionMethod = .netPay, employerPension: PensionAmount = .percentOfGross(basisPoints: 0),
                 studentLoan: StudentLoanPlan? = nil, postgraduateLoan: Bool = false, benefitsInKindAnnual: Int = 0,
-                bonusPercentBP: Int? = nil) {
+                bonusPercentBP: Int? = nil, bonusPayment: BonusPayment = .standard) {
         self.bonusPercentBP = bonusPercentBP
+        self.bonusPayment = bonusPayment
         self.grossAnnual = grossAnnual
         self.bonusAnnual = bonusAnnual
         self.taxYearStart = taxYearStart
@@ -76,6 +111,29 @@ public struct SalaryInputs: Codable, Equatable, Sendable {
 }
 
 extension SalaryInputs {
+    private enum CodingKeys: String, CodingKey {
+        case grossAnnual, bonusAnnual, bonusPercentBP, bonusPayment, taxYearStart, region, taxCode, pension, pensionMethod,
+             employerPension, studentLoan, postgraduateLoan, benefitsInKindAnnual
+    }
+
+    /// Inputs saved before `bonusPayment` existed decode as a bonus paid once a year in March.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(grossAnnual: try c.decode(Int.self, forKey: .grossAnnual),
+                  bonusAnnual: try c.decode(Int.self, forKey: .bonusAnnual),
+                  taxYearStart: try c.decode(Int.self, forKey: .taxYearStart),
+                  region: try c.decode(SalaryRegion.self, forKey: .region),
+                  taxCode: try c.decode(String.self, forKey: .taxCode),
+                  pension: try c.decode(PensionAmount.self, forKey: .pension),
+                  pensionMethod: try c.decode(PensionMethod.self, forKey: .pensionMethod),
+                  employerPension: try c.decode(PensionAmount.self, forKey: .employerPension),
+                  studentLoan: try c.decodeIfPresent(StudentLoanPlan.self, forKey: .studentLoan),
+                  postgraduateLoan: try c.decode(Bool.self, forKey: .postgraduateLoan),
+                  benefitsInKindAnnual: try c.decode(Int.self, forKey: .benefitsInKindAnnual),
+                  bonusPercentBP: try c.decodeIfPresent(Int.self, forKey: .bonusPercentBP),
+                  bonusPayment: try c.decodeIfPresent(BonusPayment.self, forKey: .bonusPayment) ?? .standard)
+    }
+
     /// The bonus the calculation uses (pence a year, never negative): the percentage of salary when one is set, else
     /// `bonusAnnual`.
     public var bonusPay: Int {
@@ -100,6 +158,29 @@ public struct BandAmount: Codable, Equatable, Sendable {
     }
 }
 
+/// One month's pay and what comes off it, on the PAYE basis. Amounts pence.
+public struct SalaryPayslip: Codable, Equatable, Sendable {
+    /// Salary (and bonus) paid in the month, before any deduction.
+    public var pay: Int
+    public var incomeTax: Int
+    public var employeeNI: Int
+    public var studentLoan: Int
+    public var postgraduateLoan: Int
+    /// What leaves pay for the pension (80% of the gross contribution for relief at source).
+    public var employeePension: Int
+    public var takeHome: Int
+
+    public init(pay: Int, incomeTax: Int, employeeNI: Int, studentLoan: Int, postgraduateLoan: Int, employeePension: Int, takeHome: Int) {
+        self.pay = pay
+        self.incomeTax = incomeTax
+        self.employeeNI = employeeNI
+        self.studentLoan = studentLoan
+        self.postgraduateLoan = postgraduateLoan
+        self.employeePension = employeePension
+        self.takeHome = takeHome
+    }
+}
+
 /// The yearly result of one salary. All amounts pence; rates basis points.
 public struct SalaryResult: Codable, Equatable, Sendable {
     public var inputs: SalaryInputs
@@ -120,8 +201,16 @@ public struct SalaryResult: Codable, Equatable, Sendable {
     /// The part of `incomeTax` caused by benefits in kind (already included in it).
     public var benefitsInKindTax: Int
     public var takeHomeAnnual: Int
+    /// A month without the bonus. With a yearly bonus it's the salary-only payslip (`normalMonth`'s take-home); with
+    /// the bonus spread monthly, or none, a twelfth of `takeHomeAnnual`.
     public var takeHomeMonthly: Int
-    public var takeHomeWeekly: Int
+    /// With a yearly bonus: a payslip without it (the months before the bonus month). nil otherwise.
+    public var normalMonth: SalaryPayslip?
+    /// With a yearly bonus: the payslip of the month it is paid in, salary plus bonus on the PAYE basis. nil otherwise.
+    public var bonusMonth: SalaryPayslip?
+    /// With a yearly bonus: the take-home of the tax year's 12 payslips added up. It differs from `takeHomeAnnual`
+    /// because payroll works NI and loans out month by month (`SalaryCalculator.payslips`). nil otherwise.
+    public var payslipsTakeHome: Int?
     /// Income tax, NI and loans as a share of gross pay (salary + bonus); 0 when there is no pay.
     public var effectiveRateBP: Int
     /// How much of an extra £100 gross does not reach take-home, in basis points.
