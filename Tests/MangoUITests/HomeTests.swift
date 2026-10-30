@@ -210,17 +210,4 @@ final class HomeTests: XCTestCase {
         guard case let .loaded(summary) = model.state else { return XCTFail() }
         XCTAssertFalse(summary.upcoming.isEmpty)
     }
-
-    // MARK: Expense colour
-
-    /// Expense figures stay legible in light mode as income does: at least 4.5:1 on a card; dark unchanged.
-    func testLightExpenseReachesFourPointFiveToOneOnACardAndDarkIsUnchanged() {
-        for palette in ThemePalette.all {
-            let light = PhoneTheme.expenseToken(palette, .light)
-            let card = PhoneTheme.opaqueSurface(palette, .light)
-            XCTAssertGreaterThanOrEqual(ColorMath.contrastRatio(light, card), 4.5, palette.id)
-            XCTAssertEqual(PhoneTheme.expenseToken(palette, .dark), palette.dark.expense, palette.id)
-        }
-        XCTAssertNotEqual(PhoneTheme.expenseToken(ThemePalette.named("classic"), .light), ThemePalette.named("classic").light.expense)
-    }
 }

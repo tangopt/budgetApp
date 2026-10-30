@@ -87,7 +87,7 @@ struct PadAccountsView: View {
     private func list(split: Bool) -> some View {
         ScrollView {
             // Not lazy: a household has a dozen accounts or so, and the snapshot probe measures every one.
-            VStack(alignment: .leading, spacing: PadSpacing.m) {
+            VStack(alignment: .leading, spacing: MangoSpacing.m) {
                 PadWriteNotices(write: write)
                 content(split: split)
             }

@@ -21,7 +21,7 @@ struct PadEvidenceView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     header
                     if model.areas.isEmpty {
@@ -76,7 +76,7 @@ struct PadEvidenceView: View {
     private var progressLine: some View {
         let progress = model.progress
         return HStack(spacing: 10) {
-            ProgressView(value: progress.fractionDone).frame(maxWidth: 160).tint(.green)
+            ProgressView(value: progress.fractionDone).frame(maxWidth: 160).tint(theme.income)
             Text("\(progress.done) of \(progress.total) collected").figureText().mangoFont(.subheadline, weight: .semibold)
         }
         .accessibilityElement(children: .combine)
@@ -139,8 +139,8 @@ struct PadEvidenceView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
+        .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(isSelected ? theme.accent.opacity(0.08) : theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).stroke(isSelected ? theme.accent : .clear, lineWidth: 2))
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("pad-evidence-\(item.id)")
@@ -172,7 +172,7 @@ struct PadEvidenceView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
+                    .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
                     .accessibilityElement(children: .combine)
                 }
             }
@@ -380,15 +380,16 @@ struct PadFlowRow<Content: View>: View {
 /// An item's status as an icon: done, not available, or missing.
 struct PadEvidenceStatusIcon: View {
     let status: MissingEvidence.Status
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         switch status {
         case .satisfied:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Done")
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.income).accessibilityLabel("Done")
         case .waived:
             Image(systemName: "minus.circle.fill").foregroundStyle(.secondary).accessibilityLabel("Not available")
         case .missing:
-            Image(systemName: "circle").foregroundStyle(.orange).accessibilityLabel("Missing")
+            Image(systemName: "circle").foregroundStyle(theme.warning).accessibilityLabel("Missing")
         }
     }
 }

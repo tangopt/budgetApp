@@ -26,7 +26,7 @@ struct PropertyMonthWidgetEntryView: View {
             if let figures = snapshot.propertyMonths?.first {
                 PropertyMonthWidgetView(figures: figures, size: MangoWidgetSize(family), redacted: WidgetPresentation.isRedacted(snapshot, isLockScreen: false))
             } else {
-                Text("No property this month").font(.footnote).multilineTextAlignment(.center).minimumScaleFactor(0.8)
+                Text("No property this month").mangoFont(.footnote).multilineTextAlignment(.center)
             }
         } else {
             EmptyWidgetView()

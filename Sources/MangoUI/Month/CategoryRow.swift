@@ -7,8 +7,9 @@ import UIKit
 import AppKit
 #endif
 
-/// A category's round badge, as the Mac's `CategoryBadge`: the type's money colour with the category's icon
-/// (`CategoryIcons`) in white, or the type's generic symbol when it has none (or this system can't draw it).
+/// A category's round badge: the category's icon (`CategoryIcons`), or its type's generic symbol when it has none (or
+/// this system can't draw it), on a neutral disc (design review I2: a red disc for every cost read as a problem).
+/// Colour is kept for status (an over-plan bar, the uncategorised badge).
 struct CategoryBadge: View {
     let category: Category
     @Environment(\.phoneTheme) private var theme
@@ -18,22 +19,13 @@ struct CategoryBadge: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(color)
+            Circle().fill(theme.surface2)
             Image(systemName: Self.symbol(category))
                 .font(.system(size: diameter * 0.45, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(theme.textSecondary)
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
-    }
-
-    private var color: Color {
-        switch category.type {
-        case .expense: theme.expense
-        case .income: theme.income
-        case .transfer: theme.transfer
-        case .adjustment: theme.neutralMoney
-        }
     }
 
     /// The category's chosen icon when the system has it, else its type's (the Mac's `badgeSymbol`).

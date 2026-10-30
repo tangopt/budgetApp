@@ -15,7 +15,7 @@ struct PadTenancyDetailView: View {
     private var currency: Currency { model.currency }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PadSpacing.s) {
+        VStack(alignment: .leading, spacing: MangoSpacing.s) {
             header
             PadRefusalBanner(message: write.message(for: PadTenanciesModel.tenancyRow(tenancy.id)))
             PadGrid(minimumColumnWidth: 190, maximumColumns: 4) {

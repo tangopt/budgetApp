@@ -13,7 +13,7 @@ struct PadMoneyChartsContent: View {
     private static let utc = TimeZone(identifier: "UTC")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PadSpacing.section) {
+        VStack(alignment: .leading, spacing: MangoSpacing.section) {
             if let summary = model.summary {
                 figures
                 cashFlow(summary)

@@ -1,24 +1,10 @@
 import SwiftUI
 
-/// The iPad's layout system (the 2026-10-28 design pass): one spacing scale, one page scaffold (`padPage`: the same
-/// large title, subtitle and trailing actions at the same inset from the sidebar on every screen), one content frame
-/// (`padPageContent`), equal-height tile rows (`PadTileGrid`, `PadTile`), and one section header (`PadSectionHeader`).
+/// The iPad's layout system (the 2026-10-28 design pass): the shared spacing scale and radii (`MangoSpacing`,
+/// `MangoRadius`), one page scaffold (`padPage`: the same large title, subtitle and trailing actions at the same inset
+/// from the sidebar on every screen), one content frame (`padPageContent`), equal-height tile rows (`PadTileGrid`,
+/// `PadTile`), and one section header (`PadSectionHeader`).
 /// Every iPad screen uses these instead of its own paddings, so titles and content line up from page to page.
-enum PadSpacing {
-    /// 4 · 8 · 12 · 16 · 24 · 32: the only gaps the iPad screens use.
-    static let xxs: CGFloat = 4
-    static let xs: CGFloat = 8
-    static let s: CGFloat = 12
-    static let m: CGFloat = 16
-    static let l: CGFloat = 24
-    static let xl: CGFloat = 32
-
-    /// Between a page's sections (header and cards, a grid and the list under it).
-    static let section: CGFloat = l
-    /// Between tiles and cards in a grid or a row.
-    static let tile: CGFloat = s
-}
-
 enum PadMetrics {
     /// The leading and trailing inset of every page's title and content: the same distance from the sidebar on every
     /// screen. Narrow pages (a document panel open beside them) use `compactPageInset`.
@@ -29,10 +15,6 @@ enum PadMetrics {
     /// The widest a page's content (and title row) grows: the whole detail column (round 2: a cap left an empty band
     /// on the right). A block of running text caps itself.
     static let contentMaxWidth: CGFloat = .infinity
-    /// Every card's and tile's corner radius.
-    static let cardRadius: CGFloat = 16
-    /// Every card's and tile's inner padding.
-    static let cardPadding: CGFloat = 16
 
     static func inset(forWidth width: CGFloat) -> CGFloat { width < compactWidth ? compactPageInset : pageInset }
 }
@@ -71,7 +53,7 @@ struct PadPageHeader<Actions: View>: View {
     @Environment(\.padPageInset) private var inset
 
     var body: some View {
-        HStack(alignment: .center, spacing: PadSpacing.s) {
+        HStack(alignment: .center, spacing: MangoSpacing.s) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .mangoFont(.largeTitle, weight: .bold)
@@ -84,14 +66,14 @@ struct PadPageHeader<Actions: View>: View {
                 }
             }
             .layoutPriority(1)
-            Spacer(minLength: PadSpacing.s)
-            HStack(spacing: PadSpacing.xs) { actions }
+            Spacer(minLength: MangoSpacing.s)
+            HStack(spacing: MangoSpacing.xs) { actions }
         }
         .frame(minHeight: 44)
         .frame(maxWidth: PadMetrics.contentMaxWidth, alignment: .leading)
         .padding(.horizontal, inset)
-        .padding(.top, PadSpacing.l)
-        .padding(.bottom, PadSpacing.s)
+        .padding(.top, MangoSpacing.l)
+        .padding(.bottom, MangoSpacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.background)
     }
@@ -160,7 +142,7 @@ extension View {
 extension View {
     /// A side column's content (Calendar's and Checks' detail card beside the page): the same top as the page content.
     func padSidePanelContent() -> some View {
-        padding(.horizontal, PadSpacing.l).padding(.top, PadSpacing.xs).padding(.bottom, PadSpacing.xl)
+        padding(.horizontal, MangoSpacing.l).padding(.top, MangoSpacing.xs).padding(.bottom, MangoSpacing.xl)
     }
 }
 
@@ -171,8 +153,8 @@ private struct PadPageContent: ViewModifier {
         content
             .frame(maxWidth: PadMetrics.contentMaxWidth, alignment: .leading)
             .padding(.horizontal, inset)
-            .padding(.top, PadSpacing.xs)
-            .padding(.bottom, PadSpacing.xl)
+            .padding(.top, MangoSpacing.xs)
+            .padding(.bottom, MangoSpacing.xl)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -186,7 +168,7 @@ struct PadSearchField: View {
     let prompt: String
 
     var body: some View {
-        HStack(spacing: PadSpacing.xs) {
+        HStack(spacing: MangoSpacing.xs) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
@@ -202,7 +184,7 @@ struct PadSearchField: View {
             }
         }
         .mangoFont(.body)
-        .padding(.horizontal, PadSpacing.s)
+        .padding(.horizontal, MangoSpacing.s)
         .frame(minHeight: 44)
         .frame(minWidth: 200, idealWidth: 300, maxWidth: 300)
         .background(Capsule().fill(Color.secondary.opacity(0.12)))
@@ -222,10 +204,10 @@ struct PadSectionHeader<Accessory: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: PadSpacing.xs) {
+        HStack(alignment: .center, spacing: MangoSpacing.xs) {
             Text(title).mangoFont(.title3, weight: .semibold).lineLimit(1).truncationMode(.middle)
                 .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: PadSpacing.xs)
+            Spacer(minLength: MangoSpacing.xs)
             accessory
         }
     }
@@ -241,7 +223,7 @@ extension View {
 
     /// The iPad card surface: the standard padding, filling its width (and, in a `PadTileGrid` row, the row's height),
     /// on the theme's surface with the standard corner radius.
-    func padCardSurface(padding: CGFloat = PadMetrics.cardPadding) -> some View {
+    func padCardSurface(padding: CGFloat = MangoSpacing.cardPadding) -> some View {
         modifier(PadCardSurface(padding: padding))
     }
 }
@@ -254,7 +236,7 @@ private struct PadCardSurface: ViewModifier {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: PadMetrics.cardRadius, style: .continuous).fill(theme.surface))
+            .background(RoundedRectangle(cornerRadius: MangoRadius.card, style: .continuous).fill(theme.surface))
     }
 }
 
@@ -307,7 +289,7 @@ struct PadGrid<Content: View>: View {
 struct PadTileGrid: Layout {
     var minimumColumnWidth: CGFloat = 190
     var maximumColumns: Int = .max
-    var spacing: CGFloat = PadSpacing.tile
+    var spacing: CGFloat = MangoSpacing.tile
     /// Evens the rows out (`columns(for:count:)`); off for long lists, where the last row may be short.
     var balanced = true
 

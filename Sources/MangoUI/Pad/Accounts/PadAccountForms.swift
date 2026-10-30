@@ -6,6 +6,7 @@ import BudgetCore
 /// writes nothing. A refusal shows at the top and the form stays.
 struct PadAddAccountSheet: View {
     @ObservedObject var model: PadAccountFormModel
+    @Environment(\.phoneTheme) private var theme
     var onSaved: (Int64?) -> Void = { _ in }
 
     var body: some View {
@@ -38,7 +39,7 @@ struct PadAddAccountSheet: View {
                         .accessibilityIdentifier("account-opening-balance")
                 }
                 .frame(minHeight: 44)
-                if let error = model.balanceError { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
+                if let error = model.balanceError { Text(error).mangoFont(.footnote).foregroundStyle(theme.expense) }
                 if !model.balanceText.trimmingCharacters(in: .whitespaces).isEmpty {
                     DatePicker("As of", selection: $model.asOf, in: ...Date(), displayedComponents: .date).frame(minHeight: 44)
                 }
@@ -133,6 +134,7 @@ private struct PadAccountFormScaffold<Content: View>: View {
 
 private struct PadAccountNameField: View {
     @ObservedObject var model: PadAccountFormModel
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -141,7 +143,7 @@ private struct PadAccountNameField: View {
             }
             .frame(minHeight: 44)
                 .accessibilityIdentifier("account-name")
-            if let error = model.nameError { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
+            if let error = model.nameError { Text(error).mangoFont(.footnote).foregroundStyle(theme.expense) }
         }
     }
 }
@@ -160,6 +162,7 @@ private struct PadAccountKindPicker: View {
 /// Alias, the region and the region's bank fields; a field's problem shows under it once it is wrong.
 private struct PadAccountBankSection: View {
     @ObservedObject var model: PadAccountFormModel
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         Section {
@@ -189,7 +192,7 @@ private struct PadAccountBankSection: View {
                     #endif
             }
             .frame(minHeight: 44)
-            if let error = model.detailError(field) { Text(error).mangoFont(.footnote).foregroundStyle(.red) }
+            if let error = model.detailError(field) { Text(error).mangoFont(.footnote).foregroundStyle(theme.expense) }
         }
     }
 
@@ -218,6 +221,7 @@ private struct PadAccountBankSection: View {
 /// its owner). Lowering says what it stops and how many records move; a blocker says why Hidden can't be saved yet.
 private struct PadAccountSharingSection: View {
     @ObservedObject var model: PadAccountFormModel
+    @Environment(\.phoneTheme) private var theme
 
     private struct PreviewKey: Equatable {
         var joint: Bool
@@ -252,7 +256,7 @@ private struct PadAccountSharingSection: View {
             if model.preview?.isBlocked == true {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(SharingCopy.blockedNote).mangoFont(.footnote).foregroundStyle(.secondary)
-                    ForEach(model.blockerLines(), id: \.self) { Text($0).mangoFont(.footnote).foregroundStyle(.red) }
+                    ForEach(model.blockerLines(), id: \.self) { Text($0).mangoFont(.footnote).foregroundStyle(theme.expense) }
                 }
             }
             if model.context.sharing?.isConfirmed == false, model.sharingChange != nil {

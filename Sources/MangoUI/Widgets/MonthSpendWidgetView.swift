@@ -32,19 +32,28 @@ public struct MonthSpendWidgetView: View {
         self.redacted = redacted
     }
 
+    @Environment(\.phoneTheme) private var theme
+
     private var overPace: Bool { figures.overPaceMinorUnits >= 100 }
-    private var paceColor: Color { overPace ? .orange : .green }
+    private var paceColor: Color { overPace ? theme.warning : theme.income }
+    /// The ring and the spending line: the accent, or the warning colour over pace.
+    private var spendColor: Color { overPace ? theme.warning : Color.accentColor }
 
     public var body: some View {
-        switch size {
-        case .small: small
-        case .medium: medium
-        case .large: large
+        // Figures keep their size rather than shrink (I13), so in a tile of fixed size the text grows to the largest
+        // non-accessibility size at most.
+        Group {
+            switch size {
+            case .small: small
+            case .medium: medium
+            case .large: large
+            }
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 
     private var title: some View {
-        Text("Month spend").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Text("Month spend").mangoFont(.caption).foregroundStyle(.secondary).lineLimit(1)
     }
 
     private func money(_ minorUnits: Int) -> String {
@@ -59,18 +68,17 @@ public struct MonthSpendWidgetView: View {
             ZStack {
                 Circle().stroke(.quaternary, lineWidth: 8)
                 Circle().trim(from: 0, to: min(1, figures.spentFraction))
-                    .stroke(overPace ? Color.orange : Color.accentColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                    .stroke(spendColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 // The pace: a tick where the budget says the month stands today.
                 Capsule().fill(.primary).frame(width: 2.5, height: 12).offset(y: -35)
                     .rotationEffect(.degrees(360 * min(1, figures.elapsedFraction)))
-                Text(money(figures.spentMinorUnits)).font(.subheadline.weight(.semibold))
-                    .figureText(.shrink(minimumScale: 0.5)).frame(width: 50)
+                Text(money(figures.spentMinorUnits)).mangoFont(MangoType.footnote.weight(.semibold).figure())
             }
             .frame(width: 78, height: 78)
             .privacySensitive(redacted)
-            Text(WidgetPresentation.paceText(figures)).font(.caption2.weight(.medium)).foregroundStyle(paceColor)
-                .figureText(.shrink(minimumScale: 0.6)).privacySensitive(redacted)
+            Text(WidgetPresentation.paceText(figures)).mangoFont(PhoneTextStyle.caption2.weight(.medium).figure())
+                .foregroundStyle(paceColor).privacySensitive(redacted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -81,13 +89,12 @@ public struct MonthSpendWidgetView: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 title
-                Text(money(figures.spentMinorUnits)).font(.title2.weight(.semibold))
-                    .figureText(.shrink(minimumScale: 0.5)).privacySensitive(redacted)
-                Text("of \(money(figures.budgetMinorUnits))").font(.caption).foregroundStyle(.secondary)
-                    .figureText(.shrink(minimumScale: 0.6)).privacySensitive(redacted)
+                Text(money(figures.spentMinorUnits)).mangoFont(.figureL).privacySensitive(redacted)
+                Text("of \(money(figures.budgetMinorUnits))").mangoFont(PhoneTextStyle.caption.figure()).foregroundStyle(.secondary)
+                    .privacySensitive(redacted)
                 Spacer(minLength: 0)
-                Text(WidgetPresentation.paceText(figures)).font(.caption.weight(.medium)).foregroundStyle(paceColor)
-                    .figureText(.shrink(minimumScale: 0.6)).privacySensitive(redacted)
+                Text(WidgetPresentation.paceText(figures)).mangoFont(PhoneTextStyle.caption.weight(.medium).figure())
+                    .foregroundStyle(paceColor).privacySensitive(redacted)
             }
             .frame(width: 112, alignment: .leading)
             chart.privacySensitive(redacted)
@@ -106,14 +113,14 @@ public struct MonthSpendWidgetView: View {
             }
             ForEach(spentPoints, id: \.0) { point in
                 AreaMark(x: .value("Day", point.0), yStart: .value("Floor", 0), yEnd: .value("Spent", point.1))
-                    .foregroundStyle(LinearGradient(colors: [(overPace ? Color.orange : Color.accentColor).opacity(0.3), .clear], startPoint: .top, endPoint: .bottom))
+                    .foregroundStyle(LinearGradient(colors: [spendColor.opacity(0.3), .clear], startPoint: .top, endPoint: .bottom))
                 LineMark(x: .value("Day", point.0), y: .value("Spent", point.1), series: .value("Series", "Spent"))
-                    .foregroundStyle(overPace ? Color.orange : Color.accentColor)
+                    .foregroundStyle(spendColor)
                     .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             }
             if let last = spentPoints.last {
                 PointMark(x: .value("Day", last.0), y: .value("Spent", last.1))
-                    .foregroundStyle(overPace ? Color.orange : Color.accentColor).symbolSize(36)
+                    .foregroundStyle(spendColor).symbolSize(36)
             }
         }
         .chartXScale(domain: 0...days)
@@ -130,9 +137,9 @@ public struct MonthSpendWidgetView: View {
         VStack(alignment: .leading, spacing: 10) {
             medium.frame(height: 124)
             Divider()
-            Text("Over budget").font(.caption).foregroundStyle(.secondary)
+            Text("Over budget").mangoFont(.caption).foregroundStyle(.secondary)
             if figures.overBudget.isEmpty {
-                Text("Nothing over budget").font(.footnote).foregroundStyle(.secondary)
+                Text("Nothing over budget").mangoFont(.footnote).foregroundStyle(.secondary)
             } else {
                 ForEach(Array(figures.overBudget.enumerated()), id: \.offset) { _, row in overRow(row) }
             }
@@ -143,14 +150,14 @@ public struct MonthSpendWidgetView: View {
     private func overRow(_ row: MonthSpendFigures.CategoryOver) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
-                Text(row.name).font(.subheadline).lineLimit(1)
-                Text("\(money(row.spentMinorUnits)) of \(money(row.budgetMinorUnits))").font(.caption2).foregroundStyle(.secondary)
-                    .figureText(.shrink(minimumScale: 0.6)).privacySensitive(redacted)
+                Text(row.name).mangoFont(.subheadline).lineLimit(1).truncationMode(.middle)
+                Text("\(money(row.spentMinorUnits)) of \(money(row.budgetMinorUnits))").mangoFont(PhoneTextStyle.caption2.figure())
+                    .foregroundStyle(.secondary).privacySensitive(redacted)
             }
             Spacer(minLength: 4)
             Text(WidgetPresentation.overText(row.overByMinorUnits, currencyCode: figures.currencyCode))
-                .font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
-                .figureText(.shrink(minimumScale: 0.6)).privacySensitive(redacted)
+                .mangoFont(PhoneTextStyle.subheadline.weight(.semibold).figure()).foregroundStyle(theme.warning)
+                .privacySensitive(redacted)
         }
     }
 }

@@ -121,16 +121,12 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(PhoneTheme.named("no-such-theme").id, "classic")
     }
 
-    /// Income figures stay legible in light mode: at least 4.5:1 on a card (ruling, fix round 1); dark keeps the
-    /// theme's own income colour.
-    func testLightIncomeReachesFourPointFiveToOneOnACardAndDarkIsUnchanged() {
+    /// The phone draws each theme's roles (BudgetCore's `ThemeRolesTests` checks their contrast).
+    func testPhoneThemeCarriesThePalettesRoles() {
         for palette in ThemePalette.all {
-            let light = PhoneTheme.incomeToken(palette, .light)
-            let card = PhoneTheme.opaqueSurface(palette, .light)
-            XCTAssertGreaterThanOrEqual(ColorMath.contrastRatio(light, card), 4.5, palette.id)
-            XCTAssertEqual(PhoneTheme.incomeToken(palette, .dark), palette.dark.income, palette.id)
+            let theme = PhoneTheme(palette)
+            XCTAssertEqual(theme.roles(.light), palette.roles(.light), palette.id)
+            XCTAssertEqual(theme.roles(.dark), palette.roles(.dark), palette.id)
         }
-        // Classic's system green (about 2.2:1 on white) is darkened, not kept.
-        XCTAssertNotEqual(PhoneTheme.incomeToken(ThemePalette.named("classic"), .light), ThemePalette.named("classic").light.income)
     }
 }

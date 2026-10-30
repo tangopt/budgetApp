@@ -46,7 +46,7 @@ struct PadDocumentsView: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 520, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, inset).padding(.top, PadSpacing.xs)
+            .padding(.horizontal, inset).padding(.top, MangoSpacing.xs)
             let groups = model.groups
             if groups.isEmpty {
                 EmptyState(symbol: "folder", title: model.all.isEmpty ? "No documents" : "Nothing matches",
@@ -68,7 +68,7 @@ struct PadDocumentsView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .contentMargins(.horizontal, inset - PadSpacing.m, for: .scrollContent)
+                .contentMargins(.horizontal, inset - MangoSpacing.m, for: .scrollContent)
             }
         }
     }
@@ -133,12 +133,13 @@ struct PadKindSheet: View {
     let save: (DocumentKindRef) async -> Bool
     @State private var kind: DocumentKindRef?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         NavigationStack {
             Form {
                 if let warning {
-                    Section { Label(warning, systemImage: "link").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                    Section { Label(warning, systemImage: "link").foregroundStyle(theme.warning).fixedSize(horizontal: false, vertical: true) }
                 }
                 Section {
                     Picker("Kind", selection: Binding(get: { kind ?? editor.kind }, set: { kind = $0 })) {

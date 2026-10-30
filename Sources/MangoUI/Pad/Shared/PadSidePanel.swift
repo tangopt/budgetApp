@@ -63,9 +63,9 @@ struct PadSidePanel<Actions: View, Content: View>: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.m) { content }
+                VStack(alignment: .leading, spacing: MangoSpacing.m) { content }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(PadSpacing.m)
+                    .padding(MangoSpacing.m)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,7 +73,7 @@ struct PadSidePanel<Actions: View, Content: View>: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: PadSpacing.xxs) {
+        HStack(alignment: .center, spacing: MangoSpacing.xxs) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).mangoFont(.headline).lineLimit(2).truncationMode(.middle)
                     .accessibilityAddTraits(.isHeader)
@@ -86,8 +86,8 @@ struct PadSidePanel<Actions: View, Content: View>: View {
             actions
             PadIconButton(systemImage: "xmark", label: "Close", action: onClose)
         }
-        .padding(.leading, PadSpacing.m).padding(.trailing, PadSpacing.xxs)
-        .padding(.vertical, PadSpacing.xxs)
+        .padding(.leading, MangoSpacing.m).padding(.trailing, MangoSpacing.xxs)
+        .padding(.vertical, MangoSpacing.xxs)
     }
 }
 
@@ -106,7 +106,7 @@ struct PadIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .mangoFont(.body, weight: .semibold)
-                .foregroundStyle(destructive ? Color.red : (prominent ? theme.accent : Color.secondary))
+                .foregroundStyle(destructive ? theme.expense : (prominent ? theme.accent : Color.secondary))
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .opacity(isEnabled ? 1 : 0.4)

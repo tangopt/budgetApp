@@ -31,10 +31,13 @@ struct MangoFontContext: Equatable {
 public struct PhoneTextStyle: Hashable, Sendable {
     public var style: Font.TextStyle
     public var weight: Font.Weight?
+    /// A figure (design review §3.2): tabular digits, one line at its natural width, never scaled down.
+    public var isFigure: Bool
 
-    public init(_ style: Font.TextStyle, weight: Font.Weight? = nil) {
+    public init(_ style: Font.TextStyle, weight: Font.Weight? = nil, isFigure: Bool = false) {
         self.style = style
         self.weight = weight
+        self.isFigure = isFigure
     }
 
     public static let largeTitle = PhoneTextStyle(.largeTitle)
@@ -49,8 +52,52 @@ public struct PhoneTextStyle: Hashable, Sendable {
     public static let caption = PhoneTextStyle(.caption)
     public static let caption2 = PhoneTextStyle(.caption2)
 
-    public func weight(_ weight: Font.Weight) -> PhoneTextStyle { PhoneTextStyle(style, weight: weight) }
+    /// A figure at body size: `.mangoFont(.figure)`.
+    public static let figure = PhoneTextStyle(.body, isFigure: true)
+    /// The hero figure (Left to spend, an account's balance): 34 pt bold, tabular.
+    public static let figureXL = MangoType.figureXL
+    /// A tile's figure: 22 pt semibold, tabular.
+    public static let figureL = MangoType.figureL
+
+    public func weight(_ weight: Font.Weight) -> PhoneTextStyle { PhoneTextStyle(style, weight: weight, isFigure: isFigure) }
     public func bold() -> PhoneTextStyle { weight(.bold) }
+    /// The same style drawn as a figure (`.mangoFont(.footnote.figure())`).
+    public func figure() -> PhoneTextStyle { PhoneTextStyle(style, weight: weight, isFigure: true) }
+}
+
+/// The type scale (design review 2026-10-28 §3.2): the only styles the iPhone, iPad and widgets draw text in, all
+/// through `mangoFont`, so they follow Dynamic Type and the chosen typeface. Sizes and leading are iOS's defaults for
+/// each text style at the default Dynamic Type size (`Font.custom(_:size:relativeTo:)` scales from the same sizes); the
+/// weights are the scale's. Caption is the floor: nothing is drawn smaller.
+public enum MangoType {
+    /// Page titles: 34/41 bold.
+    public static let largeTitle = PhoneTextStyle(.largeTitle, weight: .bold)
+    /// The hero figure: 34 bold, tabular.
+    public static let figureXL = PhoneTextStyle(.largeTitle, weight: .bold, isFigure: true)
+    /// Sheet and panel titles on the iPhone: 22/28 bold.
+    public static let title2 = PhoneTextStyle(.title2, weight: .bold)
+    /// Section headers: 20/25 semibold.
+    public static let title3 = PhoneTextStyle(.title3, weight: .semibold)
+    /// Tile figures: 22 semibold, tabular.
+    public static let figureL = PhoneTextStyle(.title2, weight: .semibold, isFigure: true)
+    /// Card titles, row titles that matter: 17/22 semibold.
+    public static let headline = PhoneTextStyle(.headline)
+    /// Rows and inputs: 17/22.
+    public static let body = PhoneTextStyle(.body)
+    /// Row detail: 15/20.
+    public static let subheadline = PhoneTextStyle(.subheadline)
+    /// Captions, freshness: 13/18.
+    public static let footnote = PhoneTextStyle(.footnote)
+    /// Group labels (uppercase), pills: 12/16 semibold. The floor.
+    public static let caption = PhoneTextStyle(.caption, weight: .semibold)
+
+    /// The scale in order, by name, with each style's size and leading at the default Dynamic Type size.
+    public static let scale: [(name: String, style: PhoneTextStyle, size: CGFloat, leading: CGFloat)] = [
+        ("largeTitle", largeTitle, 34, 41), ("figureXL", figureXL, 34, 41), ("title2", title2, 22, 28),
+        ("title3", title3, 20, 25), ("figureL", figureL, 22, 28), ("headline", headline, 17, 22),
+        ("body", body, 17, 22), ("subheadline", subheadline, 15, 20), ("footnote", footnote, 13, 18),
+        ("caption", caption, 12, 16),
+    ]
 }
 
 /// Which font a text style draws in for a typeface. Pure: `mangoFont`, `MoneyText`, `DateText` and `figureText` call
@@ -211,23 +258,37 @@ extension View {
         modifier(MangoFontModifier(style: PhoneTextStyle(style, weight: weight), figures: figures))
     }
 
-    /// The same for a style held in a value (`MoneyText`'s, a row's).
-    public func mangoFont(_ style: PhoneTextStyle, figures: Bool = false) -> some View {
-        modifier(MangoFontModifier(style: style, figures: figures))
+    /// The same for a style held in a value (`MoneyText`'s, a row's, the scale's `MangoType`). A figure style
+    /// (`.figure`, `.figureL`, `.figureXL`, `.footnote.figure()`) is set on a figure's `Text`: tabular digits, one
+    /// line at its natural width (the layout around it gives way first), never scaled down; the wrap probe checks it.
+    public func mangoFont(_ style: PhoneTextStyle, figures: Bool = false,
+                          file: StaticString = #fileID, line: UInt = #line) -> some View {
+        modifier(MangoFontModifier(style: style, figures: figures, source: style.isFigure ? "\(file):\(line)" : nil))
     }
 }
 
 struct MangoFontModifier: ViewModifier {
     let style: PhoneTextStyle
     let figures: Bool
+    var source: String? = nil
     @Environment(\.phoneTypeface) private var face
 
     func body(content: Content) -> some View {
-        let font = TypefaceResolver.font(face, style: style.style, weight: style.weight, isFigure: figures)
-        let drawn = figures ? font.monospacedDigit() : font
-        content
-            .font(drawn)
-            .environment(\.mangoFontContext, MangoFontContext(style: style, font: drawn))
+        let isFigure = figures || style.isFigure
+        let font = TypefaceResolver.font(face, style: style.style, weight: style.weight, isFigure: isFigure)
+        let drawn = isFigure ? font.monospacedDigit() : font
+        if style.isFigure {
+            content
+                .font(drawn)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+                .wrapProbe("figure", text: nil, source: source, minimumScale: 1)
+        } else {
+            content
+                .font(drawn)
+                .environment(\.mangoFontContext, MangoFontContext(style: style, font: drawn))
+        }
     }
 }
 

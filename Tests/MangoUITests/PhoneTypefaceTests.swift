@@ -147,4 +147,28 @@ final class PhoneTypefaceTests: XCTestCase {
         XCTAssertEqual(BundledFonts.register(bundle: try XCTUnwrap(Bundle(path: root.path))), [])
     }
     #endif
+
+    // MARK: Type scale (design review §3.2)
+
+    /// The scale's sizes are the text styles' own (so Dynamic Type scales them), the figures are flagged, and nothing
+    /// is under the caption floor.
+    func testTypeScaleMatchesTheDesignReview() {
+        XCTAssertEqual(MangoType.scale.map(\.name), ["largeTitle", "figureXL", "title2", "title3", "figureL", "headline",
+                                                     "body", "subheadline", "footnote", "caption"])
+        for entry in MangoType.scale {
+            XCTAssertEqual(TypefaceResolver.baseSize(entry.style.style), entry.size, entry.name)
+            XCTAssertGreaterThanOrEqual(entry.size, 12, entry.name)
+            XCTAssertEqual(entry.style.isFigure, entry.name.hasPrefix("figure"), entry.name)
+        }
+        XCTAssertEqual(MangoType.figureXL, PhoneTextStyle(.largeTitle, weight: .bold, isFigure: true))
+        XCTAssertEqual(MangoType.figureL, PhoneTextStyle(.title2, weight: .semibold, isFigure: true))
+        XCTAssertEqual(MangoType.caption.weight, .semibold)
+    }
+
+    func testFigureStyleKeepsItsWeightAndAWeightKeepsTheFigure() {
+        XCTAssertEqual(PhoneTextStyle.figure, PhoneTextStyle(.body, isFigure: true))
+        XCTAssertEqual(PhoneTextStyle.footnote.figure(), PhoneTextStyle(.footnote, isFigure: true))
+        XCTAssertEqual(PhoneTextStyle.footnote.figure().weight(.semibold), PhoneTextStyle(.footnote, weight: .semibold, isFigure: true))
+        XCTAssertFalse(PhoneTextStyle.footnote.isFigure)
+    }
 }

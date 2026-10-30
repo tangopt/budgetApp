@@ -62,8 +62,7 @@ extension View {
 struct EmptyWidgetView: View {
     var body: some View {
         Text(WidgetPresentation.emptyText)
-            .font(.footnote)
+            .mangoFont(.footnote)
             .multilineTextAlignment(.center)
-            .minimumScaleFactor(0.8)
     }
 }

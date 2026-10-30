@@ -7,6 +7,7 @@ struct PaydayWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "ubberninja.mango.payday", provider: SnapshotProvider()) { entry in
             PaydayWidgetView(entry: entry)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .containerBackground(.fill.tertiary, for: .widget)
                 .widgetURL(WidgetLink.url(for: .home))
         }
@@ -23,13 +24,13 @@ struct PaydayWidgetView: View {
     var body: some View {
         if let snapshot = entry.snapshot {
             VStack(spacing: 0) {
-                Text("Payday").font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                Text("Payday").mangoFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 Text(WidgetPresentation.paydayText(snapshot, on: entry.date))
-                    .font(.system(size: 14, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.5)
+                    .mangoFont(MangoType.footnote.weight(.semibold).figure())
                     .figureSensitivity(WidgetPresentation.isRedacted(snapshot, isLockScreen: true))
             }
         } else {
-            Text("Open Mango").font(.system(size: 10)).multilineTextAlignment(.center)
+            Text("Open Mango").mangoFont(.caption2).multilineTextAlignment(.center)
         }
     }
 }

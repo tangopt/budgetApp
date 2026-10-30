@@ -16,7 +16,7 @@ struct PadCalendarView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     if model.isEmpty {
                         EmptyState(symbol: "calendar.badge.clock", title: "Nothing due",
                                    message: "Link the property's accounts and category groups in Profile so recurring costs and the mortgage show here.")

@@ -27,7 +27,7 @@ struct PadProfileView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: PadSpacing.section) {
+                VStack(alignment: .leading, spacing: MangoSpacing.section) {
                     PadWriteNotices(write: write)
                     if let property = model.snapshot.property {
                         // Cards two (or more) to a row, each row's cards as tall as its tallest.
@@ -832,6 +832,7 @@ struct PadPropertyMapView: View {
     var onPlace: (PropertyCoordinate) -> Void
     @State private var position: MapCameraPosition = .automatic
     @State private var dragStart: CGPoint?
+    @Environment(\.phoneTheme) private var theme
     private static let space = "padPropertyMap"
 
     var body: some View {
@@ -851,7 +852,7 @@ struct PadPropertyMapView: View {
                         Annotation("Property", coordinate: point, anchor: .bottom) {
                             Image(systemName: "mappin")
                                 .font(.system(size: 34, weight: .semibold))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(theme.accent)
                                 .shadow(radius: 1)
                                 .frame(width: 44, height: 44)
                                 .contentShape(Rectangle())
@@ -909,7 +910,7 @@ struct PadPropertyMapView: View {
     /// A drawn street grid with the pin, no tiles (the note below gives the coordinate).
     private var placeholder: some View {
         ZStack {
-            Color.green.opacity(0.10)
+            theme.surface2
             Canvas { context, size in
                 var streets = Path()
                 for step in stride(from: CGFloat(0.12), to: 1, by: 0.22) {
@@ -921,7 +922,7 @@ struct PadPropertyMapView: View {
                 context.stroke(streets, with: .color(.secondary.opacity(0.35)), lineWidth: 5)
             }
             if coordinate != nil {
-                Image(systemName: "house.circle.fill").font(.system(size: 30)).foregroundStyle(.white, .red)
+                Image(systemName: "house.circle.fill").font(.system(size: 30)).foregroundStyle(theme.onAccent, theme.accent)
             }
         }
         .accessibilityLabel("Map")

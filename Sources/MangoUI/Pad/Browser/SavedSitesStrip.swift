@@ -79,6 +79,7 @@ struct AddSiteSheet: View {
     @State private var kind: SavedSiteKind = .utility
     @State private var error: String?
     @State private var saving = false
+    @Environment(\.phoneTheme) private var theme
 
     var body: some View {
         NavigationStack {
@@ -98,7 +99,7 @@ struct AddSiteSheet: View {
                     Text("Secure (https) addresses only. Mango keeps the address, never your password: sign in on the site itself.")
                 }
                 if let error {
-                    Section { Text(error).foregroundStyle(.red) }
+                    Section { Text(error).foregroundStyle(theme.expense) }
                 }
             }
             .navigationTitle("Add site")
