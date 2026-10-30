@@ -100,13 +100,20 @@ public enum PadRoutes {
         // Step 10, Task 15: Money (the year's tiles, cost categories as chips, the months newest first, one expanded to its
         // transactions), then with a transaction's document open in the panel, and Calendar (the agenda, then the month grid).
         DemoRoute(name: "pad-money", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
-            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .money, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-money-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
-            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .money, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .money, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-calendar", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        // Redesign step 4: the Calendar's filter, the flat's items only and the personal planned bills only.
+        DemoRoute(name: "pad-calendar-flat", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .flat), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-calendar-personal", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .personal), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-calendar-month", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .month), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
@@ -115,10 +122,10 @@ public enum PadRoutes {
         // toast after "Not expected any more"), Profile (details, address and map, owners, mortgage, accounts, groups,
         // documents) and its mortgage terms form.
         DemoRoute(name: "pad-checks", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
-            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .checks, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .costs, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-profile", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
-            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .profile, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .profile, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-mortgage-terms", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
             let tabs = profileTabs(context)
@@ -228,12 +235,22 @@ public enum PadRoutes {
         // Step 10, Task 14: Evidence for the tax year by area (Open site and Link existing document on each item; utility
         // bills pointed to Bills & recharges), then a missing item with a suggested document open in the panel.
         DemoRoute(name: "pad-evidence", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
-            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .evidence,
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .documents, documentsSegment: .missing,
                                 browser: sampleBrowser("pad-evidence", items: 0), columns: .doubleColumn))
         },
         DemoRoute(name: "pad-evidence-panel", sizes: DemoRoute.padSizes, minimumFigures: 1, pad: true) { context in
-            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .evidence,
+            AnyView(PadRootView(tabs: evidenceTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .documents, documentsSegment: .missing,
                                 browser: sampleBrowser("pad-evidence-panel", items: 0), columns: .doubleColumn))
+        },
+        // Redesign step 4 (D4): Documents ▸ Downloads, the saved sites and the downloads waiting (three synthetic PDFs, one
+        // with a long name, one shared to Mango), and with nothing waiting.
+        DemoRoute(name: "pad-documents-downloads", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .documents, documentsSegment: .downloads,
+                                browser: sampleBrowser("pad-documents-downloads", items: 3), columns: .doubleColumn))
+        },
+        DemoRoute(name: "pad-documents-downloads-empty", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
+            AnyView(PadRootView(tabs: tabs(context), syncStatus: context.syncStatus, initialSelection: .documents, documentsSegment: .downloads,
+                                browser: sampleBrowser("pad-documents-downloads-empty", items: 0), columns: .doubleColumn))
         },
         // Step 10, Task 2: the shared document panel (thumbnail, buttons, details, Documents' edits) over the library, a
         // linked document selected, and the full-view modal with its details open.
@@ -527,11 +544,13 @@ public enum PadRoutes {
 
     /// Editing tabs with Calendar read; `layout` Month shows the grid for the demo's month.
     @MainActor
-    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout) -> PhoneTabsModel {
+    static func calendarTabs(_ context: PhoneDemoContext, layout: PadCalendarModel.Layout,
+                             scope: PadCalendarModel.Scope = .all) -> PhoneTabsModel {
         let tabs = editingTabs(context)
         let model = tabs.padCalendar
         model.preload(PadCalendarModel.readNow(context.dbQueue, propertyId: tabs.padProperty.property?.id, today: context.today))
         model.layout = layout
+        model.scope = scope
         if layout == .month, let first = model.snapshot.upcoming.first { model.selectedId = first.id }
         return tabs
     }

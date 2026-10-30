@@ -6,20 +6,25 @@ import TestSupport
 
 /// The iPad sidebar's section map, footer and collapsed state (step 10, Task 3).
 final class PadSectionTests: XCTestCase {
-    func testPropertyGroupOrderAndTitles() {
+    func testSidebarHasElevenItemsInThreeGroups() {
         let groups = PadSection.groups(hasProperty: true)
-        XCTAssertEqual(groups.map(\.title), [nil, "Property", "Everything else"])
+        XCTAssertEqual(groups.map(\.title), [nil, "Flat", "Everything else"])
         XCTAssertEqual(groups[0].sections, [.home, .month, .accounts, .search])
-        XCTAssertEqual(groups[1].sections.map(\.title),
-                       ["This month", "Bills & recharges", "Tenancies", "Money", "Calendar", "Checks", "Profile"])
+        XCTAssertEqual(groups[1].sections.map(\.title), ["This month", "Bills & recharges", "Tenancies", "Flat details"])
+        XCTAssertEqual(groups[2].sections.map(\.title), ["Documents", "Calendar", "Salary calculator"])
+        XCTAssertEqual(groups.flatMap(\.sections).count, 11)
+        XCTAssertEqual(PadSection.allCases.count, 11)
     }
 
-    func testEvidenceSitsUnderEverythingElseNotProperty() {
-        let groups = PadSection.groups(hasProperty: true)
-        XCTAssertEqual(groups[2].sections, [.salary, .evidence, .documents])
-        XCTAssertEqual(groups[2].sections.map(\.title), ["Salary calculator", "Evidence", "Documents"])
-        XCTAssertFalse(groups[1].sections.contains(.evidence))
-        XCTAssertFalse(PadSection.evidence.requiresProperty)
+    func testSegments() {
+        XCTAssertEqual(FlatDetailsSegment.allCases.map(\.rawValue), ["Money", "Costs", "Profile"])
+        XCTAssertEqual(DocumentsSegment.allCases.map(\.rawValue), ["Missing", "Library", "Downloads"])
+    }
+
+    func testDocumentsAndCalendarAreNotFlatSections() {
+        XCTAssertFalse(PadSection.documents.requiresProperty)
+        XCTAssertFalse(PadSection.calendar.requiresProperty)
+        XCTAssertTrue(PadSection.flatDetails.requiresProperty)
     }
 
     func testSalaryIsInEverythingElseGroup() {
@@ -37,7 +42,7 @@ final class PadSectionTests: XCTestCase {
         let groups = PadSection.groups(hasProperty: false)
         XCTAssertEqual(groups.map(\.title), [nil, "Everything else"])
         XCTAssertTrue(groups.flatMap(\.sections).allSatisfy { !$0.requiresProperty })
-        XCTAssertEqual(PadSection.allCases.filter(\.requiresProperty).count, 7)
+        XCTAssertEqual(PadSection.allCases.filter(\.requiresProperty).count, 4)
     }
 
     /// A member with Property None sees no Property section (None hides the area), as before she is known; View shows them.
@@ -76,7 +81,7 @@ final class PadSectionTests: XCTestCase {
         try await level(.view)
         let viewing = await tabs(.iCloudUser(recordName: "_member"))
         XCTAssertTrue(viewing.showsPropertySections)
-        XCTAssertEqual(PadSection.groups(hasProperty: viewing.showsPropertySections).map(\.title), [nil, "Property", "Everything else"])
+        XCTAssertEqual(PadSection.groups(hasProperty: viewing.showsPropertySections).map(\.title), [nil, "Flat", "Everything else"])
     }
 
     func testEverySectionHasTitleAndSymbol() {

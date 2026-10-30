@@ -95,7 +95,7 @@ public final class PhoneTabsModel: ObservableObject {
         padAccounts = PadAccountsModel(accounts: accounts, write: padAccountWrite, dbQueue: dbQueue)
         padDocumentActions = PadDocumentActions(documents: padDocuments, write: padDocumentWrite, dbQueue: dbQueue)
         padMoney = PadMoneyModel(property: padProperty, write: padDocumentWrite, dbQueue: dbQueue, today: today)
-        padCalendar = PadCalendarModel(property: padProperty, dbQueue: dbQueue, today: today)
+        padCalendar = PadCalendarModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padChecks = PadChecksModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padProfile = PadProfileModel(property: padProperty, write: padWrite, dbQueue: dbQueue, today: today)
         padEvidence = PadEvidenceModel(write: padDocumentWrite, propertyWrite: padWrite, dbQueue: dbQueue, today: today)

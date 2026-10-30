@@ -17,9 +17,11 @@ struct PadCalendarView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: MangoSpacing.section) {
-                    if model.isEmpty {
+                    if model.isEmpty || model.isEmptyInScope {
                         EmptyState(symbol: "calendar.badge.clock", title: "Nothing due",
-                                   message: "Link the property's accounts and category groups in Profile so recurring costs and the mortgage show here.")
+                                   message: model.isEmpty
+                                       ? "Confirm bills in your plan, or link the flat's accounts and category groups in Profile, so what falls due shows here."
+                                       : "Nothing is due in \(model.scope.rawValue.lowercased()). Choose another filter.")
                             .frame(maxWidth: .infinity).padding(.top, 60)
                     } else {
                         controls
@@ -33,7 +35,7 @@ struct PadCalendarView: View {
             }
             .background(theme.background)
             .offlineBannerSlot()
-            .padPage("Calendar")
+            .padPage("Calendar", contexts: scopeContext)
         }
         .padSidePanel(isPresented: model.selected != nil, onClose: model.closeCard) {
             if let obligation = model.selected {
@@ -50,6 +52,13 @@ struct PadCalendarView: View {
     }
 
     // MARK: Controls
+
+    /// All · Flat · Personal, as the page's one context picker (offered only when the viewer sees both sides).
+    private var scopeContext: [ContextPicker] {
+        guard !model.offeredScopes.isEmpty else { return [] }
+        return [ContextPicker("Show", items: model.offeredScopes, selected: model.scope.rawValue, id: \.rawValue,
+                              title: { $0 == .all ? "All" : $0.rawValue }) { model.scope = $0 }]
+    }
 
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
@@ -103,7 +112,7 @@ struct PadCalendarView: View {
                 Spacer(minLength: 8)
                 rangeSwitch
             }
-            Text("≈ an estimate from the property's history").mangoFont(.footnote).foregroundStyle(.secondary)
+            Text("≈ an estimate from the flat's history").mangoFont(.footnote).foregroundStyle(.secondary)
         }
         if months.isEmpty {
             Text(model.selectedDay == nil ? "Nothing in this range." : "Nothing is due that day.")
@@ -140,8 +149,8 @@ struct PadCalendarView: View {
             .expected(minorUnits: amount, currency: currency, isEstimate: obligation.isEstimate)
         } else { .none }
         return UpcomingEntry(id: obligation.id, title: PadCalendarModel.shortTitle(obligation),
-                             caption: PhoneDateFormat.day(obligation.date), symbol: PadCalendarModel.symbol(obligation.kind),
-                             figure: figure, pill: (PadCalendarModel.kindName(obligation.kind), pillStatus(obligation.kind)))
+                             caption: PhoneDateFormat.day(obligation.date), symbol: PadCalendarModel.symbol(obligation),
+                             figure: figure, pill: (PadCalendarModel.kindName(obligation), obligation.isPersonal ? .neutral : pillStatus(obligation.kind)))
     }
 
     private func pillStatus(_ kind: PropertyObligationKind) -> StatusPill.Status {
@@ -265,13 +274,13 @@ struct PadObligationCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 if showsHeader {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: PadCalendarModel.symbol(obligation.kind)).foregroundStyle(.secondary).accessibilityHidden(true)
+                        Image(systemName: PadCalendarModel.symbol(obligation)).foregroundStyle(.secondary).accessibilityHidden(true)
                         Text(PadCalendarModel.shortTitle(obligation)).mangoFont(.headline).lineLimit(3).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 HStack(spacing: 8) {
-                    PadStatusPill(text: PadCalendarModel.kindName(obligation.kind), tone: .neutral)
+                    PadStatusPill(text: PadCalendarModel.kindName(obligation), tone: .neutral)
                     if obligation.isEstimate { PadStatusPill(text: "Estimate", tone: .accent) }
                 }
                 fact("Due", Text(PhoneDateFormat.day(obligation.date).unbroken))

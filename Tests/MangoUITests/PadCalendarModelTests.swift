@@ -20,13 +20,49 @@ final class PadCalendarModelTests: XCTestCase {
         db = try DatabaseQueue(path: path)
     }
 
+    /// The Calendar on the flat's side (what these tests pin to the Mac's obligations).
     private func model() async -> PadCalendarModel {
+        let model = await unfilteredModel()
+        model.scope = .flat
+        return model
+    }
+
+    private func unfilteredModel() async -> PadCalendarModel {
         let today = today
         let property = PadPropertyModel(dbQueue: db, today: { today })
         await property.reload()
         let model = PadCalendarModel(property: property, dbQueue: db, today: { today })
         await model.reload()
         return model
+    }
+
+    func testAllListsFlatObligationsAndPersonalPlannedBillsByDate() async throws {
+        let model = await unfilteredModel()
+        let all = model.snapshot.upcoming
+        let personal = all.filter(\.isPersonal)
+        let flat = all.filter { !$0.isPersonal }
+        XCTAssertFalse(personal.isEmpty, "the demo plan has confirmed bills")
+        XCTAssertFalse(flat.isEmpty)
+        XCTAssertEqual(all.map(\.date), all.map(\.date).sorted())
+        XCTAssertEqual(model.offeredScopes, [.all, .flat, .personal])
+        XCTAssertEqual(model.agenda.flatMap(\.obligations).count, all.count)
+        model.scope = .personal
+        XCTAssertTrue(model.agenda.flatMap(\.obligations).allSatisfy(\.isPersonal))
+        XCTAssertEqual(model.agenda.flatMap(\.obligations).count, personal.count)
+        model.scope = .flat
+        XCTAssertEqual(model.agenda.flatMap(\.obligations).count, flat.count)
+        XCTAssertTrue(model.gridDays.flatMap(\.items).allSatisfy { !$0.isPersonal })
+        XCTAssertEqual(PadCalendarModel.kindName(try XCTUnwrap(personal.first)), "Planned bill")
+    }
+
+    func testAMemberWithoutForecastSeesOnlyTheFlatAndNoFilter() async throws {
+        let today = today
+        let reader = db!
+        let flatOnly = try await reader.read { db in try PadCalendarModel.read(db, propertyId: try Properties.all(db: db).first?.id, today: MonthRange.calendar.startOfDay(for: today), scope: .nothing) }
+        XCTAssertTrue(flatOnly.upcoming.isEmpty && flatOnly.past.isEmpty)
+        XCTAssertFalse(flatOnly.seesFlat || flatOnly.seesPersonal)
+        let model = await unfilteredModel()
+        XCTAssertTrue(model.snapshot.seesFlat && model.snapshot.seesPersonal)
     }
 
     func testAgendaIsTheMacsObligationsByMonth() async throws {

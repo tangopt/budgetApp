@@ -294,10 +294,10 @@ struct PadThisMonthView: View {
                     }
                 }
             }
-            sideCard("Evidence for the tax year") {
+            sideCard("Missing documents") {
                 Text(checklist.evidenceCount == 0 ? "Nothing missing" : "\(checklist.evidenceCount) missing")
                     .figureText().mangoFont(.subheadline)
-                Button("Open Evidence") { go(.evidence) }.buttonStyle(.pad(.secondary, size: .small))
+                Button("Open Missing") { go(.evidence) }.buttonStyle(.pad(.secondary, size: .small))
             }
             downloads(checklist)
         }
@@ -348,7 +348,7 @@ struct PadThisMonthView: View {
                         }
                     }
                 }
-                Button("Sites & downloads") { browser.present() }.buttonStyle(.pad(.secondary, size: .small))
+                Button("Sites & downloads") { go(.downloads) }.buttonStyle(.pad(.secondary, size: .small))
             }
         }
     }
@@ -373,7 +373,7 @@ struct PadThisMonthView: View {
                 guard let item = browser.downloadedItems.first(where: { $0.id == id }) else { return }
                 if browser.checkSource != nil { checking = item } else { browser.present() }
             }
-        case .billsAndRecharges, .recharges, .prepareEmail, .evidence:
+        case .billsAndRecharges, .recharges, .prepareEmail, .evidence, .downloads:
             go(destination)
         }
     }

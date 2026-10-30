@@ -34,6 +34,22 @@ public struct PropertyObligation: Equatable, Identifiable, Sendable {
     public var categoryId: Int64?
     /// Projected from history or a rule rather than known.
     public var isEstimate: Bool
+    /// A planned bill of the personal forecast, not the property's: the iPad's Calendar lists both (`plannedBill`). The
+    /// property's calendar never produces one.
+    public var isPersonal: Bool = false
+
+    /// A confirmed planned bill from the personal forecast, due on `date` (an amount is always known).
+    public static func plannedBill(id: String, date: Date, title: String, minorUnits: Int, currency: Currency) -> PropertyObligation {
+        PropertyObligation(id: id, date: date, kind: .recurringCost, title: title, expectedMinorUnits: minorUnits, currency: currency,
+                           categoryId: nil, isEstimate: false, isPersonal: true)
+    }
+
+    /// The forecast's confirmed bills over the next `days` days, as calendar items (the iPad's Calendar, personal side).
+    public static func plannedBills(_ input: DashboardInput, days: Int) -> [PropertyObligation] {
+        DashboardCalculator.upcomingBills(input, days: days).map {
+            plannedBill(id: "bill/\($0.occurrenceId)", date: $0.date, title: $0.categoryName, minorUnits: $0.amountMinorUnits, currency: .gbp)
+        }
+    }
 }
 
 /// A cost that repeats in the property's history.
