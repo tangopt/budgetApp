@@ -62,6 +62,9 @@ public final class PhoneTabsModel: ObservableObject {
     public let padThisMonth: PadThisMonthModel
     /// The iPhone's quick edits (step 7b): categorise, note, Quick sort, Update balance; nothing offered with no writer.
     public let quickEdit: QuickEditModel
+    /// The iPhone's import of statements and documents from Files (and "Open in Mango"); its source is set once the
+    /// database is open (none with demo data).
+    public let phoneImport = PhoneImportCoordinator()
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
@@ -270,6 +273,12 @@ public struct PhoneTabs: View {
         // Each screen shows it under its navigation bar (`offlineBannerSlot`, `demoBannerSlot`).
         .environment(\.showsDemoData, isDemo)
         .environment(\.quickEdit, model.quickEdit)
+        .phoneImportHost(model.phoneImport,
+                         onOpenAccount: { id in
+                             model.selection = .accounts
+                             model.accounts.path = [AccountDestination(accountId: id)]
+                         },
+                         onReviewUncategorised: { model.selection = .month })
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }

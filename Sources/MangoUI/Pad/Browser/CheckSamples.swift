@@ -65,17 +65,40 @@ enum CheckSamples {
 
     /// A bank statement the balance of which matches; Save sends it to the Mac (`route` nil), or (step 19) Import
     /// imports it here, waits for another device or a connection, or Send to the Mac sends it.
-    static func statement(route: PadImportRoute? = nil, canFinishOnMac: Bool = false, refusal: String? = nil) -> CheckAndLinkModel {
+    static func statement(route: PadImportRoute? = nil, canFinishOnMac: Bool = false, refusal: String? = nil,
+                          summary custom: StatementImportSummary? = nil) -> CheckAndLinkModel {
         let (item, tray) = trayItem("pad-check-statement", fileName: "statement-2026-09-current-account.pdf", lines: [
             "Example Bank - statement", "Current account ending 0000", "1 Sep 2026 to 30 Sep 2026",
             "Opening balance 2,410.55 EUR", "Closing balance 1,982.10 EUR"])
         let check = CheckAndLinkCheck(title: "Example Bank statement 2026-09", fileName: item.fileName)
-        let summary = StatementImportSummary(
+        let defaultSummary = StatementImportSummary(
             check: check, accountId: 1, accountName: CheckedValue(value: "Current account", origin: .known), currency: .eur,
             periodStart: CheckedValue(value: day(2026, 9, 1), origin: .read), periodEnd: CheckedValue(value: day(2026, 9, 30), origin: .read),
             openingBalance: CheckedValue(value: 241_055, origin: .read), closingBalance: CheckedValue(value: 198_210, origin: .read),
             rowsToAdd: 14, alreadyImported: 2, instalments: "1 instalment: interest €112.53, capital €700.00")
-        return CheckAndLinkModel(item: item, tray: tray, proposal: .statement(summary), refusal: refusal, route: route,
+        return CheckAndLinkModel(item: item, tray: tray, proposal: .statement(custom ?? defaultSummary), refusal: refusal, route: route,
                                  canFinishOnMac: canFinishOnMac)
+    }
+
+    /// A document that is in Mango already (the iPhone import's "Already saved as …").
+    static func savedBefore(_ name: String) -> CheckAndLinkModel {
+        let (item, tray) = trayItem("phone-import-saved", fileName: "Water bill October 2026.pdf", lines: [
+            "Example Water - customer copy", "Invoice no. W 12/26", "Issued on 9 Oct 2026", "Amount due 38.40 EUR"])
+        let check = CheckAndLinkCheck(title: "Invoice W 12/26 of Example Water, 9 Oct 2026", fileName: item.fileName, duplicateOf: name)
+        let document = DocumentFields(
+            check: check, kind: .evidence(.insuranceReceipt), kindName: "Receipt", issuer: CheckedValue(value: "Example Water", origin: .read),
+            date: CheckedValue(value: day(2026, 10, 9), origin: .read), amount: CheckedValue(value: 3_840, origin: .read), currency: .eur)
+        return CheckAndLinkModel(item: item, tray: tray, proposal: .document(document))
+    }
+
+    /// An engine for routes that only show an Import button.
+    struct UnusedEngine: CheckAndLinking {
+        func propose(_ item: TrayItem, in tray: DownloadsTray, propertyId: Int64?) async throws -> CheckAndLinkProposal { throw CheckAndLinkRefusal.notInTray }
+        func choosePayment(_ transactionId: Int64?, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal { proposal }
+        func chooseKind(_ choice: ImportKindChoice, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal { proposal }
+        func save(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter, now: Date) async throws -> CheckAndLinkResult {
+            throw CheckAndLinkRefusal.notInTray
+        }
+        func discard(_ item: TrayItem?) {}
     }
 }

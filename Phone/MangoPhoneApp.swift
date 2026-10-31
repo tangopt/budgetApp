@@ -75,6 +75,8 @@ struct PhoneRoot: View {
     @State private var showsLocalData = false
     /// A PDF shared to Mango where it isn't collected (the iPhone, demo data): said once, then gone.
     @State private var sharedNotice: String?
+    /// Files shared to Mango on the iPhone before the database was open: handed to the import once it is.
+    @State private var earlyShared: [URL] = []
     /// Settings' read-only Sharing section, read each time Settings opens.
     @State private var sharing: SharingSectionState?
     @AppStorage("phone.appearance") private var appearanceValue = PhoneAppearance.system.rawValue
@@ -119,11 +121,13 @@ struct PhoneRoot: View {
             // The cover window dismisses open sheets in UIKit on a lock; their SwiftUI state is cleared here too, so
             // nothing re-presents after unlocking and the avatar opens Settings again.
             guard case .locked = state else {
+                if case .ready(_, let tabs) = stage { tabs.phoneImport.setLocked(state != .unlocked) }
                 refreshOutputs()
                 return
             }
             showingSettings = false
             if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
+            if case .ready(_, let tabs) = stage { tabs.phoneImport.setLocked(true) }
             // The browser closes too: nothing of a site shows behind the lock or after it.
             PhoneBrowser.shared?.isPresented = false
         }
@@ -155,6 +159,11 @@ struct PhoneRoot: View {
         .onOpenURL { url in
             // A PDF shared into Mango (More… ▸ Mango; the iPad's tray), copied by the system into Documents/Inbox.
             if url.isFileURL {
+                // The iPhone imports it (statement or document); it waits behind the lock screen.
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    if case .ready(_, let tabs) = stage { tabs.phoneImport.receiveShared(url) } else { earlyShared.append(url) }
+                    return
+                }
                 let isDemo = if case .ready(let environment, _) = stage { environment.isDemo } else { PhoneDemoData.isOn }
                 Task { sharedNotice = await PhoneBrowser.receiveShared(url, isDemo: isDemo) }
                 return
@@ -218,7 +227,12 @@ struct PhoneRoot: View {
             }
             stage = .ready(environment, tabs)
             await PhoneBrowser.attach(environment, leases: { [sync] in await sync.importLeases() })
-            await PhoneBrowser.sweepInbox(isDemo: environment.isDemo)
+            await PhoneImportSetup.attach(environment, tabs: tabs, leases: { [sync] in await sync.importLeases() })
+            tabs.phoneImport.setLocked(lock.state != .unlocked)
+            let waiting = earlyShared
+            earlyShared = []
+            waiting.forEach(tabs.phoneImport.receiveShared)
+            await PhoneBrowser.sweepInbox(isDemo: environment.isDemo, keeping: tabs.phoneImport.queuedURLs)
             outputs.attach(dbQueue: environment.dbQueue, today: environment.today, isDemo: environment.isDemo)
             refreshOutputs()
             openTappedReminder()

@@ -35,7 +35,7 @@ public struct AccountsView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .phonePageTitle("Accounts")
+            .phonePageTitle("Accounts") { PhoneImportButton(preset: PhoneImportModel.Preset()) }
             .navigationDestination(for: AccountDestination.self) { destination in
                 AccountDetailView(model: model.detailModel(for: destination))
                     .demoBannerSlot()

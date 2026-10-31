@@ -153,6 +153,10 @@ public struct AccountDetailView: View {
         }
         .task(id: model.accountId) { canUpdateBalance = await quickEdit?.canUpdateBalance(accountId: model.accountId) ?? false }
         .toolbar {
+            // Import: this account preset (a statement of another account asks first).
+            ToolbarItem(placement: .primaryAction) {
+                PhoneImportButton(preset: PhoneImportModel.Preset(accountId: model.accountId, accountName: title))
+            }
             // Absent (not disabled) unless this is a manual account the user may update.
             if canUpdateBalance, let quickEdit {
                 ToolbarItem(placement: .primaryAction) {
