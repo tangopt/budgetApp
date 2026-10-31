@@ -11,6 +11,8 @@ import QuickLookThumbnailing
 /// finds its database and file hook in `\.documentPanelSource`. Nothing here edits anything; `extra`'s buttons do.
 public struct DocumentPanel<Extra: View>: View {
     let documentId: Int64
+    /// The opening screen's name for the document ("Receipt 50"), shown until the document's own name is read.
+    let placeholderTitle: String
     let onClose: () -> Void
     let extra: Extra
     @Environment(\.documentPanelSource) private var source
@@ -18,14 +20,15 @@ public struct DocumentPanel<Extra: View>: View {
     @State private var model: DocumentPanelModel?
     @State private var showsFullView = false
 
-    public init(documentId: Int64, onClose: @escaping () -> Void, @ViewBuilder extra: () -> Extra) {
+    public init(documentId: Int64, title: String = "", onClose: @escaping () -> Void, @ViewBuilder extra: () -> Extra) {
         self.documentId = documentId
+        self.placeholderTitle = title
         self.onClose = onClose
         self.extra = extra()
     }
 
     public var body: some View {
-        PadSidePanel(title: model?.title ?? "", onClose: onClose, actions: { headerActions }) {
+        PadSidePanel(title: model?.title ?? placeholderTitle, onClose: onClose, actions: { headerActions }) {
             if let model {
                 DocumentThumbnailView(file: model.file, onOpen: { showsFullView = true }, onRetry: { Task { await model.retry() } })
                 if let details = model.details {
@@ -47,12 +50,12 @@ public struct DocumentPanel<Extra: View>: View {
         }
         .onAppear {
             guard model == nil else { return }
-            let loaded = DocumentPanelModel(documentId: documentId, source: source)
+            let loaded = DocumentPanelModel(documentId: documentId, source: source, title: placeholderTitle)
             if loaded.loadNow() { model = loaded }
         }
         .task(id: documentId) {
-            if model?.documentId == documentId, model?.file.isReady == true { return }
-            let loaded = DocumentPanelModel(documentId: documentId, source: source)
+            // The model shown is the one loading (a cancelled task's load carries on; a new one supersedes it).
+            let loaded = model?.documentId == documentId ? model! : DocumentPanelModel(documentId: documentId, source: source, title: placeholderTitle)
             model = loaded
             await loaded.load()
         }
@@ -77,8 +80,8 @@ public struct DocumentPanel<Extra: View>: View {
 }
 
 extension DocumentPanel where Extra == EmptyView {
-    public init(documentId: Int64, onClose: @escaping () -> Void) {
-        self.init(documentId: documentId, onClose: onClose) { EmptyView() }
+    public init(documentId: Int64, title: String = "", onClose: @escaping () -> Void) {
+        self.init(documentId: documentId, title: title, onClose: onClose) { EmptyView() }
     }
 }
 

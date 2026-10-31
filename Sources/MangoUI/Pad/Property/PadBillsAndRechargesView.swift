@@ -360,7 +360,7 @@ struct PadBillPanelHost<PanelExtra: View>: ViewModifier {
     @ViewBuilder
     private func panel(_ bill: UtilityBill) -> some View {
         if let documentId = bill.invoice?.documentId {
-            DocumentPanel(documentId: documentId, onClose: { model.closePanel() }) { extra(bill) }
+            DocumentPanel(documentId: documentId, title: bill.providerName, onClose: { model.closePanel() }) { extra(bill) }
                 .id(documentId)
         } else {
             PadBillPlainPanel(bill: bill, onClose: { model.closePanel() }) { extra(bill) }
