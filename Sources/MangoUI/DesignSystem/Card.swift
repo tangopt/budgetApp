@@ -40,6 +40,7 @@ public struct Card<Content: View>: View {
             }
             content
                 .environment(\.cardFillsHeight, false)
+                .environment(\.mangoRowBleed, MangoSpacing.cardPadding)
         }
         .padding(MangoSpacing.cardPadding)
         .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: fillsHeight ? .topLeading : .leading)

@@ -55,18 +55,38 @@ private struct MangoRowSelection: ViewModifier {
     let isSelected: Bool
     let radius: CGFloat
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.mangoRowBleed) private var bleed
+
+    /// In a card the tint runs square to the card's edges (the card clips its corners); on its own it keeps `radius`.
+    private var shape: UnevenRoundedRectangle {
+        let r = bleed > 0 ? 0 : radius
+        return UnevenRoundedRectangle(cornerRadii: .init(topLeading: r, bottomLeading: r, bottomTrailing: r, topTrailing: r), style: .continuous)
+    }
 
     func body(content: Content) -> some View {
         content
             .background {
-                if isSelected { RoundedRectangle(cornerRadius: radius, style: .continuous).fill(theme.accentTint) }
+                if isSelected { shape.fill(theme.accentTint).padding(.horizontal, -bleed) }
             }
             .overlay(alignment: .leading) {
+                // The bar sits at the row's own leading edge (the card's edge in a card), outside the text.
                 if isSelected {
-                    Capsule().fill(theme.accent).frame(width: MangoRowMetrics.selectionBar).padding(.vertical, MangoSpacing.xs)
+                    Capsule().fill(theme.accent).frame(width: MangoRowMetrics.selectionBar)
+                        .padding(.vertical, MangoSpacing.xs).offset(x: -bleed)
                 }
             }
             .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct MangoRowBleedKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
+
+extension EnvironmentValues {
+    /// How far a selected row's tint reaches past the row on each side: the padding of the card the row sits in, so the
+    /// whole row, edge to edge of the card, is painted. Set by `Card`; zero elsewhere.
+    var mangoRowBleed: CGFloat {
+        get { self[MangoRowBleedKey.self] }
+        set { self[MangoRowBleedKey.self] = newValue }
     }
 }
 

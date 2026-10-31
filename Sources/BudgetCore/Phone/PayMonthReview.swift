@@ -11,6 +11,26 @@ public struct PayMonthReview: Equatable, Sendable {
     public struct DayRange: Equatable, Sendable {
         public let start: Date
         public let end: Date
+        /// The pay month this is the range of (nil when made by hand); the plan it shows is its calendar month's.
+        public let month: PayMonth?
+
+        public init(start: Date, end: Date, month: PayMonth? = nil) {
+            self.start = start
+            self.end = end
+            self.month = month
+        }
+
+        /// The period of the plan the month's rows measure against: the calendar month of `month` (as `make` reads it).
+        public var planPeriod: PayPeriod? {
+            guard let month else { return nil }
+            return PayMonthReview.planPeriod(of: month)
+        }
+    }
+
+    /// The calendar month whose confirmed plan a pay month's rows are measured against.
+    static func planPeriod(of month: PayMonth) -> PayPeriod {
+        let calendarMonth = MonthRange.of(year: month.year, month: month.month)
+        return PayPeriod(startDate: calendarMonth.start, endDate: calendarMonth.end, type: .projected)
     }
 
     public struct Row: Equatable, Identifiable, Sendable {
@@ -57,9 +77,7 @@ public struct PayMonthReview: Equatable, Sendable {
     public static func make(month: PayMonth, input: DashboardInput) -> PayMonthReview {
         let bounds = input.payCalendar.range(of: month)
         let period = PayPeriod(startDate: bounds.start, endDate: bounds.end, type: .actual)
-        let calendarMonth = MonthRange.of(year: month.year, month: month.month)
-        let planPeriod = PayPeriod(startDate: calendarMonth.start, endDate: calendarMonth.end, type: .projected)
-        let planned = ForecastCalculator.confirmedTotalsByCategory(period: planPeriod, entries: input.forecastEntries,
+        let planned = ForecastCalculator.confirmedTotalsByCategory(period: planPeriod(of: month), entries: input.forecastEntries,
                                                                    groups: input.forecastGroups, exceptions: input.exceptions)
         // Only the month's transactions reach the grid's per-category sum.
         let transactions = input.budgetTransactions.filter { $0.date >= bounds.start && $0.date <= bounds.end }
@@ -85,7 +103,7 @@ public struct PayMonthReview: Equatable, Sendable {
         rows.sort { (rank($0.category.type), $0.category.name, $0.id) < (rank($1.category.type), $1.category.name, $1.id) }
 
         let flow = DashboardCalculator.monthlyFlow(input, month: month)
-        return PayMonthReview(month: month, range: DayRange(start: bounds.start, end: bounds.end), incomeMinorUnits: flow.incomeTotal,
+        return PayMonthReview(month: month, range: DayRange(start: bounds.start, end: bounds.end, month: month), incomeMinorUnits: flow.incomeTotal,
                               spentMinorUnits: flow.expenseActual, stillExpectedMinorUnits: flow.expenseRemaining,
                               leftToSpendMinorUnits: flow.net, rows: rows)
     }

@@ -23,7 +23,7 @@ final class PadCalendarModelTests: XCTestCase {
     /// The Calendar on the flat's side (what these tests pin to the Mac's obligations).
     private func model() async -> PadCalendarModel {
         let model = await unfilteredModel()
-        model.scope = .flat
+        model.scope = .property
         return model
     }
 
@@ -44,12 +44,12 @@ final class PadCalendarModelTests: XCTestCase {
         XCTAssertFalse(personal.isEmpty, "the demo plan has confirmed bills")
         XCTAssertFalse(flat.isEmpty)
         XCTAssertEqual(all.map(\.date), all.map(\.date).sorted())
-        XCTAssertEqual(model.offeredScopes, [.all, .flat, .personal])
+        XCTAssertEqual(model.offeredScopes, [.all, .property, .personal])
         XCTAssertEqual(model.agenda.flatMap(\.obligations).count, all.count)
         model.scope = .personal
         XCTAssertTrue(model.agenda.flatMap(\.obligations).allSatisfy(\.isPersonal))
         XCTAssertEqual(model.agenda.flatMap(\.obligations).count, personal.count)
-        model.scope = .flat
+        model.scope = .property
         XCTAssertEqual(model.agenda.flatMap(\.obligations).count, flat.count)
         XCTAssertTrue(model.gridDays.flatMap(\.items).allSatisfy { !$0.isPersonal })
         XCTAssertEqual(PadCalendarModel.kindName(try XCTUnwrap(personal.first)), "Planned bill")

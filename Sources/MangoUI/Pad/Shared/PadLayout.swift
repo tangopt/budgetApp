@@ -43,7 +43,7 @@ struct PadPageInsetReading<Content: View>: View {
     var body: some View { content(inset) }
 }
 
-/// A page that is one of several segments of a sidebar destination (Flat details: Money, Costs, Profile; Documents:
+/// A page that is one of several segments of a sidebar destination (Property details: Money, Costs, Profile; Documents:
 /// Missing, Library, Downloads). `padPage` then titles the page with the destination's `title` and draws the segmented
 /// control under the header; the segment's own title is only its name in the control. Set on the destination by
 /// `PadRootView`.
@@ -95,10 +95,18 @@ private struct PadPageScaffold<Trailing: View>: ViewModifier {
         return content
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
-                               topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
-                    if let segments { PadSegmentBar(segments: segments) }
+                    if let segments {
+                        // The control has one place under the title; this segment's controls go below it.
+                        PageHeader(title: pageTitle, topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l, part: .titleOnly)
+                        PadSegmentBar(segments: segments)
+                        PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
+                                   topPadding: 0, part: .controlsOnly) { trailing }
+                    } else {
+                        PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
+                                   topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
+                    }
                 }
+                .transaction { $0.animation = nil } // no animated relayout of the header between segments
             }
             .navigationTitle(pageTitle)
             #if os(iOS)

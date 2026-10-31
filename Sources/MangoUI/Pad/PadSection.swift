@@ -2,12 +2,12 @@ import Foundation
 import BudgetCore
 
 /// The iPad sidebar's destinations (step 8, Task 6; step 10, Task 3; redesign step 4), in sidebar order: four ungrouped
-/// (Home, Month, Accounts, Search), the Flat group (This month, Bills & recharges, Tenancies, Flat details) and
-/// "Everything else" (Documents, Calendar, Salary calculator): 11 in all. Flat details holds Money, Costs and Profile as
-/// segments, Documents holds Missing, Library and Downloads (`FlatDetailsSegment`, `DocumentsSegment`).
+/// (Home, Month, Accounts, Search), the Property group (This month, Bills & recharges, Tenancies, Property details) and
+/// "Everything else" (Documents, Calendar, Salary calculator): 11 in all. Property details holds Money, Costs and Profile as
+/// segments, Documents holds Missing, Library and Downloads (`PropertyDetailsSegment`, `DocumentsSegment`).
 public enum PadSection: Hashable, CaseIterable, Sendable {
     case home, month, accounts, search
-    case thisMonth, billsAndRecharges, tenancies, flatDetails
+    case thisMonth, billsAndRecharges, tenancies, propertyDetails
     case documents, calendar, salary
 
     /// The section a widget's link opens.
@@ -27,7 +27,7 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .thisMonth: "This month"
         case .billsAndRecharges: "Bills & recharges"
         case .tenancies: "Tenancies"
-        case .flatDetails: "Flat details"
+        case .propertyDetails: "Property details"
         case .calendar: "Calendar"
         case .documents: "Documents"
         case .salary: "Salary calculator"
@@ -43,19 +43,19 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         case .thisMonth: "building.2"
         case .billsAndRecharges: "doc.text"
         case .tenancies: "person.2"
-        case .flatDetails: "list.bullet.rectangle"
+        case .propertyDetails: "list.bullet.rectangle"
         case .calendar: "calendar.badge.clock"
         case .documents: "folder"
         case .salary: "percent"
         }
     }
 
-    /// The Flat group's sections: hidden, with the group, when there is no property.
+    /// The Property group's sections: hidden, with the group, when there is no property.
     public var requiresProperty: Bool {
         Self.propertySections.contains(self)
     }
 
-    static let propertySections: Set<PadSection> = [.thisMonth, .billsAndRecharges, .tenancies, .flatDetails]
+    static let propertySections: Set<PadSection> = [.thisMonth, .billsAndRecharges, .tenancies, .propertyDetails]
 
     /// A sidebar group: its header (nil for the first, ungrouped one) and its sections.
     public struct Group: Equatable, Sendable {
@@ -63,11 +63,11 @@ public enum PadSection: Hashable, CaseIterable, Sendable {
         public let sections: [PadSection]
     }
 
-    /// The sidebar's groups; the Flat group is left out when there is no property.
+    /// The sidebar's groups; the Property group is left out when there is no property.
     public static func groups(hasProperty: Bool) -> [Group] {
         var groups = [Group(title: nil, sections: [.home, .month, .accounts, .search])]
         if hasProperty {
-            groups.append(Group(title: "Flat", sections: [.thisMonth, .billsAndRecharges, .tenancies, .flatDetails]))
+            groups.append(Group(title: "Property", sections: [.thisMonth, .billsAndRecharges, .tenancies, .propertyDetails]))
         }
         groups.append(Group(title: "Everything else", sections: [.documents, .calendar, .salary]))
         return groups
@@ -92,8 +92,8 @@ public struct PadSidebarState: Equatable, Sendable {
     }
 }
 
-/// Flat details' segments (design review D5): the Money, Costs and Profile pages that were three sidebar entries.
-public enum FlatDetailsSegment: String, CaseIterable, Identifiable, Sendable {
+/// Property details' segments (design review D5): the Money, Costs and Profile pages that were three sidebar entries.
+public enum PropertyDetailsSegment: String, CaseIterable, Identifiable, Sendable {
     case money = "Money", costs = "Costs", profile = "Profile"
     public var id: String { rawValue }
 }

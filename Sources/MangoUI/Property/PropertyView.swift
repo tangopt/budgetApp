@@ -1,7 +1,7 @@
 import SwiftUI
 import BudgetCore
 
-/// The Flat tab (design review §4; iPhone spec §3.7). With one property it shows that property directly: its name, "Let since <date> ·
+/// The Property tab (design review §4; iPhone spec §3.7). With one property it shows that property directly: its name, "Let since <date> ·
 /// contract to <date>", this month, the mortgage and what's coming up. With several it's a list, each row pushing its
 /// property. Every figure is `PropertyGlance`'s. Read-only: "Split it" comes in step 6. Pull to refresh asks for
 /// changes (`onRefresh`) and reads again; a new sync (`syncStatus`'s last-sync time) reads again too.
@@ -34,7 +34,7 @@ public struct PropertyView: View {
                 await model.load()
             }
             .offlineBannerSlot()
-            .phonePageTitle(model.state.page?.single?.property.name ?? "Flat")
+            .phonePageTitle(model.state.page?.single?.property.name ?? "Property")
             .navigationDestination(for: PropertyDestination.self) { destination in
                 PropertyDetailScreen(model: model, destination: destination, onRefresh: onRefresh)
                     .demoBannerSlot()
@@ -120,7 +120,7 @@ struct PropertyDetailContent: View {
             .fixedSize(horizontal: false, vertical: true)
         if let checklist { FlatChecklistCard(checklist: checklist) }
         ThisMonthCard(glance: glance)
-        // The mortgage lives in Flat details on the iPad (design review §4); the Calendar owns the full list.
+        // The mortgage lives in Property details on the iPad (design review §4); the Calendar owns the full list.
         ComingUpList(obligations: Array(glance.comingUp.prefix(PropertyCopy.comingUpLimit)), currency: glance.property.currency)
     }
 }

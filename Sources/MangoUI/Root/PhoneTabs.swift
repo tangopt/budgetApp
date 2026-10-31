@@ -257,7 +257,7 @@ public struct PhoneTabs: View {
                     .offlineBanner(syncStatus, lastSync: lastSync)
             }
             if model.hasProperty {
-                Tab("Flat", systemImage: "building.2", value: PhoneTab.property) {
+                Tab("Property", systemImage: "building.2", value: PhoneTab.property) {
                     PropertyView(model: model.property, syncStatus: syncStatus, onRefresh: onRefresh)
                         .offlineBanner(syncStatus, lastSync: lastSync)
                 }

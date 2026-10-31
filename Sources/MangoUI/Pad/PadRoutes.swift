@@ -100,17 +100,17 @@ public enum PadRoutes {
         // Step 10, Task 15: Money (the year's tiles, cost categories as chips, the months newest first, one expanded to its
         // transactions), then with a transaction's document open in the panel, and Calendar (the agenda, then the month grid).
         DemoRoute(name: "pad-money", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
-            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .money, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: false), syncStatus: context.syncStatus, initialSelection: .propertyDetails, flatSegment: .money, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-money-panel", sizes: DemoRoute.padSizes, minimumFigures: 8, pad: true) { context in
-            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .money, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: moneyTabs(context, selecting: true), syncStatus: context.syncStatus, initialSelection: .propertyDetails, flatSegment: .money, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-calendar", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
         // Redesign step 4: the Calendar's filter, the flat's items only and the personal planned bills only.
         DemoRoute(name: "pad-calendar-flat", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
-            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .flat), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .property), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-calendar-personal", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
             AnyView(PadRootView(tabs: calendarTabs(context, layout: .agenda, scope: .personal), syncStatus: context.syncStatus, initialSelection: .calendar, columns: .doubleColumn))
@@ -122,10 +122,10 @@ public enum PadRoutes {
         // toast after "Not expected any more"), Profile (details, address and map, owners, mortgage, accounts, groups,
         // documents) and its mortgage terms form.
         DemoRoute(name: "pad-checks", sizes: DemoRoute.padSizes, minimumFigures: 4, pad: true) { context in
-            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .costs, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: checksTabs(context), syncStatus: context.syncStatus, initialSelection: .propertyDetails, flatSegment: .costs, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-profile", sizes: DemoRoute.padSizes, minimumFigures: 2, pad: true) { context in
-            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .flatDetails, flatSegment: .profile, columns: .doubleColumn))
+            AnyView(PadRootView(tabs: profileTabs(context), syncStatus: context.syncStatus, initialSelection: .propertyDetails, flatSegment: .profile, columns: .doubleColumn))
         },
         DemoRoute(name: "pad-mortgage-terms", sizes: DemoRoute.padSizes, minimumFigures: 0, pad: true) { context in
             let tabs = profileTabs(context)

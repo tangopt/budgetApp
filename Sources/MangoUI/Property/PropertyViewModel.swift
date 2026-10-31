@@ -8,7 +8,7 @@ public struct PropertyPage: Equatable, Sendable {
     public var glances: [PropertyGlance]
     /// The day the page was read for.
     public let today: Date
-    /// This month's checklist for the first property's current tenancy (design review §4: the Flat tab shows its
+    /// This month's checklist for the first property's current tenancy (design review §4: the Property tab shows its
     /// progress, read-only); nil when it has no tenancy.
     public var checklist: ThisMonthChecklist?
 
@@ -317,7 +317,7 @@ public enum PropertyCopy {
         return parts.joined(separator: ", ")
     }
 
-    /// The Flat tab lists the next two flat items.
+    /// The Property tab lists the next two flat items.
     public static let comingUpLimit = 2
     public static let nothingComingUp = "Nothing due in the next \(PropertyGlance.comingUpDays) days."
     public static let notLet = "No tenancy runs today."

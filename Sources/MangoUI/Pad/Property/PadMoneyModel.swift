@@ -485,12 +485,27 @@ public final class PadMoneyModel: ObservableObject {
 
     /// Expands `month` (and loads its transactions), or folds it when it is the one open.
     public func toggle(_ month: PropertyMonthFigures) async {
-        if expandedMonth == month.start {
+        // One panel for the page: a transaction open in it gives way to the month chosen, never hides it.
+        let replacesTransaction = panel != nil
+        if replacesTransaction { closePanel() }
+        if expandedMonth == month.start, !replacesTransaction {
             closeMonth()
             return
         }
         expandedMonth = month.start
         await loadBreakdown(month.start)
+    }
+
+    /// What the page's one side panel shows now: the open transaction, else the expanded month, else nothing.
+    public enum OpenPanel: Equatable, Sendable {
+        case transaction(String)
+        case month(Date)
+    }
+
+    public var openPanel: OpenPanel? {
+        if let panel { return .transaction(panel.line.id) }
+        if let expandedMonth { return .month(expandedMonth) }
+        return nil
     }
 
     public func closeMonth() { expandedMonth = nil }

@@ -78,6 +78,27 @@ final class PadMoneyModelTests: XCTestCase {
         XCTAssertNil(money.panel)
     }
 
+    /// The page has one side panel: choosing a month while a transaction is open replaces it (it used to stay hidden
+    /// behind the transaction), and choosing a transaction replaces the month.
+    func testOnePanelFollowsTheLatestSelectionWhateverItsType() async throws {
+        let money = await tabs().padMoney
+        let (month, line) = try await lineWithDocument(money)
+        XCTAssertEqual(money.openPanel, .month(month), "the month the helper expanded")
+        await money.select(line, month: month)
+        XCTAssertEqual(money.openPanel, .transaction(line.id))
+        let other = try XCTUnwrap(money.months.first { $0.start != month })
+        await money.toggle(other)
+        XCTAssertNil(money.panel, "the transaction's panel gives way")
+        XCTAssertEqual(money.openPanel, .month(other.start))
+        // The same month chosen again while a transaction is open shows the month, not folds it.
+        await money.select(line, month: other.start)
+        await money.toggle(other)
+        XCTAssertEqual(money.openPanel, .month(other.start))
+        // A second tap folds it.
+        await money.toggle(other)
+        XCTAssertNil(money.openPanel)
+    }
+
     func testFiguresTableAmountsMatchPropertyFinance() async throws {
         let money = await tabs().padMoney
         let propertyId = try XCTUnwrap(money.property.property?.id)

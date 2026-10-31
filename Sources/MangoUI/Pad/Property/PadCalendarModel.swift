@@ -57,7 +57,7 @@ public final class PadCalendarModel: ObservableObject {
 
     /// Whose items the Calendar shows (redesign step 4): everything, the flat's, or the personal planned bills.
     public enum Scope: String, CaseIterable, Identifiable, Sendable {
-        case all = "All", flat = "Flat", personal = "Personal"
+        case all = "All", property = "Property", personal = "Personal"
         public var id: String { rawValue }
     }
 
@@ -85,7 +85,7 @@ public final class PadCalendarModel: ObservableObject {
     private func scoped(_ items: [PropertyObligation]) -> [PropertyObligation] {
         switch scope {
         case .all: items
-        case .flat: items.filter { !$0.isPersonal }
+        case .property: items.filter { !$0.isPersonal }
         case .personal: items.filter(\.isPersonal)
         }
     }

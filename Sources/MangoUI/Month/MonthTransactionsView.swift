@@ -31,6 +31,8 @@ public final class MonthTransactionsModel: ObservableObject {
     @Published public private(set) var row: PayMonthReview.Row
     /// After the days: the other person's private accounts' lines for this row (step 6), read with the list.
     @Published public private(set) var privateLines: [SharedActuals.PrivateLine]
+    /// What the confirmed plan holds for the row in the pay month, by date, matched ones done; nil until read.
+    @Published public private(set) var planned: [PlannedCategoryItems.Item]?
     public let range: PayMonthReview.DayRange
     /// Whose transactions the list shows (step 6): the next load reads with it.
     public var viewer: PhoneViewer
@@ -56,12 +58,14 @@ public final class MonthTransactionsModel: ObservableObject {
         let viewer = viewer
         let day = today()
         do {
-            let (days, lines) = try await reader.read { db in
+            let (days, lines, items) = try await reader.read { db in
                 (try Self.read(db, categoryId: categoryId, range: range, viewer: viewer, today: day),
-                 try Self.privateLines(db, categoryId: categoryId, range: range, viewer: viewer, today: day))
+                 try Self.privateLines(db, categoryId: categoryId, range: range, viewer: viewer, today: day),
+                 try Self.plannedItems(db, categoryId: categoryId, range: range, viewer: viewer, today: day))
             }
             state = .loaded(days)
             privateLines = lines
+            planned = items
         } catch {
             if case .loaded = state { return }
             state = .failed(Self.loadFailureMessage)
@@ -83,6 +87,23 @@ public final class MonthTransactionsModel: ObservableObject {
         } catch {
             return .failed(loadFailureMessage)
         }
+    }
+
+    /// The row's planned items, now (the snapshot routes, whose list is preloaded); none when the read fails.
+    public nonisolated static func plannedNow(_ dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange,
+                                              viewer: PhoneViewer = .everyone, today: Date = Date()) -> [PlannedCategoryItems.Item] {
+        (try? dbQueue.read { db in try plannedItems(db, categoryId: row.id, range: range, viewer: viewer, today: today) }) ?? []
+    }
+
+    nonisolated static func plannedItems(_ db: Database, categoryId: Int64, range: PayMonthReview.DayRange, viewer: PhoneViewer,
+                                         today: Date) throws -> [PlannedCategoryItems.Item] {
+        try PlannedCategoryItems.read(db: db, categoryId: categoryId, range: range, viewer: try viewer.resolve(db: db), today: today)
+    }
+
+    /// Reads just the planned items (a list preloaded by a snapshot route has the days already).
+    public func loadPlanned() async {
+        let reader = dbQueue, categoryId = row.id, range = range, viewer = viewer, day = today()
+        planned = (try? await reader.read { db in try Self.plannedItems(db, categoryId: categoryId, range: range, viewer: viewer, today: day) }) ?? []
     }
 
     /// The row's private lines, now (the snapshot routes); none when the read fails.
@@ -159,6 +180,7 @@ public struct MonthTransactionsView: View {
                 Text(MonthCopy.range(model.range).figuresUnbroken)
                     .mangoFont(.subheadline)
                     .foregroundStyle(.secondary)
+                    .padding(.bottom, -8)
                 MonthTransactionsBody(model: model)
             }
             .padding(16)
@@ -167,7 +189,7 @@ public struct MonthTransactionsView: View {
         .mangoNavigationTitle(model.row.category.name)
         .navigationBarTitleDisplayModeInline()
         .task {
-            if case .idle = model.state { await model.load() }
+            if case .idle = model.state { await model.load() } else if model.planned == nil { await model.loadPlanned() }
         }
         .modifier(MonthDetailSheet(model: quickEdit))
     }
@@ -178,7 +200,13 @@ struct MonthTransactionsBody: View {
     @ObservedObject var model: MonthTransactionsModel
     @Environment(\.quickEdit) private var quickEdit
 
-    var body: some View { content }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if case .loaded = model.state { MonthCategorySummary(row: model.row) }
+            if let planned = model.planned, !planned.isEmpty { MonthPlannedList(items: planned, row: model.row) }
+            content
+        }
+    }
 
     @ViewBuilder
     private var content: some View {
@@ -188,11 +216,15 @@ struct MonthTransactionsBody: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
         case .failed(let message):
             EmptyState(symbol: "exclamationmark.triangle", title: "Transactions couldn't load", message: message)
-        case .loaded(let days) where days.isEmpty && model.privateLines.isEmpty:
+        case .loaded(let days) where days.isEmpty && model.privateLines.isEmpty && !(model.planned?.isEmpty == false):
             // A row with a plan and no spending yet.
             EmptyState(symbol: "tray", title: "No transactions yet",
                        message: "Nothing in \(model.row.category.name) in this pay month so far.")
         case .loaded(let days):
+            if !days.isEmpty || !model.privateLines.isEmpty {
+                Text(MonthCategorySummary.transactionsTitle(model.row.category.type)).mangoFont(.headline)
+                    .accessibilityAddTraits(.isHeader)
+            }
             ForEach(days) { day in
                 Card {
                     DateText(day.day, font: .subheadline.weight(.semibold))
