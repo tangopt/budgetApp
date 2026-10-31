@@ -134,6 +134,8 @@ public final class CheckAndLinkModel {
     public private(set) var canFinishOnMac = false
     /// The run a statement imported here made (Undo import).
     public private(set) var importedRunId: Int64?
+    /// What Save did (the document it filed), for the iPhone's closing summary.
+    public private(set) var savedResult: CheckAndLinkResult?
 
     @ObservationIgnored private let engine: (any CheckAndLinking)?
     @ObservationIgnored private let tray: DownloadsTray
@@ -200,6 +202,13 @@ public final class CheckAndLinkModel {
     public func choosePayment(_ transactionId: Int64?) async {
         guard let engine, let current = proposal, !isWorking else { return }
         await answer(edit: "Paid by") { try await engine.choosePayment(transactionId, in: current) }
+    }
+
+    /// The account picked for a bank statement that matched none (the iPhone's account list).
+    public func chooseAccount(_ accountId: Int64) async {
+        guard let engine, let current = proposal, !isWorking else { return }
+        await answer(edit: "Account") { try await engine.answer(.chooseAccount(.current, accountId), in: current) }
+        await refreshRoute()
     }
 
     /// The kind picked for a file nothing recognised.
@@ -301,6 +310,7 @@ public final class CheckAndLinkModel {
         do {
             let result = try await engine.save(proposal, item: item, tray: tray, writer: writer, now: now())
             refusal = nil
+            savedResult = result
             phase = .saved(result.summary)
             return true
         } catch {

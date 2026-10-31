@@ -70,11 +70,12 @@ enum PhoneBrowser {
     /// At launch: whatever was left in `Documents/Inbox` (a share the app didn't finish taking) goes into the tray on
     /// the iPad (PDFs only); anything else, and everything on the iPhone or with demo data, is deleted. Inbox is backed
     /// up: nothing stays there.
-    static func sweepInbox(isDemo: Bool) async {
+    /// `keeping`: shares the iPhone's import has queued to open after unlock.
+    static func sweepInbox(isDemo: Bool, keeping: Set<URL> = []) async {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let inbox = documents.appendingPathComponent("Inbox", isDirectory: true)
         let files = (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
-        for file in files {
+        for file in files where !keeping.contains(file.standardizedFileURL) {
             if let browser = shared, !isDemo {
                 await browser.ingestShared(file)
             } else {

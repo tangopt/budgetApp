@@ -28,6 +28,8 @@ public struct PhoneImportBatch: Equatable, Sendable {
         case alreadyInMango(rows: Int)
         /// A document saved (and linked, when it found its payment or bill).
         case saved(documentId: Int64?, title: String, linked: Bool)
+        /// A statement this device can't import, sent to the Mac's waiting list.
+        case sentToMac
         /// The person chose "Not now".
         case notImported
         /// Not readable; the batch went on without it.
@@ -157,6 +159,7 @@ public struct PhoneImportBatch: Equatable, Sendable {
         public var documentsSaved = 0
         public var documentsLinked = 0
         public var notImported = 0
+        public var sentToMac = 0
         public var cantRead = 0
     }
 
@@ -172,6 +175,7 @@ public struct PhoneImportBatch: Equatable, Sendable {
                 totals.documentsSaved += 1
                 if linked { totals.documentsLinked += 1 }
             case .notImported: totals.notImported += 1
+            case .sentToMac: totals.sentToMac += 1
             case .cantRead: totals.cantRead += 1
             case .waiting: break
             }

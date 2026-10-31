@@ -99,6 +99,16 @@ targets:
           - CFBundleTypeName: PDF
             LSHandlerRank: Alternate
             LSItemContentTypes: [com.adobe.pdf]
+          # "Open in Mango" from Files, Mail and Safari on the iPhone (iPhone import): statements as CSV or OFX, and photos.
+          - CFBundleTypeName: Statement or photo
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.comma-separated-values-text, public.image, ubberninja.mango.ofx]
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: ubberninja.mango.ofx
+            UTTypeDescription: Open Financial Exchange statement
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [ofx, qfx]
         LSSupportsOpeningDocumentsInPlace: false
     settings:
       base:
