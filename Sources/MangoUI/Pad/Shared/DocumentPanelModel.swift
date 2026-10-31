@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import BudgetCore
 import GRDB
+import os
 
 /// What the document panel lists under the thumbnail (step 10, Task 2), in the panel's order: Kind, From, Period,
 /// Amount, Date, Linked to. A detail the document doesn't have is nil, never a "—" string. Days and periods come
@@ -74,18 +75,18 @@ public struct DocumentPanelDetails: Equatable, Sendable {
     }
 }
 
-/// A download that did not answer in time.
+/// A read or download that did not answer in time.
 struct DocumentPanelTimeout: Error {}
 
 /// Resumes a continuation once, whichever of the work and the timer answers first.
-private final class DocumentPanelOnce: @unchecked Sendable {
+private final class DocumentPanelOnce<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<URL, Error>?
+    private var continuation: CheckedContinuation<T, Error>?
 
-    init(_ continuation: CheckedContinuation<URL, Error>) { self.continuation = continuation }
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
 
     @discardableResult
-    func finish(_ result: Result<URL, Error>) -> Bool {
+    func finish(_ result: Result<T, Error>) -> Bool {
         lock.lock()
         let taken = continuation
         continuation = nil
@@ -95,6 +96,9 @@ private final class DocumentPanelOnce: @unchecked Sendable {
         return true
     }
 }
+
+/// The panel's stages in Console (subsystem ubberninja.mango, category "documents"): document ids and timings only.
+private let documentsLog = Logger(subsystem: "ubberninja.mango", category: "documents")
 
 public enum DocumentPanelError: Error, Equatable, Sendable {
     case notFound
@@ -142,8 +146,12 @@ extension EnvironmentValues {
 }
 
 /// One document in the panel and the full view: its title and details, and its file as it arrives.
-@MainActor
-public final class DocumentPanelModel: ObservableObject {
+///
+/// `@Observable`, not `ObservableObject`: the views keep it in `@State`, which never subscribes to an
+/// `ObservableObject`'s changes. Built that way (TestFlight 1036–1038) the panel drew its first frame (no title, no
+/// details, "Downloading…") and never again, whatever the load did after.
+@MainActor @Observable
+public final class DocumentPanelModel {
     public enum File: Equatable {
         case loading
         case ready(URL)
@@ -151,20 +159,31 @@ public final class DocumentPanelModel: ObservableObject {
     }
 
     public let documentId: Int64
-    @Published public private(set) var title = ""
-    @Published public private(set) var details: DocumentPanelDetails?
-    @Published public private(set) var file: File = .loading
+    /// The document's name once read; until then the opening screen's own name for it (a receipt's "Receipt 50").
+    public private(set) var title: String
+    public private(set) var details: DocumentPanelDetails?
+    public private(set) var file: File = .loading
 
-    private let source: DocumentPanelSource?
-    /// How long a download may take before the panel gives up and offers "Try again". The engine queues a download
-    /// behind any sync run in progress, and a stalled fetch never answers: without this the panel showed
-    /// "Downloading…" for ever.
-    private let timeout: Duration
+    @ObservationIgnored private let source: DocumentPanelSource?
+    /// How long a whole load (the database read, then the download) may take before the panel gives up and offers
+    /// "Try again". The read waits behind any write on the database's queue (a sync run applying a pull), and the
+    /// engine queues a download behind the sync run in progress: either can outlast the user's patience.
+    @ObservationIgnored private let timeout: Duration
+    /// The latest load; an older one that answers late changes nothing.
+    @ObservationIgnored private var attempt = 0
 
-    public init(documentId: Int64, source: DocumentPanelSource?, timeout: Duration = .seconds(60)) {
+    public init(documentId: Int64, source: DocumentPanelSource?, title: String = "", timeout: Duration = .seconds(60)) {
         self.documentId = documentId
         self.source = source
+        self.title = title
         self.timeout = timeout
+    }
+
+    private typealias Read = (name: String, path: String, details: DocumentPanelDetails)
+
+    nonisolated private static func read(_ db: Database, id: Int64) throws -> Read? {
+        guard let summary = try EvidenceDocumentSummary.filter(Column("id") == id).fetchOne(db) else { return nil }
+        return (summary.displayName, summary.storedRelativePath, try DocumentPanelDetails.load(db: db, documentId: id))
     }
 
     /// Reads everything now when the source has its files locally (the snapshot routes' first frame); false otherwise.
@@ -172,67 +191,94 @@ public final class DocumentPanelModel: ObservableObject {
     public func loadNow() -> Bool {
         guard let source, let local = source.localFile else { return false }
         let id = documentId
-        guard let (name, path, details) = try? source.dbQueue.read({ db -> (String, String, DocumentPanelDetails)? in
-            guard let summary = try EvidenceDocumentSummary.filter(Column("id") == id).fetchOne(db) else { return nil }
-            return (summary.displayName, summary.storedRelativePath, try DocumentPanelDetails.load(db: db, documentId: id))
-        }) else { return false }
-        title = name
-        self.details = details
-        file = local(path).map { .ready($0) } ?? .loading
+        guard let read = try? source.dbQueue.read({ db in try Self.read(db, id: id) }) else { return false }
+        title = read.name
+        details = read.details
+        file = local(read.path).map { .ready($0) } ?? .loading
         return true
     }
 
-    /// Reads the details and fetches the file.
+    /// Reads the details and fetches the file (nothing when the file is already here).
     public func load() async {
         if case .ready = file { return }
-        guard let source else { file = .failed(PadDocumentsModel.notOnDeviceCopy); return }
-        let id = documentId
-        let read = try? await source.dbQueue.read { db -> (String, String, DocumentPanelDetails)? in
-            guard let summary = try EvidenceDocumentSummary.filter(Column("id") == id).fetchOne(db) else { return nil }
-            return (summary.displayName, summary.storedRelativePath, try DocumentPanelDetails.load(db: db, documentId: id))
-        }
-        guard let (name, path, details) = read ?? nil else { file = .failed(PadDocumentsModel.failureCopy); return }
-        title = name
-        self.details = details
-        await fetch(path: path)
+        await run()
     }
 
-    /// Fetches the file again (after a failure).
+    /// Reads and fetches again (after a failure, or a load that never answered).
     public func retry() async {
-        guard let source else { return }
-        let id = documentId
-        guard let path = try? await source.dbQueue.read({ db in
-            try EvidenceDocumentSummary.filter(Column("id") == id).fetchOne(db)?.storedRelativePath
-        }) else { return }
-        await fetch(path: path)
+        await run()
     }
 
-    private func fetch(path: String) async {
-        guard let source else { return }
-        file = .loading
-        do {
-            file = .ready(try await Self.open(path, from: source, timeout: timeout))
-        } catch is PadDocumentNotOnDevice {
+    /// One load: always ends in `.ready` or `.failed` within `timeout`, whatever the database and the download do.
+    private func run() async {
+        attempt += 1
+        let mine = attempt
+        let id = documentId
+        guard let source else {
+            documentsLog.error("document \(id, privacy: .public): no document source here")
             file = .failed(PadDocumentsModel.notOnDeviceCopy)
-        } catch is DocumentPanelTimeout {
-            file = .failed(PadDocumentsModel.timedOutCopy)
+            return
+        }
+        file = .loading
+        let started = ContinuousClock.now
+        let deadline = started.advanced(by: timeout)
+        func elapsed() -> Int64 { (ContinuousClock.now - started).milliseconds }
+        documentsLog.info("document \(id, privacy: .public) load \(mine, privacy: .public): reading")
+        let read: Read?
+        do {
+            read = try await Self.answer(by: deadline) { try await source.dbQueue.read { db in try Self.read(db, id: id) } }
         } catch {
+            guard mine == attempt else { return }
+            documentsLog.error("document \(id, privacy: .public) load \(mine, privacy: .public): read \(error is DocumentPanelTimeout ? "timed out" : "failed", privacy: .public) after \(elapsed(), privacy: .public) ms")
+            file = .failed(error is DocumentPanelTimeout ? PadDocumentsModel.timedOutCopy : PadDocumentsModel.failureCopy)
+            return
+        }
+        guard mine == attempt else { return }
+        guard let read else {
+            documentsLog.error("document \(id, privacy: .public) load \(mine, privacy: .public): not in the database")
             file = .failed(PadDocumentsModel.failureCopy)
+            return
+        }
+        title = read.name
+        details = read.details
+        documentsLog.info("document \(id, privacy: .public) load \(mine, privacy: .public): read in \(elapsed(), privacy: .public) ms; opening")
+        let path = read.path
+        do {
+            let url = try await Self.answer(by: deadline) { try await source.open(path) }
+            guard mine == attempt else { return }
+            documentsLog.info("document \(id, privacy: .public) load \(mine, privacy: .public): ready in \(elapsed(), privacy: .public) ms")
+            file = .ready(url)
+        } catch {
+            guard mine == attempt else { return }
+            let copy: String
+            switch error {
+            case is PadDocumentNotOnDevice: copy = PadDocumentsModel.notOnDeviceCopy
+            case is DocumentPanelTimeout: copy = PadDocumentsModel.timedOutCopy
+            default: copy = PadDocumentsModel.failureCopy
+            }
+            documentsLog.error("document \(id, privacy: .public) load \(mine, privacy: .public): open failed (\(String(describing: type(of: error)), privacy: .public)) after \(elapsed(), privacy: .public) ms")
+            file = .failed(copy)
         }
     }
 
-    /// `source.open(path)`, or `DocumentPanelTimeout` when it has not answered within `timeout` (the stalled work is
-    /// cancelled, not waited for).
-    nonisolated static func open(_ path: String, from source: DocumentPanelSource, timeout: Duration) async throws -> URL {
+    /// `work`'s answer, or `DocumentPanelTimeout` when it has not answered by `deadline`. The stalled work is
+    /// cancelled, not waited for: a database read can't be cancelled and a queued download waits its turn, so only
+    /// this race guarantees an answer.
+    nonisolated static func answer<T: Sendable>(by deadline: ContinuousClock.Instant,
+                                                _ work: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             let once = DocumentPanelOnce(continuation)
-            let work = Task {
-                do { once.finish(.success(try await source.open(path))) } catch { once.finish(.failure(error)) }
+            let task = Task {
+                do { once.finish(.success(try await work())) } catch { once.finish(.failure(error)) }
             }
             Task {
-                try? await Task.sleep(for: timeout)
-                if once.finish(.failure(DocumentPanelTimeout())) { work.cancel() }
+                try? await Task.sleep(until: deadline, clock: .continuous)
+                if once.finish(.failure(DocumentPanelTimeout())) { task.cancel() }
             }
         }
     }
+}
+
+private extension Duration {
+    var milliseconds: Int64 { components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000 }
 }

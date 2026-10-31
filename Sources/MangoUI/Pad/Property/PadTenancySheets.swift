@@ -260,7 +260,7 @@ struct PadReceiptPanelHost<PanelExtra: View>: ViewModifier {
     @ViewBuilder
     private func panel(_ receipt: PadTenanciesModel.Receipt) -> some View {
         if let documentId = receipt.row.documentIds.first {
-            DocumentPanel(documentId: documentId, onClose: { model.closePanel() }) { extra(receipt) }
+            DocumentPanel(documentId: documentId, title: "Receipt \(receipt.receipt.receiptNumber)", onClose: { model.closePanel() }) { extra(receipt) }
                 .id(documentId)
         } else {
             PadReceiptPlainPanel(receipt: receipt, onClose: { model.closePanel() }) { extra(receipt) }

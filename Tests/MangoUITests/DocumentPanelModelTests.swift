@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Transaction
@@ -140,6 +141,125 @@ final class DocumentPanelModelTests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.file, .ready(url))
     }
+
+    // MARK: The device hang (TestFlight 1036–1038): "Downloading…" for ever, no title, no details
+
+    /// Root cause: the views keep the model in `@State`, which only sees changes the model reports through
+    /// Observation. The panel must hear the title, the details and the file arrive.
+    func testTheViewHearsTheLoadFinish() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let url = URL(fileURLWithPath: "/tmp/receipt.pdf")
+        let model = DocumentPanelModel(documentId: id, source: DocumentPanelSource(dbQueue: db, open: { _ in url }), timeout: .seconds(5))
+        let changed = Flag()
+        withObservationTracking {
+            _ = model.title
+            _ = model.details
+            _ = model.file
+        } onChange: { changed.set() }
+        await model.load()
+        XCTAssertEqual(model.file, .ready(url))
+        XCTAssertTrue(changed.isSet, "a view drawing the panel is told to draw it again")
+    }
+
+    /// A long write holding the database's queue (a sync run applying a pull): the read can't be cancelled, so the
+    /// load gives up at its deadline, keeps the screen's title, and Try again reads once the queue is free.
+    func testAStalledReadEndsInAFailureWithRetry() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let url = URL(fileURLWithPath: "/tmp/receipt.pdf")
+        let opened = Counter()
+        let source = DocumentPanelSource(dbQueue: db, open: { _ in await opened.bump(); return url })
+        let holding = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? db.write { _ in
+                holding.signal()
+                release.wait()
+            }
+        }
+        holding.wait()
+        let model = DocumentPanelModel(documentId: id, source: source, title: "Receipt 50", timeout: .milliseconds(200))
+        await model.load()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.timedOutCopy))
+        XCTAssertEqual(model.title, "Receipt 50", "the screen's own name stays while the read is held up")
+        XCTAssertNil(model.details)
+        let none = await opened.count
+        XCTAssertEqual(none, 0)
+
+        release.signal()
+        await model.retry()
+        XCTAssertEqual(model.file, .ready(url))
+        XCTAssertNotNil(model.details)
+        XCTAssertEqual(model.title, "Receipt.pdf", "the document's own name once read")
+    }
+
+    /// A download that never answers: the whole load (read and open) shares one deadline, and the stalled open is
+    /// cancelled; Try again asks again and, answered this time, is ready.
+    func testACancelledDownloadThenRetryIsReady() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let url = URL(fileURLWithPath: "/tmp/receipt.pdf")
+        let attempts = Counter()
+        let cancelled = Flag()
+        let source = DocumentPanelSource(dbQueue: db, open: { _ in
+            await attempts.bump()
+            if await attempts.count == 1 {
+                do { try await Task.sleep(for: .seconds(3600)) } catch { cancelled.set(); throw error }
+            }
+            return url
+        })
+        let model = DocumentPanelModel(documentId: id, source: source, timeout: .milliseconds(200))
+        await model.load()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.timedOutCopy))
+        XCTAssertNotNil(model.details, "the read answered before the download stalled")
+        for _ in 0..<50 where !cancelled.isSet { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(cancelled.isSet, "the stalled download is cancelled, not left running")
+        await model.retry()
+        XCTAssertEqual(model.file, .ready(url))
+    }
+
+    /// Try again after a failed read reads again (it used to return without a word, leaving the failure up).
+    func testRetryAfterAMissingDocumentReadsAgain() async throws {
+        let db = try TestDatabase.migrated()
+        let url = URL(fileURLWithPath: "/tmp/receipt.pdf")
+        let model = DocumentPanelModel(documentId: 999, source: DocumentPanelSource(dbQueue: db, open: { _ in url }), timeout: .seconds(5))
+        await model.load()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.failureCopy))
+        await model.retry()
+        XCTAssertEqual(model.file, .failed(PadDocumentsModel.failureCopy), "ends in a failure again, never left loading")
+    }
+
+    /// An older load that answers after a newer one began changes nothing.
+    func testALateAnswerFromAnOlderLoadIsIgnored() async throws {
+        let db = try demo()
+        let id = try receiptId(db)
+        let late = URL(fileURLWithPath: "/tmp/late.pdf")
+        let fresh = URL(fileURLWithPath: "/tmp/fresh.pdf")
+        let attempts = Counter()
+        let source = DocumentPanelSource(dbQueue: db, open: { _ in
+            await attempts.bump()
+            if await attempts.count == 1 {
+                try? await Task.sleep(for: .milliseconds(300))
+                return late
+            }
+            return fresh
+        })
+        let model = DocumentPanelModel(documentId: id, source: source, timeout: .seconds(5))
+        let first = Task { await model.load() }
+        for _ in 0..<50 { if await attempts.count == 1 { break }; try await Task.sleep(for: .milliseconds(10)) }
+        await model.retry()
+        XCTAssertEqual(model.file, .ready(fresh))
+        await first.value
+        XCTAssertEqual(model.file, .ready(fresh))
+    }
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 private actor Counter {

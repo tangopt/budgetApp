@@ -59,8 +59,7 @@ public struct DocumentFullView: View {
             if loaded.loadNow() { model = loaded }
         }
         .task(id: documentId) {
-            if model?.documentId == documentId, model?.file.isReady == true { return }
-            let loaded = DocumentPanelModel(documentId: documentId, source: source)
+            let loaded = model?.documentId == documentId ? model! : DocumentPanelModel(documentId: documentId, source: source)
             model = loaded
             await loaded.load()
         }

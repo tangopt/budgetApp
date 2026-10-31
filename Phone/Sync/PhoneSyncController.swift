@@ -80,6 +80,8 @@ final class PhoneSyncController: ObservableObject {
     @Published private(set) var waitingChanges = 0
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Sync")
+    /// The document panel's downloads, beside the panel's own stages (`DocumentPanelModel`): record ids only.
+    private static let documentsLog = Logger(subsystem: "ubberninja.mango", category: "documents")
 
     private var dbQueue: DatabaseQueue?
     private var scheduler: SyncScheduler?
@@ -146,14 +148,27 @@ final class PhoneSyncController: ObservableObject {
     /// The document's file, downloaded first when this iPad doesn't have it (`SyncEngineCore.downloadDocument`):
     /// fetched in its zone, opened with that zone's key, checked against its hash and written into the library only.
     func openDocument(uuid: String) async throws -> URL {
-        guard isPad, libraryRoot != nil, let engine, !isDemo else { throw PadDocumentNotOnDevice() }
-        return try await engine.downloadDocument(uuid: uuid)
+        guard isPad, libraryRoot != nil, let engine, !isDemo else {
+            Self.documentsLog.error("document \(uuid, privacy: .public): no engine to download it (isPad \(self.isPad, privacy: .public), demo \(self.isDemo, privacy: .public))")
+            throw PadDocumentNotOnDevice()
+        }
+        let started = ContinuousClock.now
+        Self.documentsLog.info("document \(uuid, privacy: .public): download queued")
+        do {
+            let url = try await engine.downloadDocument(uuid: uuid)
+            Self.documentsLog.info("document \(uuid, privacy: .public): downloaded in \(String(describing: ContinuousClock.now - started), privacy: .public)")
+            return url
+        } catch {
+            Self.documentsLog.error("document \(uuid, privacy: .public): download failed (\(String(describing: type(of: error)), privacy: .public)) after \(String(describing: ContinuousClock.now - started), privacy: .public)")
+            throw error
+        }
     }
 
     /// The Documents screen's hook (`PadDocumentsModel.open`): the document stored at `storedRelativePath`.
     func openDocument(storedRelativePath: String) async throws -> URL {
         guard let dbQueue, !isDemo else { throw PadDocumentNotOnDevice() }
         guard let uuid = try await dbQueue.read({ db in try SyncFileTables.documentUUID(storedRelativePath: storedRelativePath, db: db) }) else {
+            Self.documentsLog.error("a document path has no synced record here")
             throw PadDocumentNotOnDevice()
         }
         return try await openDocument(uuid: uuid)
