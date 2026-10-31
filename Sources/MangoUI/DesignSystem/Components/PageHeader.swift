@@ -57,7 +57,7 @@ struct PageHeader<Trailing: View>: View {
             VStack(alignment: .leading, spacing: MangoSpacing.xxs) {
                 Text(title)
                     .mangoFont(.largeTitle, weight: .bold)
-                    .lineLimit(1).truncationMode(.middle)
+                    .lineLimit(1).minimumScaleFactor(0.65).truncationMode(.middle)   // shrinks before it truncates (a narrow column beside a panel)
                     .accessibilityAddTraits(.isHeader)
                 if PageHeaderRules.hasContextLine(contexts: contexts.count, subtitle: subtitle) {
                     HStack(spacing: MangoSpacing.xs) {

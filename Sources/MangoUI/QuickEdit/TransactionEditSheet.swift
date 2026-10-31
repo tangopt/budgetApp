@@ -40,7 +40,8 @@ struct TransactionEditForm: View {
                 }
                 .padding(.vertical, 4)
             }
-            Section("Category") {
+            // The picker names itself: a "Category" header over a "Category" row said it twice.
+            Section {
                 Picker("Category", selection: $categoryId) {
                     ForEach(sections) { section in
                         Section(section.title ?? "") {

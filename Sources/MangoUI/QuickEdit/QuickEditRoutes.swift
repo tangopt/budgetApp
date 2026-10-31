@@ -39,6 +39,15 @@ public enum QuickEditRoutes {
                               today: { today })
     }
 
+    /// The read view of the demo's boiler repair as the admin sees it, Edit offered (journey step before the edit form).
+    @MainActor
+    static func readSheet(_ context: PhoneDemoContext) -> AnyView {
+        guard let row = SearchRoutes.detailRow(context) else { return AnyView(Text("The demo's boiler repair didn't load")) }
+        let model = model(context)
+        model.preload(lists: QuickEditModel.readListsNow(context.dbQueue), refusal: nil)
+        return AnyView(TransactionDetailSheet(row: row, startsEditable: true).environment(\.quickEdit, model))
+    }
+
     @MainActor
     private static func editSheet(_ context: PhoneDemoContext, refusal: String?) -> AnyView {
         guard let row = SearchRoutes.detailRow(context) else { return AnyView(Text("The demo's boiler repair didn't load")) }
