@@ -86,6 +86,9 @@ public final class PhoneImportCoordinator {
             close()
         } else {
             openQueued()
+            // Whether this person may import is known only once they are signed in (unlocked): the check made when
+            // the source was set, before unlock, saw nobody and hid the Import buttons.
+            Task { await refreshAccess() }
         }
     }
 
