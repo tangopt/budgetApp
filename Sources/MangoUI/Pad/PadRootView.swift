@@ -2,7 +2,7 @@ import SwiftUI
 import BudgetCore
 
 /// The iPad's unlocked app (step 8, Task 6; step 10, Task 3; redesign step 4): the sidebar (`PadSidebar`: Home, Month, Accounts,
-/// Search; Flat (This month, Bills & recharges, Tenancies, Flat details); Everything else (Documents, Calendar, Salary calculator); collapsible to an icon rail; footer with the person, sync and Settings) and the selected
+/// Search; Property (This month, Bills & recharges, Tenancies, Property details); Everything else (Documents, Calendar, Salary calculator); collapsible to an icon rail; footer with the person, sync and Settings) and the selected
 /// screen as its detail. Home, Month and Search reuse the iPhone's views over the same
 /// `PhoneTabsModel`; the others, This month (`PadThisMonthView`) included, are the iPad's own screens. The lock cover, banners and Settings sheet are the app's, as
 /// on iPhone.
@@ -26,8 +26,8 @@ public struct PadRootView: View {
     let onRefresh: () async -> Void
     let onSettings: () -> Void
     @State private var selection: PadSection
-    /// Flat details' and Documents' segments, kept while the person is elsewhere.
-    @State private var flatSegment: FlatDetailsSegment
+    /// Property details' and Documents' segments, kept while the person is elsewhere.
+    @State private var flatSegment: PropertyDetailsSegment
     @State private var documentsSegment: DocumentsSegment
     @State private var userName = "You"
     @State private var ownSalary = SalaryComparisonViewModel()
@@ -39,7 +39,7 @@ public struct PadRootView: View {
     /// `waitingChanges`: this iPad's changes the server hasn't taken yet, in the zones it pushes to
     /// (`SyncWaitingChanges`). `browser`: the built-in browser; ignored with demo data, where it is hidden.
     public init(tabs: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
-                initialSelection: PadSection = .home, flatSegment: FlatDetailsSegment = .money,
+                initialSelection: PadSection = .home, flatSegment: PropertyDetailsSegment = .money,
                 documentsSegment: DocumentsSegment = .library, sidebarCollapsed: Bool = false,
                 waitingChanges: Int = 0, browser: BrowserModel? = nil, salary: SalaryComparisonViewModel? = nil, columns: NavigationSplitViewVisibility = .automatic,
                 onRefresh: @escaping () async -> Void = {}, onSettings: @escaping () -> Void = {}) {
@@ -110,7 +110,7 @@ public struct PadRootView: View {
             }
         case .billsAndRecharges: tabs.padBills.selectedBillId != nil
         case .tenancies: tabs.padTenancies.selectedReceiptId != nil
-        case .flatDetails: flatSegment == .money && (tabs.padMoney.panel != nil || tabs.padMoney.expandedMonth != nil)
+        case .propertyDetails: flatSegment == .money && (tabs.padMoney.panel != nil || tabs.padMoney.expandedMonth != nil)
         default: false
         }
     }
@@ -160,20 +160,20 @@ public struct PadRootView: View {
             documentsDetail
         case .salary:
             NavigationStack { SalarySimulatorScreen(viewModel: salary ?? ownSalary) }
-        case .flatDetails:
-            flatDetails
+        case .propertyDetails:
+            propertyDetails
         case .calendar:
             PadCalendarView(model: tabs.padCalendar, syncStatus: syncStatus)
                 .offlineBanner(syncStatus, lastSync: lastSync)
         }
     }
 
-    /// Flat details (design review D5): Money, Costs (the recurring-cost checks) and Profile, one segment at a time.
+    /// Property details (design review D5): Money, Costs (the recurring-cost checks) and Profile, one segment at a time.
     @ViewBuilder
-    private var flatDetails: some View {
-        let segments = PadPageSegments(title: "Flat details", names: FlatDetailsSegment.allCases.map(\.rawValue),
-                                       selected: FlatDetailsSegment.allCases.firstIndex(of: flatSegment) ?? 0) {
-            flatSegment = FlatDetailsSegment.allCases[$0]
+    private var propertyDetails: some View {
+        let segments = PadPageSegments(title: "Property details", names: PropertyDetailsSegment.allCases.map(\.rawValue),
+                                       selected: PropertyDetailsSegment.allCases.firstIndex(of: flatSegment) ?? 0) {
+            flatSegment = PropertyDetailsSegment.allCases[$0]
         }
         Group {
             switch flatSegment {

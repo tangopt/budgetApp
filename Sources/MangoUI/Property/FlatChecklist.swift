@@ -1,7 +1,7 @@
 import SwiftUI
 import BudgetCore
 
-/// The Flat tab's view of This month's checklist (design review §4, §3.4): how far along it is and each step's state in
+/// The Property tab's view of This month's checklist (design review §4, §3.4): how far along it is and each step's state in
 /// words, read-only (the iPad does the work). A step shows a status pill, never an action button, so the step-card rule
 /// holds trivially here.
 struct FlatChecklistPresentation: Equatable {
@@ -43,7 +43,7 @@ struct FlatChecklistPresentation: Equatable {
     func isFilled(_ index: Int) -> Bool { index < done }
 }
 
-/// This month on the Flat tab: the count and a segment per step, then the steps (the current one with its detail).
+/// This month on the Property tab: the count and a segment per step, then the steps (the current one with its detail).
 struct FlatChecklistCard: View {
     let checklist: ThisMonthChecklist
     @Environment(\.phoneTheme) private var theme

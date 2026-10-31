@@ -197,7 +197,7 @@ final class PropertyTests: XCTestCase {
     }
 }
 
-/// The Flat tab's checklist progress (design review §4).
+/// The Property tab's checklist progress (design review §4).
 final class FlatChecklistTests: XCTestCase {
     private func step(_ id: ThisMonthChecklist.StepID, _ state: ThisMonthChecklist.StepState, detail: String? = nil) -> ThisMonthChecklist.Step {
         ThisMonthChecklist.Step(id: id, state: state, headline: id.rawValue, detail: detail, actions: [])

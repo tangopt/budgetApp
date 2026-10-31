@@ -8,23 +8,23 @@ import TestSupport
 final class PadSectionTests: XCTestCase {
     func testSidebarHasElevenItemsInThreeGroups() {
         let groups = PadSection.groups(hasProperty: true)
-        XCTAssertEqual(groups.map(\.title), [nil, "Flat", "Everything else"])
+        XCTAssertEqual(groups.map(\.title), [nil, "Property", "Everything else"])
         XCTAssertEqual(groups[0].sections, [.home, .month, .accounts, .search])
-        XCTAssertEqual(groups[1].sections.map(\.title), ["This month", "Bills & recharges", "Tenancies", "Flat details"])
+        XCTAssertEqual(groups[1].sections.map(\.title), ["This month", "Bills & recharges", "Tenancies", "Property details"])
         XCTAssertEqual(groups[2].sections.map(\.title), ["Documents", "Calendar", "Salary calculator"])
         XCTAssertEqual(groups.flatMap(\.sections).count, 11)
         XCTAssertEqual(PadSection.allCases.count, 11)
     }
 
     func testSegments() {
-        XCTAssertEqual(FlatDetailsSegment.allCases.map(\.rawValue), ["Money", "Costs", "Profile"])
+        XCTAssertEqual(PropertyDetailsSegment.allCases.map(\.rawValue), ["Money", "Costs", "Profile"])
         XCTAssertEqual(DocumentsSegment.allCases.map(\.rawValue), ["Missing", "Library", "Downloads"])
     }
 
     func testDocumentsAndCalendarAreNotFlatSections() {
         XCTAssertFalse(PadSection.documents.requiresProperty)
         XCTAssertFalse(PadSection.calendar.requiresProperty)
-        XCTAssertTrue(PadSection.flatDetails.requiresProperty)
+        XCTAssertTrue(PadSection.propertyDetails.requiresProperty)
     }
 
     func testSalaryIsInEverythingElseGroup() {
@@ -81,7 +81,7 @@ final class PadSectionTests: XCTestCase {
         try await level(.view)
         let viewing = await tabs(.iCloudUser(recordName: "_member"))
         XCTAssertTrue(viewing.showsPropertySections)
-        XCTAssertEqual(PadSection.groups(hasProperty: viewing.showsPropertySections).map(\.title), [nil, "Flat", "Everything else"])
+        XCTAssertEqual(PadSection.groups(hasProperty: viewing.showsPropertySections).map(\.title), [nil, "Property", "Everything else"])
     }
 
     func testEverySectionHasTitleAndSymbol() {

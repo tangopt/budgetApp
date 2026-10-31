@@ -53,7 +53,7 @@ struct PadCalendarView: View {
 
     // MARK: Controls
 
-    /// All · Flat · Personal, as the page's one context picker (offered only when the viewer sees both sides).
+    /// All · Property · Personal, as the page's one context picker (offered only when the viewer sees both sides).
     private var scopeContext: [ContextPicker] {
         guard !model.offeredScopes.isEmpty else { return [] }
         return [ContextPicker("Show", items: model.offeredScopes, selected: model.scope.rawValue, id: \.rawValue,

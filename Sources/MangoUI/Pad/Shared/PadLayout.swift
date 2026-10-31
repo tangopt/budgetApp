@@ -43,7 +43,7 @@ struct PadPageInsetReading<Content: View>: View {
     var body: some View { content(inset) }
 }
 
-/// A page that is one of several segments of a sidebar destination (Flat details: Money, Costs, Profile; Documents:
+/// A page that is one of several segments of a sidebar destination (Property details: Money, Costs, Profile; Documents:
 /// Missing, Library, Downloads). `padPage` then titles the page with the destination's `title` and draws the segmented
 /// control under the header; the segment's own title is only its name in the control. Set on the destination by
 /// `PadRootView`.

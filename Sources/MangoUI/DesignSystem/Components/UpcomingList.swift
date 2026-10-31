@@ -45,7 +45,7 @@ struct UpcomingEntry: Identifiable, Equatable {
         } ?? .words("Amount not known"))
     }
 
-    /// A property obligation on the Flat tab's Coming up.
+    /// A property obligation on the Property tab's Coming up.
     init(_ obligation: PropertyObligation, currency: Currency) {
         self.init(id: obligation.id, title: obligation.title, caption: PropertyCopy.comingUpCaption(obligation),
                   figure: obligation.expectedMinorUnits.map { Figure.due(minorUnits: $0, currency: obligation.currency ?? currency) }
@@ -53,7 +53,7 @@ struct UpcomingEntry: Identifiable, Equatable {
     }
 }
 
-/// The one upcoming list (design review D1): Home's Upcoming, the Flat tab's Coming up and the Calendar's agenda all
+/// The one upcoming list (design review D1): Home's Upcoming, the Property tab's Coming up and the Calendar's agenda all
 /// draw their entries here, as `ListRow`s on the card, hairlines between them (none in Flat). With `select` a row
 /// can be chosen (the iPad's Calendar opens a panel); `selectedId` marks the chosen one.
 struct UpcomingList: View {
