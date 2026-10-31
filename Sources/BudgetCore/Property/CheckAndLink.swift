@@ -646,9 +646,10 @@ public struct CheckAndLink: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: source.path) else { throw CheckAndLinkRefusal.notInTray }
         let folder = stagingFolder(item)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var name = (DownloadsTray.displayName(item.fileName) as NSString).lastPathComponent
-        if name.isEmpty || name.hasPrefix(".") { name = "Download.pdf" }
-        if (name as NSString).pathExtension.lowercased() != "pdf" { name += ".pdf" }
+        let ext = item.fileExtension
+        var name = (DownloadsTray.displayName(item.fileName, fileExtension: ext) as NSString).lastPathComponent
+        if name.isEmpty || name.hasPrefix(".") { name = "Download." + ext }
+        if (name as NSString).pathExtension.lowercased() != ext { name += "." + ext }
         let url = folder.appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         try FileManager.default.copyItem(at: source, to: url)

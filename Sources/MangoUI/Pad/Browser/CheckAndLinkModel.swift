@@ -8,6 +8,8 @@ public protocol CheckAndLinking: Sendable {
     func propose(_ item: TrayItem, in tray: DownloadsTray, propertyId: Int64?) async throws -> CheckAndLinkProposal
     func choosePayment(_ transactionId: Int64?, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal
     func chooseKind(_ choice: ImportKindChoice, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal
+    /// Any other answer the import reads (the iPhone's account picker: `.chooseAccount`).
+    func answer(_ resolution: ImportResolution, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal
     func save(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
               now: Date) async throws -> CheckAndLinkResult
     func discard(_ item: TrayItem?)
@@ -17,6 +19,8 @@ public protocol CheckAndLinking: Sendable {
 }
 
 extension CheckAndLinking {
+    public func answer(_ resolution: ImportResolution, in proposal: CheckAndLinkProposal) async throws -> CheckAndLinkProposal { proposal }
+
     public func importStatement(_ proposal: CheckAndLinkProposal, item: TrayItem, tray: DownloadsTray, writer: DeviceWriter,
                                 importer: PadStatementImport, now: Date) async throws -> CheckAndLinkResult {
         throw CheckAndLinkRefusal.macOnly("Bank statement")

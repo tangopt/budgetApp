@@ -11,14 +11,33 @@ public struct TrayItem: Codable, Equatable, Identifiable, Sendable {
     public var receivedAt: Date
     /// The site it came from; nil when it was shared in.
     public var sourceHost: String?
+    /// The stored file's extension, lower case: "pdf" for everything the browser fetches; the iPhone's import inbox
+    /// also keeps "csv" and images.
+    public var fileExtension: String
 
-    public init(id: UUID, fileName: String, sha256: String, byteCount: Int, receivedAt: Date, sourceHost: String?) {
+    public init(id: UUID, fileName: String, sha256: String, byteCount: Int, receivedAt: Date, sourceHost: String?,
+                fileExtension: String = "pdf") {
         self.id = id
         self.fileName = fileName
         self.sha256 = sha256
         self.byteCount = byteCount
         self.receivedAt = receivedAt
         self.sourceHost = sourceHost
+        self.fileExtension = fileExtension
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, fileName, sha256, byteCount, receivedAt, sourceHost, fileExtension }
+
+    /// An index written before the extension existed holds PDFs only.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        fileName = try values.decode(String.self, forKey: .fileName)
+        sha256 = try values.decode(String.self, forKey: .sha256)
+        byteCount = try values.decode(Int.self, forKey: .byteCount)
+        receivedAt = try values.decode(Date.self, forKey: .receivedAt)
+        sourceHost = try values.decodeIfPresent(String.self, forKey: .sourceHost)
+        fileExtension = try values.decodeIfPresent(String.self, forKey: .fileExtension) ?? "pdf"
     }
 }
 
@@ -30,12 +49,15 @@ public enum TrayError: Error, Equatable, LocalizedError {
     case empty
     /// Larger than the tray takes (`DownloadsTray.maxBytes`, 50 MB): no bill or statement is that big.
     case tooLarge
+    /// The iPhone's import inbox only: not a PDF, CSV or image.
+    case unsupportedType
 
     public var errorDescription: String? {
         switch self {
         case .notAPDF: "That download isn't a PDF, so it wasn't kept. The site may have sent an error page instead."
         case .empty: "That download was empty, so it wasn't kept."
         case .tooLarge: "That download is larger than 50 MB, so it wasn't kept."
+        case .unsupportedType: "Mango reads PDF, CSV and image files only."
         }
     }
 }
@@ -72,12 +94,25 @@ public final class DownloadsTray: @unchecked Sendable {
     /// protected and excluded from backup; a file whose sha256 is already here returns that item and the duplicate is
     /// deleted. Refused, nothing is kept and the file at `url` is left for the caller to remove.
     public func ingest(fileAt url: URL, suggestedName: String, sourceHost: String?) throws -> TrayItem {
+        try ingest(fileAt: url, suggestedName: suggestedName, sourceHost: sourceHost, accepting: ["pdf"])
+    }
+
+    /// The extensions the iPhone's import inbox keeps: PDF, CSV and photos.
+    public static let importExtensions: Set<String> = ["pdf", "csv", "jpg", "jpeg", "png", "heic", "heif"]
+
+    /// `ingest` for the import inbox: any of `accepting` (lower-case extensions, taken from `suggestedName`, else the
+    /// file's own). A PDF must still start with `%PDF-`; the others only need bytes.
+    public func ingest(fileAt url: URL, suggestedName: String, sourceHost: String?, accepting: Set<String>) throws -> TrayItem {
         try queue.sync {
+            let suggested = (suggestedName as NSString).pathExtension.lowercased()
+            // The browser's tray: whatever the site called it, it is judged as a PDF by its bytes.
+            let fileExtension = accepting == ["pdf"] ? "pdf" : (suggested.isEmpty ? url.pathExtension.lowercased() : suggested)
+            guard accepting.contains(fileExtension) else { throw TrayError.unsupportedType }
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { throw TrayError.tooLarge }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             guard data.count <= maxBytes else { throw TrayError.tooLarge }
             guard !data.isEmpty else { throw TrayError.empty }
-            guard data.starts(with: Self.pdfMagic) else { throw TrayError.notAPDF }
+            guard fileExtension != "pdf" || data.starts(with: Self.pdfMagic) else { throw TrayError.notAPDF }
             let hash = Self.sha256(data)
             try prepareDirectory()
             var items = try readIndex()
@@ -85,9 +120,9 @@ public final class DownloadsTray: @unchecked Sendable {
                 try? fileManager.removeItem(at: url)
                 return existing
             }
-            let item = TrayItem(id: UUID(), fileName: Self.displayName(suggestedName), sha256: hash, byteCount: data.count,
-                                receivedAt: now(), sourceHost: sourceHost)
-            var stored = storedURL(item.id)
+            let item = TrayItem(id: UUID(), fileName: Self.displayName(suggestedName, fileExtension: fileExtension), sha256: hash, byteCount: data.count,
+                                receivedAt: now(), sourceHost: sourceHost, fileExtension: fileExtension)
+            var stored = storedURL(item)
             do {
                 try fileManager.moveItem(at: url, to: stored)
             } catch {
@@ -113,12 +148,12 @@ public final class DownloadsTray: @unchecked Sendable {
     }
 
     /// Where `item`'s file is.
-    public func fileURL(for item: TrayItem) -> URL { storedURL(item.id) }
+    public func fileURL(for item: TrayItem) -> URL { storedURL(item) }
 
     /// Removes `item` and its file.
     public func discard(_ item: TrayItem) {
         queue.sync {
-            try? fileManager.removeItem(at: storedURL(item.id))
+            try? fileManager.removeItem(at: storedURL(item))
             guard let items = try? readIndex() else { return }
             try? writeIndex(items.filter { $0.id != item.id })
         }
@@ -134,16 +169,16 @@ public final class DownloadsTray: @unchecked Sendable {
     // MARK: Files
 
     /// The name shown for a download: the last path component of what the site suggested, ending in `.pdf`.
-    public static func displayName(_ suggested: String) -> String {
+    public static func displayName(_ suggested: String, fileExtension: String = "pdf") -> String {
         let last = (suggested as NSString).lastPathComponent
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let name = last.isEmpty || last == "/" ? "Download" : last
-        return name.lowercased().hasSuffix(".pdf") ? name : name + ".pdf"
+        return name.lowercased().hasSuffix("." + fileExtension) ? name : name + "." + fileExtension
     }
 
-    private func storedURL(_ id: UUID) -> URL {
-        directory.appendingPathComponent(id.uuidString.lowercased() + ".pdf")
+    private func storedURL(_ item: TrayItem) -> URL {
+        directory.appendingPathComponent(item.id.uuidString.lowercased() + "." + item.fileExtension)
     }
 
     private var indexURL: URL { directory.appendingPathComponent(Self.indexName) }
@@ -168,7 +203,7 @@ public final class DownloadsTray: @unchecked Sendable {
             try? writeIndex(rebuilt)
             return rebuilt
         }
-        return items.filter { fileManager.fileExists(atPath: storedURL($0.id).path) }
+        return items.filter { fileManager.fileExists(atPath: storedURL($0).path) }
     }
 
     /// The items the stored files still say: each `<id>.pdf` that is a PDF, dated by its file; the rest are deleted.
@@ -176,17 +211,19 @@ public final class DownloadsTray: @unchecked Sendable {
         let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
         var seen: Set<String> = []
         return names.compactMap { name -> TrayItem? in
-            guard name.hasSuffix(".pdf"), let id = UUID(uuidString: String(name.dropLast(4))) else { return nil }
+            let ext = (name as NSString).pathExtension
+            guard ext == "pdf" || Self.importExtensions.contains(ext),
+                  let id = UUID(uuidString: (name as NSString).deletingPathExtension) else { return nil }
             let url = directory.appendingPathComponent(name)
-            guard let data = try? Data(contentsOf: url), !data.isEmpty, data.starts(with: Self.pdfMagic), data.count <= maxBytes,
+            guard let data = try? Data(contentsOf: url), !data.isEmpty, ext != "pdf" || data.starts(with: Self.pdfMagic), data.count <= maxBytes,
                   seen.insert(Self.sha256(data)).inserted
             else {
                 try? fileManager.removeItem(at: url)
                 return nil
             }
             let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? now()
-            return TrayItem(id: id, fileName: "Download.pdf", sha256: Self.sha256(data), byteCount: data.count,
-                            receivedAt: date, sourceHost: nil)
+            return TrayItem(id: id, fileName: "Download." + ext, sha256: Self.sha256(data), byteCount: data.count,
+                            receivedAt: date, sourceHost: nil, fileExtension: ext)
         }
     }
 
