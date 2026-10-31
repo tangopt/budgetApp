@@ -52,6 +52,24 @@ final class PadBillsAndRechargesModelTests: XCTestCase {
         XCTAssertNil(tabs.padBills.selectedBill)
     }
 
+    /// One panel for the page: a bill and a statement replace each other, whichever was open first.
+    func testABillAndAStatementReplaceEachOtherInThePanel() async throws {
+        let tabs = await tabs()
+        let grid = try XCTUnwrap(tabs.padProperty.bills)
+        let cell = try XCTUnwrap(grid.rows.compactMap { row in
+            Set(grid.bills.map(\.month)).sorted().compactMap { grid.cell(row: row, month: $0) }.first { !$0.bills.isEmpty }
+        }.first)
+        let statement = try XCTUnwrap(tabs.padBills.statements.first)
+        tabs.padBills.select(cell)
+        XCTAssertNotNil(tabs.padBills.selectedBillId)
+        tabs.padBills.openStatementId = statement.id
+        XCTAssertNil(tabs.padBills.selectedBillId)
+        XCTAssertEqual(tabs.padBills.openStatementId, statement.id)
+        tabs.padBills.select(cell)
+        XCTAssertNil(tabs.padBills.openStatementId)
+        XCTAssertNotNil(tabs.padBills.selectedBillId)
+    }
+
     func testPanelExtraShowsPaidByAndStatement() async throws {
         let tabs = await tabs()
         let bill = try XCTUnwrap(tabs.padProperty.bills?.bills.first { $0.id == "invoice52" })

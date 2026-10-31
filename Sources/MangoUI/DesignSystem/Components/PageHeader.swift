@@ -38,21 +38,61 @@ struct PageHeader<Trailing: View>: View {
     let trailing: Trailing
     /// Space above the title: the iPad's 24 pt, less on the iPhone, where the status bar already gives some.
     let topPadding: CGFloat
+    /// A page with a segmented control draws its header in two parts around it (title above, controls below), so the
+    /// control keeps one place whatever the segment's own subtitle, pickers and button are.
+    let part: Part
+    enum Part { case whole, titleOnly, controlsOnly }
     @Environment(\.phoneTheme) private var theme
     @Environment(\.padPageInset) private var inset
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(title: String, subtitle: String? = nil, contexts: [ContextPicker] = [], primary: PageAction? = nil,
-         topPadding: CGFloat = MangoSpacing.l, @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
+         topPadding: CGFloat = MangoSpacing.l, part: Part = .whole, @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
         self.title = title
         self.subtitle = subtitle
         self.contexts = PageHeaderRules.contexts(contexts)
         self.primary = primary
         self.trailing = trailing()
         self.topPadding = topPadding
+        self.part = part
     }
 
+    @ViewBuilder
     var body: some View {
+        switch part {
+        case .whole: whole
+        case .titleOnly:
+            Text(title)
+                .mangoFont(.largeTitle, weight: .bold)
+                .lineLimit(1).minimumScaleFactor(0.65).truncationMode(.middle)
+                .accessibilityAddTraits(.isHeader)
+                .frame(minHeight: 44)
+                .padding(.horizontal, inset)
+                .padding(.top, topPadding)
+                .padding(.bottom, MangoSpacing.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(theme.background)
+        case .controlsOnly:
+            // Always the same height, empty or not, so what is below never moves between segments.
+            HStack(spacing: MangoSpacing.xs) {
+                ForEach(contexts.indices, id: \.self) { contexts[$0] }
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle.figuresUnbroken)
+                        .mangoFont(.subheadline).foregroundStyle(theme.textSecondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: MangoSpacing.s)
+                trailing
+                if let primary { primaryButton(primary) }
+            }
+            .frame(height: 48)
+            .padding(.horizontal, inset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.background)
+        }
+    }
+
+    private var whole: some View {
         HStack(alignment: .center, spacing: MangoSpacing.s) {
             VStack(alignment: .leading, spacing: MangoSpacing.xxs) {
                 Text(title)

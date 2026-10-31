@@ -95,10 +95,18 @@ private struct PadPageScaffold<Trailing: View>: ViewModifier {
         return content
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
-                               topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
-                    if let segments { PadSegmentBar(segments: segments) }
+                    if let segments {
+                        // The control has one place under the title; this segment's controls go below it.
+                        PageHeader(title: pageTitle, topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l, part: .titleOnly)
+                        PadSegmentBar(segments: segments)
+                        PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
+                                   topPadding: 0, part: .controlsOnly) { trailing }
+                    } else {
+                        PageHeader(title: pageTitle, subtitle: subtitle, contexts: contexts, primary: primary,
+                                   topPadding: isPhone ? MangoSpacing.xs : MangoSpacing.l) { trailing }
+                    }
                 }
+                .transaction { $0.animation = nil } // no animated relayout of the header between segments
             }
             .navigationTitle(pageTitle)
             #if os(iOS)
