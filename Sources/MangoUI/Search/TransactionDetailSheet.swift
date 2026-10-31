@@ -61,9 +61,11 @@ public struct TransactionDetailSheet: View {
     @State private var draft: TransactionDraft
     @State private var saving = false
 
-    /// `startsEditing`: opens as the form (the snapshot route).
-    public init(row: TransactionSearch.Row, startsEditing: Bool = false) {
+    /// `startsEditing`: opens as the form (the snapshot route); `startsEditable`: shows Edit from the first frame (the
+    /// journey route; the app learns it from `canEdit` a moment after the sheet opens).
+    public init(row: TransactionSearch.Row, startsEditing: Bool = false, startsEditable: Bool = false) {
         _row = State(initialValue: row)
+        _canEdit = State(initialValue: startsEditable)
         _editing = State(initialValue: startsEditing)
         _draft = State(initialValue: TransactionDraft(row: row))
     }

@@ -74,7 +74,10 @@ public struct DemoRouteCheckFailure: Error, CustomStringConvertible {
 
 /// The routes the harness renders, in order. Each later screen adds its routes here.
 public enum DemoRoutes {
-    public static let all: [DemoRoute] = [
+    public static var all: [DemoRoute] { base + JourneyRoutes.all }
+
+    /// Every route but the journeys (which reuse these).
+    static let base: [DemoRoute] = [
         DemoRoute(name: "gallery", sizes: DemoRoute.standardSizes + [.accessibility5], minimumFigures: 10) { _ in
             AnyView(DesignSystemGallery())
         },

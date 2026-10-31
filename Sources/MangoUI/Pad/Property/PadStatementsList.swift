@@ -71,12 +71,15 @@ struct PadStatementsList: View {
     private func row(_ statement: PadBillsAndRechargesModel.Statement) -> some View {
         let pill = model.pill(for: statement)
         let name = model.monthTitle(statement)
+        // A step shows its status pill or its action button, not both: the draft's "Prepare email" says what is next.
+        var showsPill = true
+        if case .prepareEmail? = model.listAction(for: statement) { showsPill = false }
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Button { open(statement) } label: {
                     HStack(spacing: 12) {
                         Text(name.figuresUnbroken).mangoFont(.body, weight: .medium).lineLimit(1)
-                        PadStatusPill(text: pill.text, tone: pill.tone)
+                        if showsPill { PadStatusPill(text: pill.text, tone: pill.tone) }
                         Spacer(minLength: 8)
                         MoneyText(minorUnits: statement.statement.totalMinorUnits, currency: model.currency, role: .neutral)
                     }
