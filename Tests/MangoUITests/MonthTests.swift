@@ -428,4 +428,19 @@ final class MonthTests: XCTestCase {
         XCTAssertEqual(MonthTransactionsModel.amount(-30_000, type: .transfer).role, .transfer)
         XCTAssertEqual(MonthTransactionsModel.amount(-30_000, type: .transfer).minorUnits, -30_000)
     }
+
+    func testTheCategoryDetailSummaryReadsAsTheRowDoes() {
+        let under = CategorySummaryPresentation(row(.expense, actual: -32_000, plan: -40_000)).figures
+        XCTAssertEqual(under.map(\.label), ["Spent", "Planned", "Left"])
+        XCTAssertEqual(under.map(\.text), ["£320.00", "£400.00", "£80.00"])
+        let over = CategorySummaryPresentation(row(.expense, actual: -45_000, plan: -40_000)).figures
+        XCTAssertEqual(over.map(\.label), ["Spent", "Planned", "Over"])
+        XCTAssertEqual(over.last?.text, "£50.00")
+        XCTAssertEqual(over.last?.isOver, true)
+        let income = CategorySummaryPresentation(row(.income, actual: 100_000, plan: 400_000)).figures
+        XCTAssertEqual(income.map(\.label), ["Received", "Planned", "To come"])
+        XCTAssertEqual(income.last?.text, "£3,000.00")
+        // No plan and no measure: only what was spent and the (empty) plan.
+        XCTAssertEqual(CategorySummaryPresentation(row(.income, actual: 100_000, plan: 0)).figures.count, 2)
+    }
 }

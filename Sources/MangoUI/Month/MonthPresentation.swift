@@ -160,3 +160,39 @@ public enum MonthCopy {
     public static let emptyTitle = "No transactions in this month yet"
     public static let emptyMessage = "Spending, income and transfers show here once they sync from the Mac."
 }
+
+/// The three figures at the top of a category's detail: what was spent (received, moved), what is planned and what is
+/// left, the row's own (`CategoryRowPresentation`, so they read as the Month list reads them).
+public struct CategorySummaryPresentation: Equatable, Sendable {
+    public struct Figure: Equatable, Sendable, Identifiable {
+        public let label: String
+        public let text: String
+        public let isOver: Bool
+        public var id: String { label }
+    }
+
+    public let figures: [Figure]
+
+    public init(_ row: PayMonthReview.Row) {
+        func money(_ minorUnits: Int) -> String { MoneyPresentation.format(minorUnits, currency: .gbp) }
+        let shown = CategoryRowPresentation(row)
+        let direction: Int = switch row.category.type {
+        case .expense: -1
+        case .income: 1
+        case .transfer, .adjustment: row.planMinorUnits == 0 ? 1 : row.planMinorUnits.signum()
+        }
+        let (done, plan, comes): (String, String, String) = switch row.category.type {
+        case .expense: ("Spent", "Planned", "Left")
+        case .income: ("Received", "Planned", "To come")
+        case .transfer, .adjustment: ("Moved", "Planned", "Left")
+        }
+        var result = [Figure(label: done, text: shown.actualText, isOver: false),
+                      Figure(label: plan, text: row.planMinorUnits == 0 ? money(0) : money(row.planMinorUnits * direction), isOver: false)]
+        if let remaining = row.remainingMinorUnits {
+            let over = row.category.type == .income ? "More" : "Over"
+            result.append(remaining >= 0 ? Figure(label: comes, text: money(remaining), isOver: false)
+                          : Figure(label: over, text: money(-remaining), isOver: row.category.type != .income))
+        }
+        figures = result
+    }
+}
